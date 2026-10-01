@@ -1,0 +1,38 @@
+name: framework-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: uv sync --locked
+      - name: Lint
+        run: uv run ruff check src tests && uv run ruff format --check src tests
+      - name: Types
+        run: uv run mypy src
+      - name: Schemas are current
+        run: |
+          uv run delivery schemas --out /tmp/schemas
+          diff -r /tmp/schemas plugins/delivery/references/schemas
+      - name: Tests (unit, fake integrations, failure injection, concurrency)
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+          uv run pytest -q

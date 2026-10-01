@@ -1,0 +1,120 @@
+# delivery local configuration (the only file a developer edits)
+#
+# Copy with `delivery init --config ./delivery.local.toml`, then fill in the values.
+# Keep this file out of version control. It must never contain passwords or tokens:
+# secrets are referenced by environment variable name only.
+#
+# Relative paths are resolved against the directory containing THIS file.
+# There is no setting for the number of concurrent sessions: one supervisor runs
+# every eligible ticket assigned to you, each in its own isolated session.
+
+config_version = 1
+
+[identity]
+# Your stable Jira account ID (not your display name or email).
+# Find it with `delivery doctor` after setting JIRA_EMAIL / JIRA_API_TOKEN.
+developer_jira_account_id = "YOUR_ACCOUNT_ID"
+# Names this registered machine. Only one supervisor per Jira identity may run.
+worker_id = "my-laptop"
+
+[jira]
+base_url = "https://your-site.atlassian.net"
+project_key = "PILOT"
+supported_issue_types = ["Story", "Task", "Bug"]
+# Set to an opt-in label such as "agent-enabled" when sharing an existing project.
+# Empty means project + status + assignee filters only (dedicated pilot project).
+required_label = ""
+# site_api_token: Basic auth with JIRA_EMAIL + JIRA_API_TOKEN against base_url.
+# scoped_api_token: scoped token via the Atlassian API gateway (also set cloud_id).
+auth_profile = "site_api_token"
+email_env = "JIRA_EMAIL"
+token_env = "JIRA_API_TOKEN"
+# cloud_id = ""
+
+[jira.fields]
+# Single-select "Delivery resume stage" custom field from the workflow setup.
+# `delivery workflow inspect` prints the ID. Leave unset to rely on coordinator
+# validation only (the Jira UI then cannot hide wrong resume actions).
+# resume_stage = "customfield_10050"
+
+[repository]
+url = "https://github.com/your-org/your-app.git"
+base_branch = "main"
+# Your normal clone. The coordinator never edits it; it creates managed worktrees.
+checkout_path = "~/src/your-app"
+# Managed worktrees, one per run. Must be outside the checkout.
+worktree_root = "~/delivery-worktrees"
+github_auth_profile = "gh"
+
+[runtime]
+# Local recovery journal, logs and locks. Must be outside any Git checkout.
+state_dir = "~/.local/state/delivery"
+poll_seconds = 60
+poll_jitter_seconds = 10
+# Per Claude session timeout, and per check command timeout.
+timeout_seconds = 1800
+check_timeout_seconds = 1800
+heartbeat_seconds = 30
+
+[claude]
+executable = "claude"
+plugin_path = "/absolute/path/to/delivery-platform/plugins/delivery"
+# Only the local Claude Code subscription login is supported. No API billing.
+auth_profile = "subscription"
+max_turns = 40
+allow_paid_api_fallback = false
+permission_profile = "local_pilot"
+# model = ""
+
+[approvals]
+# Humans allowed to approve specification, plan, acceptance and release gates.
+jira_account_ids = ["APPROVER_ACCOUNT_ID"]
+# Humans whose GitHub review satisfies the code gate (never the PR author).
+github_logins = ["human-reviewer"]
+require_independent_github_review = true
+
+[release]
+profile = "local_pilot"
+environment = "local-pilot"
+human_merge_required = true
+human_deployment_required = true
+
+[release.smoke_commands]
+# Commands the coordinator runs against the recorded release during verification.
+# smoke = ["npm", "run", "test:smoke"]
+
+[checks]
+# Run once in every fresh worktree before the checks below.
+setup = ["npm", "ci"]
+
+[checks.commands]
+# Coordinator-run gates. Argument lists, never shell strings.
+lint = ["npm", "run", "lint"]
+typecheck = ["npm", "run", "typecheck"]
+unit = ["npm", "run", "test:unit"]
+build = ["npm", "run", "build"]
+e2e = ["npm", "run", "test:e2e"]
+
+[checks.ci]
+required_names = ["lint", "typecheck", "unit", "build", "e2e"]
+expected_producer = "github-actions"
+allow_neutral = []
+allow_skipped = []
+
+[workflow.statuses]
+# Actual Jira status IDs. Generate this block with:
+#   delivery workflow inspect --config <this file>
+# backlog = "10000"
+# ready_refinement = "10001"
+# ... every status in the setup instructions is required before `delivery run`.
+
+[workflow.actions]
+# Transition names. Defaults match the setup instructions; override only if your
+# workflow uses different names. Transition IDs are resolved per issue at runtime.
+# submit_refinement = "Submit for refinement"
+# approve_specification = "Approve specification"
+
+[overlap]
+# Optional component map in the application repository (base branch).
+component_map_path = "docs/architecture/components.toml"
+low_signal_paths = ["package-lock.json", "uv.lock", "CHANGELOG.md"]

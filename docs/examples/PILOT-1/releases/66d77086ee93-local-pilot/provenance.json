@@ -1,0 +1,37 @@
+{
+  "checks": [
+    {
+      "base_sha": null,
+      "conclusion": "passed",
+      "duration_seconds": 2.11,
+      "exit_code": 0,
+      "log_path": "<state_dir>/runs/PILOT-1/PILOT-1-release_verification-20261001T185823Z-eaea83/logs/release-setup.log",
+      "name": "setup",
+      "producer": "delivery-coordinator",
+      "sha": "66d77086ee9390780200c667446275dc14fc2f89",
+      "source": "coordinator",
+      "target": "release",
+      "tree_sha": null,
+      "url": null
+    }
+  ],
+  "provenance": {
+    "candidate": "be65a480e2015f78a93eef191ba0c88aafaff177",
+    "merge_commit": "66d77086ee9390780200c667446275dc14fc2f89",
+    "merged": true,
+    "merged_by": "human",
+    "merged_tree_matches_candidate": true,
+    "pr": 1,
+    "pr_head": "be65a480e2015f78a93eef191ba0c88aafaff177",
+    "released": "66d77086ee9390780200c667446275dc14fc2f89",
+    "released_equals_merge": true,
+    "strategy": "merge commit"
+  },
+  "record": {
+    "comment_id": "1037",
+    "commit": "66d77086ee9390780200c667446275dc14fc2f89",
+    "environment": "local-pilot",
+    "merged_pr": "1",
+    "recorded_by": "approver-0001"
+  }
+}

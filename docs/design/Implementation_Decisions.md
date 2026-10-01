@@ -1,0 +1,48 @@
+# Implementation decision record
+
+Status: M0 complete, 1 October 2026. Owner: Ryan.
+
+Baseline documents, in precedence order:
+
+1. `Parallel_Sessions_Amendment.md` (overrides the others where they conflict)
+2. `Claude_Code_AI_SDLC_Build_Handoff.md`
+3. `Jira_Workflow_Setup_Instructions.md`
+4. `Developer_Onboarding_README.md` (operator interface blueprint)
+
+## Decisions
+
+| Area | Decision | Source |
+|---|---|---|
+| Repository | This directory is the `delivery-platform` repository: coordinator package plus `plugins/delivery`. No remote until requested. | User, M0 |
+| Concurrency | One supervisor process per Jira site + developer identity per machine. It runs any number of concurrent isolated Claude sessions. There is no session-count setting, cap, semaphore or pool size. | Amendment §1–2 |
+| Runtime | Python ≥3.11, asyncio supervisor, `uv` lockfile, pydantic v2 models, httpx for Jira, stdlib argparse CLI. | Handoff §3, §18 |
+| Claude | Local Claude Code CLI with subscription auth only. `--bare` is rejected because it never reads OAuth. Workers run with `--restricted`, generated `--settings`, `--strict-mcp-config` and `--permission-mode dontAsk`. | Handoff §13, M0 probe |
+| Jira | Jira Cloud, company-managed Kanban, workflow per setup doc (being created by the user). Plan tier unknown; doctor reports whether actor separation is enforceable. | User, M0 |
+| Jira identity | Coordinator authenticates as the developer's own account (`site_api_token`). Jira cannot distinguish coordinator vs human actions by author. The coordinator excludes transitions it journaled itself from approval evidence and records this limitation in the setup profile. | User, M0 |
+| GitHub | Coordinator uses `gh` (authenticated as the operator) for REST calls. The Claude child never inherits GitHub credentials. | Handoff §16 |
+| Pilot app | New **public** repository with a **generic** sample app (task list, React/TS/Vite, Vitest/Testing Library, Playwright). It is not domain-specific; the plugin and templates are domain-neutral. Repo creation will be confirmed with the user first. | User, M0 |
+| Pilot ticket | "Case-insensitive title search" with the open question "should search include the description?". | Handoff §21, adapted |
+| Overlap detection | Plan stage publishes `plan/vNNN.footprint.json` on the delivery branch. The coordinator compares footprints of all active tickets in the project (not only its own) at five checkpoints. This is advisory, not a lock. | Amendment §4–5 |
+| Integration evidence | Verification checks both the candidate head and an integration tree (latest base + interacting candidates), recording the head, base and tested tree. | Amendment §6 |
+
+## Machine findings (M0 probe)
+
+- Claude Code 2.1.278. Flags present: `--plugin-dir`, `--json-schema`, `--output-format`, `--permission-mode dontAsk`, `--tools`, `--settings`, `--setting-sources`, `--strict-mcp-config`, `--no-session-persistence`, `--restricted`. `--max-turns` is not listed in `--help` and is capability-tested at runtime.
+- `ANTHROPIC_BASE_URL` was set in the operator shell (default host). Doctor accepts only the default host; worker environments drop all `ANTHROPIC_*` variables.
+- The user-level Claude settings contain hooks and enabled plugins. Workers must not inherit them.
+- `gh` 2.87.3 is authenticated as `Ryanfo`. The plan tier is not readable with current scopes, so a private repo may lack branch protection; the pilot repo will be public.
+
+## Live values still required
+
+Not design blockers, but needed before live testing:
+
+- Jira site URL, project key, plan tier.
+- Developer and approver account IDs.
+- Status, transition and `Delivery resume stage` field IDs. `delivery workflow inspect` resolves these from names and prints a config snippet.
+- A second human GitHub reviewer (code gate) and a second developer identity (cross-developer overlap evidence).
+
+## Known limitations accepted by design
+
+- No distributed claim. Two supervisors for the same identity on different machines can race. Doctor detects known conflicting worker markers but cannot prevent a simultaneous start.
+- Overlap detection cannot see unpublished local changes on other machines.
+- With a single Jira identity, Jira permissions cannot enforce worker/human separation.

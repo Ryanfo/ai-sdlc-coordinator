@@ -1,0 +1,56 @@
+[project]
+name = "delivery-platform"
+version = "0.1.0"
+description = "Local Jira-driven AI SDLC supervisor and reusable Claude Code delivery plugin"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "pydantic>=2.7,<3",
+    "httpx>=0.27,<1",
+]
+
+[project.scripts]
+delivery = "delivery.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/delivery"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "live: opt-in tests against real Jira/GitHub/Claude (set DELIVERY_LIVE_CONFIG)",
+]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF", "PT", "SIM"]
+ignore = ["S603", "S607", "S101", "RUF001", "RUF002", "RUF003", "ASYNC109", "ASYNC240", "RUF005", "S311"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S108", "PT018", "PT011", "E501", "RUF015", "RUF059", "ASYNC221"]
+
+[tool.mypy]
+strict = true
+python_version = "3.11"
+mypy_path = "src"
+plugins = ["pydantic.mypy"]

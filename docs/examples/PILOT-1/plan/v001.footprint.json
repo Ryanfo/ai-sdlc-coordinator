@@ -1,0 +1,33 @@
+{
+  "actual_commit": null,
+  "actual_paths": [],
+  "components": [
+    "domain",
+    "ui",
+    "e2e"
+  ],
+  "dependencies": [],
+  "domain_models": [],
+  "interfaces": [
+    "TaskQuery.search (src/domain/filter.ts)",
+    "filterTasks (src/domain/filter.ts)"
+  ],
+  "migrations": [],
+  "owner_account_id": "dev-account-0001",
+  "paths": [
+    "src/domain/filter.ts",
+    "src/domain/filter.test.ts",
+    "src/App.tsx",
+    "src/App.test.tsx",
+    "e2e/app.spec.ts"
+  ],
+  "plan_revision": 1,
+  "published_at": "2026-10-01T18:51:28.161592Z",
+  "schema_version": 1,
+  "schemas": [],
+  "sequencing_notes": "No ordering constraints relative to other tickets; within this ticket, update src/domain/filter.ts and its tests before wiring src/App.tsx so the new TaskQuery.search field exists before App passes it.",
+  "source_commit": "51a20d5f3ecf3375e1776c943ba203f7e4d263b0",
+  "stage": "planning",
+  "ticket_dependencies": [],
+  "ticket_key": "PILOT-1"
+}

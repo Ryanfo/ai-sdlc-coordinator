@@ -1,0 +1,96 @@
+"""Release provenance: only a recorded, accepted candidate can reach Done (handoff §16, M7)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from delivery.supervisor import Supervisor
+from delivery.workflow import Status
+from gitutil import external_commit
+from harness import REVIEWER, World, make_world, step
+
+
+async def _to_ready_release(w: World, sup: Supervisor, key: str) -> tuple[int, str]:
+    w.new_ticket(key)
+    w.submit(key)
+    await step(sup)
+    w.decide(key, f"APPROVE SPEC {w.token(key, 'SPEC')}", Status.READY_PLANNING)
+    await step(sup)
+    w.decide(key, f"APPROVE PLAN {w.token(key, 'PLAN')}", Status.READY_DEVELOPMENT)
+    await step(sup)
+    await step(sup)
+    rec = w.record(key)
+    assert rec.pr_number
+    w.github.approve(rec.pr_number, REVIEWER)
+    w.decide(key, f"APPROVE CODE {w.token(key, 'CODE')}", Status.ACCEPTANCE_REVIEW)
+    w.decide(key, f"ACCEPT DELIVERY {w.token(key, 'ACCEPT')}", Status.READY_RELEASE_PREPARATION)
+    await step(sup)
+    rel = w.token(key, "RELEASE")
+    w.decide(key, f"APPROVE RELEASE {rel}", Status.READY_RELEASE)
+    return rec.pr_number, rel
+
+
+def _record(w: World, key: str, rel: str, commit: str, pr: int) -> None:
+    w.decide(
+        key,
+        f"RECORD RELEASE {rel}\ncommit: {commit}\nenvironment: local-pilot\nmerged-pr: {pr}",
+        Status.READY_RELEASE_VERIFICATION,
+    )
+
+
+async def test_squash_merge_provenance_reaches_done(tmp_path: Path) -> None:
+    w = make_world(tmp_path)
+    async with Supervisor(w.deps) as sup:
+        pr, rel = await _to_ready_release(w, sup, "PILOT-1")
+        merged = w.github.merge(pr, how="squash")
+        _record(w, "PILOT-1", rel, merged, pr)
+        await step(sup)
+    assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
+    assert "squash" in w.last_comment("PILOT-1")
+
+
+async def test_released_commit_containing_later_unrelated_merges_is_accepted(tmp_path: Path) -> None:
+    w = make_world(tmp_path, extra={"checks": {"integration": ["unit"]}})
+    async with Supervisor(w.deps) as sup:
+        pr, rel = await _to_ready_release(w, sup, "PILOT-1")
+        w.github.merge(pr)
+        later = external_commit(tmp_path, w.origin, "main", "docs/notes.md", "n\n", "later")
+        _record(w, "PILOT-1", rel, later, pr)
+        await step(sup)
+    assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
+
+
+async def test_unrelated_release_sha_cannot_pass(tmp_path: Path) -> None:
+    w = make_world(tmp_path)
+    async with Supervisor(w.deps) as sup:
+        pr, rel = await _to_ready_release(w, sup, "PILOT-1")
+        unrelated = external_commit(tmp_path, w.origin, "main", "x.txt", "x\n", "unrelated")
+        w.github.merge(pr)  # merge happens after the recorded commit: recorded SHA lacks it
+        _record(w, "PILOT-1", rel, unrelated, pr)
+        await step(sup)
+    assert w.jira.status_of("PILOT-1") is Status.BLOCKED
+    assert "does not contain merge" in w.last_comment("PILOT-1")
+    assert w.record("PILOT-1").pause.resume_stage.value == "release_verification"  # type: ignore[union-attr]
+
+
+async def test_unapproved_candidate_merged_is_flagged(tmp_path: Path) -> None:
+    w = make_world(tmp_path)
+    async with Supervisor(w.deps) as sup:
+        pr, rel = await _to_ready_release(w, sup, "PILOT-1")
+        external_commit(tmp_path, w.origin, "feature/PILOT-1", "src/sneaky.ts", "x\n", "sneaky")
+        merged = w.github.merge(pr)
+        _record(w, "PILOT-1", rel, merged, pr)
+        await step(sup)
+    assert w.jira.status_of("PILOT-1") is Status.BLOCKED
+    assert "unapproved changes merged" in w.last_comment("PILOT-1")
+
+
+async def test_failing_smoke_check_blocks_release_verification(tmp_path: Path) -> None:
+    w = make_world(tmp_path, extra={"release.smoke_commands": {"smoke": ["false"]}})
+    async with Supervisor(w.deps) as sup:
+        pr, rel = await _to_ready_release(w, sup, "PILOT-1")
+        merged = w.github.merge(pr)
+        _record(w, "PILOT-1", rel, merged, pr)
+        await step(sup)
+    assert w.jira.status_of("PILOT-1") is Status.BLOCKED
+    assert "never rolls back" in w.last_comment("PILOT-1")

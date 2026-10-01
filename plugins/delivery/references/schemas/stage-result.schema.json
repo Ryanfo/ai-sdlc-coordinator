@@ -1,0 +1,498 @@
+{
+  "$defs": {
+    "ArtifactKind": {
+      "enum": [
+        "specification",
+        "plan",
+        "footprint",
+        "architecture",
+        "review",
+        "verification",
+        "release",
+        "release_verification",
+        "code",
+        "test",
+        "doc"
+      ],
+      "title": "ArtifactKind",
+      "type": "string"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 400,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        }
+      },
+      "required": [
+        "path",
+        "kind"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "criterion_id": {
+          "pattern": "^AC\\d{1,3}$",
+          "title": "Criterion Id",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "maxLength": 400,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "status": {
+          "default": "defined",
+          "enum": [
+            "met",
+            "not_met",
+            "unverified",
+            "defined"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "criterion_id",
+        "description"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^F\\d{1,3}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "description": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "criterion_id": {
+          "anyOf": [
+            {
+              "pattern": "^AC\\d{1,3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Criterion Id"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "maxLength": 400,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "related_tickets": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Related Tickets",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "severity",
+        "description"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "FootprintProposal": {
+      "additionalProperties": false,
+      "description": "Worker-proposed change footprint (planning). The coordinator adds identity fields.",
+      "properties": {
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 500,
+          "title": "Paths",
+          "type": "array"
+        },
+        "components": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Components",
+          "type": "array"
+        },
+        "interfaces": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Interfaces",
+          "type": "array"
+        },
+        "domain_models": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Domain Models",
+          "type": "array"
+        },
+        "schemas": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Schemas",
+          "type": "array"
+        },
+        "migrations": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Migrations",
+          "type": "array"
+        },
+        "dependencies": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "ticket_dependencies": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Ticket Dependencies",
+          "type": "array"
+        },
+        "sequencing_notes": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Sequencing Notes",
+          "type": "string"
+        }
+      },
+      "title": "FootprintProposal",
+      "type": "object"
+    },
+    "Outcome": {
+      "enum": [
+        "completed",
+        "needs_clarification",
+        "failed",
+        "blocked"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "Question": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^Q\\d{1,3}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "question": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        },
+        "rationale": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Rationale",
+          "type": "string"
+        },
+        "material": {
+          "default": true,
+          "title": "Material",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "question"
+      ],
+      "title": "Question",
+      "type": "object"
+    },
+    "ReleaseProposal": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Candidate Sha",
+          "type": "string"
+        },
+        "smoke_steps": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Smoke Steps",
+          "type": "array"
+        },
+        "rollback_steps": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Rollback Steps",
+          "type": "array"
+        }
+      },
+      "required": [
+        "candidate_sha"
+      ],
+      "title": "ReleaseProposal",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "blocker",
+        "major",
+        "minor",
+        "info"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "Stage": {
+      "enum": [
+        "refinement",
+        "planning",
+        "development",
+        "verification",
+        "release_preparation",
+        "release_verification"
+      ],
+      "title": "Stage",
+      "type": "string"
+    },
+    "WorkerCheck": {
+      "additionalProperties": false,
+      "description": "Informational only. Coordinator and CI evidence are authoritative.",
+      "properties": {
+        "name": {
+          "maxLength": 80,
+          "title": "Name",
+          "type": "string"
+        },
+        "command": {
+          "default": "",
+          "maxLength": 500,
+          "title": "Command",
+          "type": "string"
+        },
+        "result": {
+          "enum": [
+            "passed",
+            "failed",
+            "not_run"
+          ],
+          "title": "Result",
+          "type": "string"
+        },
+        "summary": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "result"
+      ],
+      "title": "WorkerCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "contract_id": {
+      "maxLength": 80,
+      "title": "Contract Id",
+      "type": "string"
+    },
+    "run_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "ticket_key": {
+      "pattern": "^[A-Z][A-Z0-9_]{1,9}-\\d{1,9}$",
+      "title": "Ticket Key",
+      "type": "string"
+    },
+    "stage": {
+      "$ref": "#/$defs/Stage"
+    },
+    "procedure": {
+      "maxLength": 40,
+      "title": "Procedure",
+      "type": "string"
+    },
+    "input_revision": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Input Revision",
+      "type": "string"
+    },
+    "outcome": {
+      "$ref": "#/$defs/Outcome"
+    },
+    "summary": {
+      "maxLength": 4000,
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    },
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactRef"
+      },
+      "maxItems": 200,
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "questions": {
+      "items": {
+        "$ref": "#/$defs/Question"
+      },
+      "maxItems": 50,
+      "title": "Questions",
+      "type": "array"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "maxItems": 200,
+      "title": "Findings",
+      "type": "array"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "maxItems": 200,
+      "title": "Evidence",
+      "type": "array"
+    },
+    "worker_checks": {
+      "items": {
+        "$ref": "#/$defs/WorkerCheck"
+      },
+      "maxItems": 50,
+      "title": "Worker Checks",
+      "type": "array"
+    },
+    "footprint": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FootprintProposal"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "release": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReleaseProposal"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "blocker_reason": {
+      "default": "",
+      "maxLength": 2000,
+      "title": "Blocker Reason",
+      "type": "string"
+    }
+  },
+  "required": [
+    "contract_id",
+    "run_id",
+    "ticket_key",
+    "stage",
+    "procedure",
+    "input_revision",
+    "outcome",
+    "summary"
+  ],
+  "title": "StageResult",
+  "type": "object"
+}

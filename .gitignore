@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+.DS_Store
+# Local operator config and runtime state never belong in Git
+delivery.local.toml
+*.local.toml
+.delivery-state/

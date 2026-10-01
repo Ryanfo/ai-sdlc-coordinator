@@ -1,0 +1,520 @@
+"""``delivery`` command-line interface."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+from delivery import __version__
+from delivery.config import Config, ConfigError, load_config, template_text
+from delivery.control import send, socket_path
+from delivery.journal import JournalStore
+from delivery.models import ACTIVE_RUN_STATES, RunState
+
+EXIT_OK, EXIT_FAIL, EXIT_CONFIG, EXIT_BUSY = 0, 1, 2, 3
+
+
+def _print(data: Any, as_json: bool, text: str) -> None:
+    print(json.dumps(data, indent=2, default=str) if as_json else text)
+
+
+def _load(args: argparse.Namespace) -> Config:
+    return load_config(Path(args.config))
+
+
+def _git_identity(checkout: Path) -> tuple[str, str]:
+    def get(key: str) -> str:
+        if not (checkout / ".git").exists():
+            return ""
+        return subprocess.run(
+            ["git", "-C", str(checkout), "config", key], capture_output=True, text=True, check=False
+        ).stdout.strip()
+
+    return get("user.name") or "delivery coordinator", get("user.email") or "delivery-coordinator@localhost"
+
+
+def build_deps(cfg: Config) -> Any:
+    from delivery.claude import ClaudeRunner
+    from delivery.git import ManagedRepo
+    from delivery.github import GhClient
+    from delivery.jira import JiraClient
+    from delivery.ownership import RepoLocks
+    from delivery.plugin import load_plugin
+    from delivery.runtime import Deps
+
+    locks = RepoLocks(cfg.runtime.state_dir / "locks")
+    name, email = _git_identity(cfg.repository.checkout_path)
+    repo = ManagedRepo(
+        cfg.repository.url,
+        cfg.repository.base_branch,
+        cfg.repository.worktree_root,
+        locks,
+        author_name=name,
+        author_email=email,
+        reference=cfg.repository.checkout_path,
+    )
+    return Deps(
+        cfg,
+        JiraClient(cfg),
+        GhClient(cfg.repository.slug),
+        repo,
+        ClaudeRunner(cfg.claude.executable),
+        JournalStore(cfg.runtime.state_dir, cfg.identity_key),
+        load_plugin(cfg.claude.plugin_path),
+        locks,
+    )
+
+
+# --------------------------------------------------------------------------- commands
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    path = Path(args.config).expanduser()
+    if path.exists() and not args.force:
+        print(f"{path} already exists; refusing to overwrite (use --force)", file=sys.stderr)
+        return EXIT_CONFIG
+    text = template_text()
+    plugin = Path(__file__).resolve().parents[2] / "plugins" / "delivery"
+    if (plugin / ".claude-plugin" / "plugin.json").exists():
+        text = text.replace("/absolute/path/to/delivery-platform/plugins/delivery", str(plugin))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    path.chmod(0o600)
+    print(
+        f"Wrote {path}. Fill in the values, then run `delivery workflow inspect --config {path}` and "
+        f"`delivery doctor --config {path}`."
+    )
+    return EXIT_OK
+
+
+async def _doctor(args: argparse.Namespace) -> int:
+    from delivery.doctor import claude_probe, render, run_doctor
+    from delivery.github import GhClient
+    from delivery.jira import JiraClient, JiraCredentialsMissing
+
+    cfg = _load(args)
+    try:
+        jira = JiraClient(cfg)
+    except JiraCredentialsMissing:
+        jira = None
+    gh = GhClient(cfg.repository.slug) if shutil.which("gh") else None
+    try:
+        report = await run_doctor(cfg, jira, gh)
+        if args.claude_probe:
+            await claude_probe(cfg, report)
+    finally:
+        if jira:
+            await jira.close()
+    _print(report.as_json(), args.json, render(report))
+    return EXIT_OK if report.ready else EXIT_FAIL
+
+
+async def _workflow_inspect(args: argparse.Namespace) -> int:
+    from delivery.doctor import inspect_workflow
+    from delivery.jira import JiraClient
+
+    cfg = _load(args)
+    jira = JiraClient(cfg)
+    try:
+        wf = await inspect_workflow(cfg, jira)
+    finally:
+        await jira.close()
+    if args.json:
+        _print(wf.__dict__, True, "")
+        return EXIT_OK if not (wf.missing or wf.ambiguous or wf.problems) else EXIT_FAIL
+    lines = [f"Project {cfg.jira.project_key}: {len(wf.statuses)} statuses"]
+    if wf.missing:
+        lines.append(f"MISSING statuses: {', '.join(wf.missing)}")
+    for k, ids in wf.ambiguous.items():
+        lines.append(f"AMBIGUOUS {k}: several statuses share the name ({ids}); rename them")
+    for k, v in wf.mismatched_config.items():
+        lines.append(f"CONFIG MISMATCH {k}: config {v['config']} vs Jira {v['jira']}")
+    lines += [f"WARN {w}" for w in wf.category_warnings]
+    for st, info in wf.transitions_checked.items():
+        state = "ok" if not (info["missing"] or info["unexpected"]) else "PROBLEM"
+        lines.append(f"transitions from {st} (sampled {info['sample']}): {state}")
+        lines += [f"  missing: {m}" for m in info["missing"]]
+        lines += [f"  unexpected: {u}" for u in info["unexpected"]]
+    lines.append(f"Delivery resume stage field: {wf.resume_field or 'NOT FOUND'}")
+    lines += ["", "Paste into your config:", "", wf.toml()]
+    print("\n".join(lines))
+    return EXIT_OK if not (wf.missing or wf.ambiguous or wf.problems) else EXIT_FAIL
+
+
+async def _run(args: argparse.Namespace) -> int:
+    from delivery.ownership import LockHeld
+    from delivery.supervisor import Supervisor
+
+    cfg = _load(args)
+    missing = cfg.workflow.missing_statuses()
+    if missing:
+        print(
+            f"{len(missing)} workflow statuses are unmapped; run `delivery workflow inspect` first.",
+            file=sys.stderr,
+        )
+        return EXIT_CONFIG
+    deps = build_deps(cfg)
+    sup = Supervisor(deps, dry_run=args.dry_run, emit=lambda s: print(s, flush=True))
+    try:
+        await sup.__aenter__()
+    except LockHeld as exc:
+        print(
+            f"Another supervisor already runs for this identity: {exc.holder}. "
+            "Use `delivery status`; never start a second one.",
+            file=sys.stderr,
+        )
+        return EXIT_BUSY
+    sup.install_signal_handlers()
+    try:
+        if args.dry_run:
+            report = await sup.poll_once()
+            data = {
+                "would_start": report.started,
+                "waiting": report.waiting,
+                "skipped": report.skipped,
+                "discovered": report.discovered,
+                "error": report.error,
+            }
+            text = "\n".join(
+                [
+                    f"[dry-run] discovered: {[d['ticket'] for d in report.discovered]}",
+                    *(f"[dry-run] would start {t}" for t in report.started),
+                    *(f"[dry-run] waiting {w['ticket']}: {w['reason']}" for w in report.waiting),
+                    *(f"[dry-run] skipped {s['ticket']}: {s['reason']}" for s in report.skipped),
+                    "[dry-run] no Claude call, comment, push or transition was made.",
+                ]
+            )
+            _print(data, args.json, text)
+            return EXIT_OK
+        print(
+            f"delivery {__version__} supervising {cfg.jira.project_key} as {cfg.identity.worker_id}; "
+            "Ctrl-C stops and checkpoints every session.",
+            flush=True,
+        )
+        await sup.run(once=args.once)
+    finally:
+        await sup.__aexit__(None, None, None)
+    return EXIT_OK
+
+
+async def _control(cfg: Config, request: dict[str, Any]) -> dict[str, Any] | None:
+    store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
+    rec = store.load_supervisor()
+    path = (
+        Path(rec.control_socket)
+        if rec and rec.control_socket
+        else socket_path(cfg.runtime.state_dir, cfg.identity_key)
+    )
+    if not path.exists():
+        return None
+    try:
+        return await send(path, request)
+    except (ConnectionError, FileNotFoundError, TimeoutError):
+        return None
+
+
+def _local_rows(cfg: Config) -> list[dict[str, Any]]:
+    store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
+    rows: list[dict[str, Any]] = []
+    for e in store.iter_runs():
+        r = e.record
+        if e.error:
+            rows.append(
+                {
+                    "ticket": e.ticket_key,
+                    "run_id": e.run_id,
+                    "state": "CORRUPT",
+                    "next_action": f"{e.error.detail}; inspect before recovery",
+                }
+            )
+            continue
+        assert r is not None
+        if r.state in ACTIVE_RUN_STATES or r.state in (
+            RunState.INTERRUPTED,
+            RunState.BLOCKED,
+            RunState.AWAITING_HUMAN,
+            RunState.FAILED,
+        ):
+            latest = store.latest_run(r.ticket_key)
+            if latest and latest.run_id != e.run_id:
+                continue
+            rows.append(
+                {
+                    "ticket": r.ticket_key,
+                    "stage": r.stage.value,
+                    "run_id": r.run_id,
+                    "session": r.session_label,
+                    "worker": r.worker_id,
+                    "state": r.state.value,
+                    "held": r.held,
+                    "started_at": r.started_at,
+                    "next_action": r.next_action or r.reason,
+                    "pending_ops": len(e.journal.pending_ops()),
+                }
+            )
+    return sorted(rows, key=lambda x: str(x["ticket"]))
+
+
+async def _status(args: argparse.Namespace) -> int:
+    cfg = _load(args)
+    live = await _control(cfg, {"cmd": "status"})
+    rows = _local_rows(cfg)
+    data = {"supervisor_running": live is not None, "live": live, "runs": rows}
+    lines = [
+        f"Supervisor: {'running' if live else 'not running'}"
+        + (f", dispatch {'PAUSED' if live['dispatch_paused'] else 'active'}" if live else "")
+    ]
+    if live:
+        lines.append(f"Active sessions ({len(live['sessions'])}):")
+        lines += [
+            f"  {s['ticket']:<12} {s['stage']:<20} {s['state']:<10} run {s['run_id']} "
+            f"started {s['started_at']} pid {s['child_pid']}"
+            for s in live["sessions"]
+        ]
+    lines.append("Latest run per ticket:")
+    lines += [
+        f"  {r['ticket']:<12} {r.get('stage', '-'):<20} {r['state']:<15} {r.get('next_action', '')}"
+        + (f" [pending ops: {r['pending_ops']}]" if r.get("pending_ops") else "")
+        for r in rows
+    ]
+    _print(data, args.json, "\n".join(lines))
+    return EXIT_OK
+
+
+async def _inspect(args: argparse.Namespace) -> int:
+    from delivery.intake import IntakeEvaluator, load_context
+    from delivery.jira import JiraClient
+    from delivery.ownership import evaluate_eligibility
+
+    cfg = _load(args)
+    jira = JiraClient(cfg)
+    try:
+        ctx = await load_context(jira, cfg, args.ticket)
+        elig = evaluate_eligibility(ctx.issue.view, cfg)
+        intake = None
+        if elig.stage:
+            from delivery.github import GhClient
+
+            intake = await IntakeEvaluator(cfg, GhClient(cfg.repository.slug)).evaluate(ctx, elig.stage)
+    finally:
+        await jira.close()
+    store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
+    runs = [
+        {
+            "run_id": e.run_id,
+            "state": e.record.state.value if e.record else "CORRUPT",
+            "stage": e.record.stage.value if e.record else None,
+            "reason": e.record.reason if e.record else (e.error.detail if e.error else ""),
+            "pending_ops": [o.op_type for o in e.journal.pending_ops()] if e.record else [],
+        }
+        for e in store.runs_for_ticket(args.ticket)
+    ]
+    rec = ctx.record
+    data = {
+        "ticket": args.ticket,
+        "status": ctx.status.value if ctx.status else ctx.issue.view.status_name,
+        "assignee": ctx.issue.view.assignee_account_id,
+        "eligible": elig.eligible,
+        "eligibility_reasons": list(elig.reasons),
+        "intake": intake.persisted() if intake else None,
+        "gates": [g.model_dump(mode="json") for g in rec.gates],
+        "pause": rec.pause.model_dump(mode="json") if rec.pause else None,
+        "candidate": rec.candidate_sha,
+        "pr": rec.pr_number,
+        "artefacts": rec.artefacts,
+        "footprint": rec.footprint_ref,
+        "overlap_warnings": rec.overlap_warnings,
+        "overlap_decisions": rec.overlap_decisions,
+        "release": rec.release,
+        "local_runs": runs,
+    }
+    lines = [
+        f"{args.ticket}: {data['status']} (assignee {data['assignee']})",
+        f"eligible: {elig.eligible}" + (f" ({'; '.join(elig.reasons)})" if elig.reasons else ""),
+    ]
+    if intake:
+        lines.append(
+            f"intake: {intake.kind.value} - {intake.reason}"
+            + (f" -> {intake.next_action}" if intake.next_action else "")
+        )
+    lines.append(
+        "gates: " + ", ".join(f"{g.token}={g.state.value}" for g in rec.gates) if rec.gates else "gates: none"
+    )
+    if rec.pause:
+        lines.append(
+            f"paused: {rec.pause.kind} resume={rec.pause.resume_stage.value} "
+            f"{rec.pause.round_token or rec.pause.reason}"
+        )
+    lines.append(f"candidate: {rec.candidate_sha or '-'} PR #{rec.pr_number or '-'}")
+    lines.append(
+        f"overlap warnings: {rec.overlap_warnings or 'none'} decisions: {rec.overlap_decisions or 'none'}"
+    )
+    lines += [
+        f"run {r['run_id']}: {r['state']} {r['reason']}"
+        + (f" pending {r['pending_ops']}" if r["pending_ops"] else "")
+        for r in runs
+    ]
+    _print(data, args.json, "\n".join(lines))
+    return EXIT_OK
+
+
+async def _ticket_command(args: argparse.Namespace, cmd: str) -> int:
+    cfg = _load(args)
+    request = {"cmd": cmd, "ticket": args.ticket, "resume": getattr(args, "resume", False)}
+    live = await _control(cfg, request)
+    if live is not None:
+        _print(live, args.json, json.dumps(live, indent=2, default=str))
+        return EXIT_OK if live.get("ok") else EXIT_FAIL
+    if cmd == "stop":
+        print("No supervisor is running; nothing to stop.")
+        return EXIT_OK
+    # No supervisor: act directly while holding the identity lock.
+    from delivery.ownership import LockHeld
+    from delivery.supervisor import Supervisor
+
+    sup = Supervisor(build_deps(cfg), emit=print)
+    try:
+        await sup.__aenter__()
+    except LockHeld as exc:
+        print(f"supervisor lock held but socket unreachable: {exc.holder}", file=sys.stderr)
+        return EXIT_BUSY
+    try:
+        if cmd == "recover":
+            await sup.deps.repo.ensure()
+            result = await sup.recover(args.ticket, args.resume)
+            if sup.sessions:
+                await asyncio.wait([s.task for s in sup.sessions.values()])
+        else:
+            result = await sup.handover(args.ticket)
+    finally:
+        await sup.__aexit__(None, None, None)
+    _print(result, args.json, json.dumps(result, indent=2, default=str))
+    return EXIT_OK if result.get("ok") else EXIT_FAIL
+
+
+async def _dispatch(args: argparse.Namespace) -> int:
+    cfg = _load(args)
+    live = await _control(cfg, {"cmd": args.action, "reason": args.reason or ""})
+    if live is None:
+        store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
+        store.init()
+        from delivery.journal import SupervisorRecord
+
+        rec = store.load_supervisor() or SupervisorRecord(
+            identity_key=cfg.identity_key,
+            worker_id=cfg.identity.worker_id,
+            developer_account_id=cfg.identity.developer_jira_account_id,
+        )
+        rec = rec.model_copy(
+            update={"dispatch_paused": args.action == "pause", "pause_reason": args.reason or ""}
+        )
+        store.save_supervisor(rec, f"dispatch_{args.action}")
+        live = {
+            "ok": True,
+            "dispatch_paused": rec.dispatch_paused,
+            "note": "applies when the supervisor starts",
+        }
+    _print(live, args.json, f"dispatch {'paused' if live.get('dispatch_paused') else 'active'}")
+    return EXIT_OK
+
+
+def cmd_schemas(args: argparse.Namespace) -> int:
+    from delivery.models import InputEnvelope, result_json_schema
+
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "stage-result.schema.json").write_text(json.dumps(result_json_schema(), indent=2) + "\n")
+    (out / "input-envelope.schema.json").write_text(
+        json.dumps(InputEnvelope.model_json_schema(), indent=2) + "\n"
+    )
+    print(f"wrote schemas to {out}")
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------- parser
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="delivery", description="Local Jira-driven AI SDLC supervisor.")
+    p.add_argument("--version", action="version", version=f"delivery {__version__}")
+    p.add_argument("-v", "--verbose", action="store_true")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    def with_config(sp: argparse.ArgumentParser) -> argparse.ArgumentParser:
+        sp.add_argument("--config", required=True, help="path to your one local config file")
+        sp.add_argument("--json", action="store_true", help="machine-readable output")
+        return sp
+
+    sp = sub.add_parser("init", help="write a commented config template (never overwrites)")
+    sp.add_argument("--config", required=True)
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_init)
+    sp = with_config(sub.add_parser("doctor", help="read-only integration, workflow and safety checks"))
+    sp.add_argument(
+        "--claude-probe",
+        action="store_true",
+        help="also run a real Claude session to prove plugin loading and permission denials "
+        "(uses a little subscription usage)",
+    )
+    sp.set_defaults(afunc=_doctor)
+    wf = sub.add_parser("workflow", help="workflow mapping tools").add_subparsers(dest="wf", required=True)
+    sp = with_config(wf.add_parser("inspect", help="resolve statuses/transitions and print a config block"))
+    sp.set_defaults(afunc=_workflow_inspect)
+    sp = with_config(sub.add_parser("run", help="run the supervisor in the foreground"))
+    sp.add_argument("--once", action="store_true", help="one cycle: dispatch all eligible tickets and wait")
+    sp.add_argument("--dry-run", action="store_true", help="discovery only: no Claude, writes or transitions")
+    sp.set_defaults(afunc=_run)
+    sp = with_config(sub.add_parser("status", help="sessions, states and next human actions"))
+    sp.set_defaults(afunc=_status)
+    for name, helptext in (
+        ("inspect", "explain one ticket without changing anything"),
+        ("recover", "reconcile one ticket; --resume continues held work"),
+        ("handover", "stop and checkpoint one ticket for reassignment"),
+        ("stop", "stop one ticket's session, leaving others running"),
+    ):
+        sp = with_config(sub.add_parser(name, help=helptext))
+        sp.add_argument("ticket")
+        if name == "recover":
+            sp.add_argument("--resume", action="store_true")
+        if name == "inspect":
+            sp.set_defaults(afunc=_inspect)
+        else:
+            sp.set_defaults(afunc=lambda a, n=name: _ticket_command(a, n))
+    sp = with_config(sub.add_parser("dispatch", help="pause or resume new launches"))
+    sp.add_argument("action", choices=["pause", "resume"])
+    sp.add_argument("--reason")
+    sp.set_defaults(afunc=_dispatch)
+    sp = sub.add_parser("schemas", help="export JSON schemas (development)")
+    sp.add_argument("--out", default="plugins/delivery/references/schemas")
+    sp.set_defaults(func=cmd_schemas)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+    try:
+        if getattr(args, "func", None):
+            return int(args.func(args))
+        return int(asyncio.run(args.afunc(args)))
+    except ConfigError as exc:
+        print("Configuration problems:", file=sys.stderr)
+        for p in exc.problems:
+            print(f"  - {p}", file=sys.stderr)
+        return EXIT_CONFIG
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

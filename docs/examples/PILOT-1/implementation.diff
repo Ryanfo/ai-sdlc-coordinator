@@ -1,0 +1,170 @@
+diff --git a/e2e/app.spec.ts b/e2e/app.spec.ts
+index 607fdaf..7e3316d 100644
+--- a/e2e/app.spec.ts
++++ b/e2e/app.spec.ts
+@@ -13,3 +13,12 @@ test("filters tasks and persists a starred task across reloads", async ({ page }
+     "true",
+   );
+ });
++
++test("searches and clears to restore the list", async ({ page }) => {
++  await page.goto("/");
++  await page.getByLabel("Search").fill("onboarding");
++  await expect(page.getByRole("list", { name: "Tasks" }).getByRole("listitem")).toHaveCount(1);
++  await expect(page.getByText("Draft onboarding checklist")).toBeVisible();
++  await page.getByLabel("Search").fill("");
++  await expect(page.getByRole("list", { name: "Tasks" }).getByRole("listitem")).toHaveCount(12);
++});
+diff --git a/src/App.test.tsx b/src/App.test.tsx
+index 5447f4e..f24af17 100644
+--- a/src/App.test.tsx
++++ b/src/App.test.tsx
+@@ -25,6 +25,44 @@ describe("App", () => {
+     expect(screen.getByRole("status")).toHaveTextContent("No tasks match the current filter.");
+   });
+ 
++  it("narrows the list to tasks whose title matches the search text", async () => {
++    const user = userEvent.setup();
++    render(<App store={memory()} />);
++    await user.type(screen.getByLabelText("Search"), "onboarding");
++    const list = within(screen.getByRole("list", { name: "Tasks" }));
++    expect(list.getAllByRole("listitem")).toHaveLength(1);
++    expect(list.getByText("Draft onboarding checklist")).toBeInTheDocument();
++  });
++
++  it("restores the full list when the search text is cleared", async () => {
++    const user = userEvent.setup();
++    render(<App store={memory()} />);
++    const search = screen.getByLabelText("Search");
++    await user.type(search, "onboarding");
++    await user.clear(search);
++    expect(within(screen.getByRole("list", { name: "Tasks" })).getAllByRole("listitem")).toHaveLength(
++      TASKS.length,
++    );
++  });
++
++  it("shows the empty-results message when search matches no task", async () => {
++    const user = userEvent.setup();
++    render(<App store={memory()} />);
++    await user.type(screen.getByLabelText("Search"), "no such task title");
++    expect(screen.getByRole("status")).toHaveTextContent("No tasks match the current filter.");
++  });
++
++  it("has a visible label and can be operated using the keyboard alone", async () => {
++    const user = userEvent.setup();
++    render(<App store={memory()} />);
++    const search = screen.getByLabelText("Search");
++    search.focus();
++    expect(search).toHaveFocus();
++    await user.keyboard("onboarding");
++    expect(search).toHaveValue("onboarding");
++    expect(within(screen.getByRole("list", { name: "Tasks" })).getAllByRole("listitem")).toHaveLength(1);
++  });
++
+   it("stars a task with the keyboard and persists it", async () => {
+     const user = userEvent.setup();
+     const store = memory();
+diff --git a/src/App.tsx b/src/App.tsx
+index 90e6895..0478e16 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -23,9 +23,13 @@ function isStatusFilter(value: string): value is StatusFilter {
+ 
+ export function App({ tasks = TASKS, store = browserStore() }: Props) {
+   const [status, setStatus] = useState<StatusFilter>("all");
++  const [search, setSearch] = useState("");
+   const [starred, setStarred] = useState<Set<string>>(() => loadStarred(store));
+ 
+-  const visible = useMemo(() => sortTasks(filterTasks(tasks, { status })), [tasks, status]);
++  const visible = useMemo(
++    () => sortTasks(filterTasks(tasks, { status, search })),
++    [tasks, status, search],
++  );
+ 
+   function toggleStar(id: string) {
+     setStarred((current) => {
+@@ -55,6 +59,13 @@ export function App({ tasks = TASKS, store = browserStore() }: Props) {
+             </option>
+           ))}
+         </select>
++        <label htmlFor="title-search">Search</label>
++        <input
++          id="title-search"
++          type="search"
++          value={search}
++          onChange={(e) => setSearch(e.target.value)}
++        />
+       </div>
+       <p aria-live="polite">
+         Showing {visible.length} of {tasks.length} tasks · {starred.size} starred
+diff --git a/src/domain/filter.test.ts b/src/domain/filter.test.ts
+index 14e1f19..ca79f04 100644
+--- a/src/domain/filter.test.ts
++++ b/src/domain/filter.test.ts
+@@ -3,18 +3,38 @@ import { filterTasks, sortTasks } from "./filter";
+ 
+ describe("filterTasks", () => {
+   it("returns every task for 'all'", () => {
+-    expect(filterTasks(TASKS, { status: "all" })).toHaveLength(TASKS.length);
++    expect(filterTasks(TASKS, { status: "all", search: "" })).toHaveLength(TASKS.length);
+   });
+ 
+   it("filters by status without mutating input", () => {
+     const before = [...TASKS];
+-    const done = filterTasks(TASKS, { status: "done" });
++    const done = filterTasks(TASKS, { status: "done", search: "" });
+     expect(done.every((t) => t.status === "done")).toBe(true);
+     expect(TASKS).toEqual(before);
+   });
+ 
+   it("returns an empty list when nothing matches", () => {
+-    expect(filterTasks([], { status: "todo" })).toEqual([]);
++    expect(filterTasks([], { status: "todo", search: "" })).toEqual([]);
++  });
++
++  it("treats an empty search as no filter", () => {
++    expect(filterTasks(TASKS, { status: "all", search: "   " })).toHaveLength(TASKS.length);
++  });
++
++  it("matches titles case-insensitively", () => {
++    const result = filterTasks(TASKS, { status: "all", search: "ONBOARDING" });
++    expect(result.map((t) => t.id)).toEqual(["t-001"]);
++  });
++
++  it("matches title text only, not description", () => {
++    const result = filterTasks(TASKS, { status: "all", search: "steps a new starter" });
++    expect(result).toEqual([]);
++  });
++
++  it("combines search with the status filter", () => {
++    const result = filterTasks(TASKS, { status: "todo", search: "archive" });
++    expect(result.map((t) => t.id)).toEqual(["t-005"]);
++    expect(filterTasks(TASKS, { status: "done", search: "archive" })).toEqual([]);
+   });
+ });
+ 
+diff --git a/src/domain/filter.ts b/src/domain/filter.ts
+index a454ea9..9028e03 100644
+--- a/src/domain/filter.ts
++++ b/src/domain/filter.ts
+@@ -4,13 +4,19 @@ export type StatusFilter = TaskStatus | "all";
+ 
+ export interface TaskQuery {
+   readonly status: StatusFilter;
++  readonly search: string;
+ }
+ 
+ const PRIORITY_ORDER = { high: 0, medium: 1, low: 2 } as const;
+ 
+ /** Pure filtering: never mutates the input. */
+ export function filterTasks(tasks: readonly Task[], query: TaskQuery): Task[] {
+-  return tasks.filter((task) => query.status === "all" || task.status === query.status);
++  const term = query.search.trim().toLowerCase();
++  return tasks.filter(
++    (task) =>
++      (query.status === "all" || task.status === query.status) &&
++      (term === "" || task.title.toLowerCase().includes(term)),
++  );
+ }
+ 
+ /** Highest priority first, then title, with a stable ID tiebreak. */

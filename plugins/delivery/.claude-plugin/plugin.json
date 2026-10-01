@@ -1,0 +1,7 @@
+{
+  "name": "delivery",
+  "version": "0.1.0",
+  "description": "Stage procedures for the local Jira-driven AI SDLC: refine, plan, implement, review, verify, prepare release and verify release. Invoked by the delivery coordinator; never transitions Jira, pushes, merges or deploys.",
+  "author": { "name": "delivery-platform" },
+  "license": "Proprietary"
+}
