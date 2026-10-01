@@ -16,8 +16,8 @@ the pilot project and repository only.
 | Developer account ID (supervisor identity) | | ☐ |
 | Approver account ID(s) (not the developer) | | ☐ |
 | Second developer identity (for cross-developer overlap) | | ☐ |
-| Pilot repository URL (public, generic task-list app) | | ☐ |
-| Base branch protection: PR, 1 review, stale dismissal, required checks lint/typecheck/unit/build/e2e, up to date, no force push or deletion | | ☐ |
+| Pilot repository URL (public, generic task-list app) | https://github.com/Ryanfo/delivery-pilot-app | ☑ |
+| Base branch protection: PR, 1 review, stale dismissal, required checks lint/typecheck/unit/build/e2e, up to date, no force push or deletion | applied 1 Oct 2026 (admins included) | ☑ |
 | Independent GitHub reviewer login | | ☐ |
 | `claude auth login` done; `doctor --claude-probe` READY | | ☐ |
 | `delivery doctor` READY; `run --dry-run` clean | | ☐ |

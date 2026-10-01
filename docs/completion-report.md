@@ -88,7 +88,7 @@ Defects found only by the real runs, all fixed and covered by tests or the probe
 |---|---|
 | Jira project, workflow, resume field, account IDs, plan tier | Jira administrator / you |
 | `delivery workflow inspect` and `delivery doctor` against the live project | After the above |
-| Pilot GitHub repository (public) with branch protection | Your confirmation to create it |
+| ~~Pilot GitHub repository with branch protection~~ | Done: https://github.com/Ryanfo/delivery-pilot-app (public); CI green on `main`; protection: PR + 1 non-author review, stale dismissal, last-push approval, required lint/typecheck/unit/build/e2e from GitHub Actions, up to date, admins included, no force push or deletion |
 | Independent GitHub reviewer | A second person |
 | Second developer identity for cross-developer evidence | A second Jira user running a supervisor |
 | Live M9 scenario and its evidence links | All of the above |
