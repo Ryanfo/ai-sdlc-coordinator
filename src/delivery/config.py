@@ -44,6 +44,9 @@ class ConfigError(Exception):
         super().__init__(f"{path}: " + "; ".join(problems))
 
 
+MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,99}$")
+
+
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -197,8 +200,34 @@ class ClaudeConfig(StrictModel):
     max_turns: int | None = Field(default=40, ge=1, le=500)
     allow_paid_api_fallback: bool = False
     permission_profile: Literal["local_pilot"] = "local_pilot"
+    # Default model for every procedure; None means Claude Code's own default.
     model: str | None = None
+    # Per-procedure overrides, e.g. {"implement-ticket": "opus"} (TOML table [claude.models]).
+    models: dict[str, str] = Field(default_factory=dict)
     supported_versions: str = ">=2.1.0,<3"
+
+    @field_validator("model")
+    @classmethod
+    def _model(cls, v: str | None) -> str | None:
+        if v is not None and not MODEL_NAME.match(v):
+            raise ValueError("must be a Claude model name or alias such as opus or claude-sonnet-5")
+        return v
+
+    @field_validator("models")
+    @classmethod
+    def _models(cls, v: dict[str, str]) -> dict[str, str]:
+        from delivery.plugin import PROCEDURES
+
+        unknown = sorted(set(v) - set(PROCEDURES))
+        if unknown:
+            raise ValueError(f"unknown procedures {unknown}; use one of {list(PROCEDURES)}")
+        bad = sorted(k for k, m in v.items() if not MODEL_NAME.match(m))
+        if bad:
+            raise ValueError(f"invalid model name for {bad}")
+        return v
+
+    def model_for(self, procedure: str) -> str | None:
+        return self.models.get(procedure, self.model)
 
     @field_validator("plugin_path", mode="after")
     @classmethod

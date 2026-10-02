@@ -372,11 +372,17 @@ class StageStrategy:
             stdout_path=ctx.logs_dir / f"claude-{procedure}.jsonl",
             stderr_path=ctx.logs_dir / f"claude-{procedure}.stderr.log",
             max_turns=ctx.cfg.claude.max_turns,
-            model=ctx.cfg.claude.model,
+            model=ctx.cfg.claude.model_for(procedure),
             extra_env={"TMPDIR": str(ctx.tmp_dir), **port_env(ports or {})},
         )
         ctx.journal.events.append(
-            "claude_start", {"procedure": procedure, "session": inv.session_id, "role": role.value}
+            "claude_start",
+            {
+                "procedure": procedure,
+                "session": inv.session_id,
+                "role": role.value,
+                "model": inv.model or "claude-code-default",
+            },
         )
 
         def on_start(proc: asyncio.subprocess.Process) -> None:

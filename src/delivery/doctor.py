@@ -25,6 +25,7 @@ from delivery.claude import (
     ClaudeStatus,
     auth_report,
     detect_capabilities,
+    model_check,
     version_in_range,
 )
 from delivery.config import Config
@@ -274,7 +275,24 @@ def check_plugin(cfg: Config, report: Report) -> None:
     )
 
 
+def effective_models(cfg: Config) -> dict[str, str | None]:
+    from delivery.plugin import PROCEDURES
+
+    return {p: cfg.claude.model_for(p) for p in PROCEDURES}
+
+
+def check_models(cfg: Config, report: Report) -> None:
+    models = effective_models(cfg)
+    default = "Claude Code default"
+    if len(set(models.values())) == 1:
+        detail = f"all procedures: {next(iter(models.values())) or default}"
+    else:
+        detail = ", ".join(f"{p}={m or default}" for p, m in models.items())
+    report.add("claude", "models", "info", detail + "; `--claude-probe` checks each one works")
+
+
 async def check_claude(cfg: Config, report: Report) -> None:
+    check_models(cfg, report)
     exe = cfg.claude.executable
     if not shutil.which(exe) and not Path(exe).exists():
         report.add("claude", "cli", "fail", f"{exe!r} not found", "Install Claude Code and sign in.")
@@ -604,8 +622,22 @@ PROBE_SCHEMA: dict[str, Any] = {
 }
 
 
+async def probe_models(cfg: Config, report: Report) -> None:
+    """Prove every configured model is usable on this subscription (a one-word reply each)."""
+    for model in sorted({m for m in effective_models(cfg).values() if m}):
+        ok, detail = await model_check(cfg.claude.executable, model, Path.home())
+        report.add(
+            "probe",
+            f"model {model}",
+            "ok" if ok else "fail",
+            detail,
+            "" if ok else "Pick a model your subscription can use in [claude] model / [claude.models].",
+        )
+
+
 async def claude_probe(cfg: Config, report: Report) -> None:
     """Spend a little subscription usage to prove plugin loading and permission denials."""
+    await probe_models(cfg, report)
     with tempfile.TemporaryDirectory(prefix="delivery-probe-") as tmp_s:
         tmp = Path(tmp_s)
         wt, out, inputs, scratch = tmp / "worktree", tmp / "output", tmp / "inputs", tmp / "tmp"

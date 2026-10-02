@@ -69,7 +69,18 @@ auth_profile = "subscription"
 max_turns = 40
 allow_paid_api_fallback = false
 permission_profile = "local_pilot"
-# model = ""
+# Model for every procedure. Unset means Claude Code's own default for your plan.
+# Aliases ("opus", "sonnet") or full names ("claude-opus-5-5") both work.
+# model = "sonnet"
+
+# Optional per-procedure overrides; anything not listed uses `model` above.
+# Procedures: refine-ticket, plan-ticket, implement-ticket, review-ticket,
+# verify-ticket, prepare-release, verify-release.
+# `delivery doctor --claude-probe` checks every configured model works for you.
+# [claude.models]
+# plan-ticket = "opus"
+# implement-ticket = "opus"
+# review-ticket = "opus"
 
 [approvals]
 # Humans allowed to approve specification, plan, acceptance and release gates.

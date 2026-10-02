@@ -268,3 +268,32 @@ def test_protected_paths() -> None:
         assert is_protected(p)
     for p in ("src/app.ts", "docs/readme.md", "github/x"):
         assert not is_protected(p)
+
+
+@pytest.mark.parametrize(
+    ("reply", "ok", "detail"),
+    [
+        (
+            '{"is_error": false, "result": "OK", "modelUsage": {"claude-opus-5-5": {}}}',
+            True,
+            "runs as claude-opus-5-5",
+        ),
+        (
+            '{"is_error": true, "result": "There\'s an issue with the selected model (x)."}',
+            False,
+            "issue with the selected",
+        ),
+    ],
+)
+async def test_model_check_reports_usable_and_unusable_models(
+    tmp_path: Path, reply: str, ok: bool, detail: str
+) -> None:
+    from delivery.claude import model_check
+
+    exe = tmp_path / "claude"
+    exe.write_text(
+        f"#!/bin/sh\necho '{reply}'\n" if "'" not in reply else "#!/bin/sh\ncat <<'J'\n" + reply + "\nJ\n"
+    )
+    exe.chmod(0o755)
+    got_ok, got = await model_check(str(exe), "opus", tmp_path)
+    assert got_ok is ok and detail in got

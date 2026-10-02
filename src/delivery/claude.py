@@ -185,6 +185,42 @@ async def auth_report(executable: str, cwd: Path) -> AuthReport:
     return AuthReport(not problems, tuple(problems), method, provider, str(data.get("subscriptionType", "")))
 
 
+async def model_check(executable: str, model: str, cwd: Path) -> tuple[bool, str]:
+    """One tiny tool-less turn on ``model`` with the worker's environment and subscription.
+
+    Returns (usable, detail). The detail names the concrete model Claude Code resolved.
+    """
+    argv = [
+        executable,
+        "-p",
+        "Reply with the single word OK.",
+        "--model",
+        model,
+        "--output-format",
+        "json",
+        "--no-session-persistence",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "",
+        "--tools",
+        "",
+        "--max-turns",
+        "1",
+    ]
+    try:
+        res = await run_process(argv, cwd=cwd, env=worker_env({}), timeout=120)
+    except ProcessStartError as exc:
+        return False, str(exc)
+    try:
+        data = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        return False, (res.stderr or res.stdout).strip()[:200] or f"exit {res.returncode}"
+    if data.get("is_error"):
+        return False, str(data.get("result", "error"))[:200]
+    used = sorted((data.get("modelUsage") or {}).keys())
+    return True, f"runs as {', '.join(used) or 'unknown'}"
+
+
 def worker_env(extra: dict[str, str]) -> dict[str, str]:
     """Child environment: no provider, Jira, GitHub or Git credentials."""
     env = base_child_env(extra)

@@ -98,3 +98,27 @@ def test_template_is_valid_toml_and_loads(tmp_path: Path) -> None:
 def test_template_symlink_in_repo_matches_package_data() -> None:
     root = Path(__file__).resolve().parents[2]
     assert (root / "config" / "delivery.example.toml").read_text() == template_text()
+
+
+def test_models_default_and_per_procedure_overrides(make_config: ConfigFactory) -> None:
+    cfg = make_config(
+        overrides={"claude": {"model": "sonnet"}, "claude.models": {"implement-ticket": "opus"}}
+    )
+    assert cfg.claude.model_for("implement-ticket") == "opus"
+    assert cfg.claude.model_for("review-ticket") == "sonnet"
+    assert make_config().claude.model_for("plan-ticket") is None  # Claude Code's own default
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"claude.models": {"implement": "opus"}},  # not a procedure name
+        {"claude.models": {"plan-ticket": "opus --dangerously-skip-permissions"}},
+        {"claude": {"model": "-p"}},
+    ],
+)
+def test_model_settings_are_validated(
+    make_config: ConfigFactory, overrides: dict[str, dict[str, str]]
+) -> None:
+    with pytest.raises(ConfigError):
+        make_config(overrides=overrides)

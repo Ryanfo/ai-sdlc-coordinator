@@ -220,6 +220,7 @@ class StageExecutor:
                     rc.cfg.identity.worker_id,
                     rc.intake.reason,
                     moved_by_hand=STATUS_NAMES[active] if rc.record.adopted else None,
+                    models={p: rc.cfg.claude.model_for(p) for p in sd.procedures},
                 ),
             )
         rc.record = rc.record.model_copy(update={"state": RunState.RUNNING, "heartbeat_at": utcnow()})
