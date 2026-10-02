@@ -18,7 +18,7 @@ import fcntl
 import json
 import os
 import socket
-from collections.abc import AsyncIterator, Container, Iterator
+from collections.abc import AsyncIterator, Container, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -213,10 +213,8 @@ def _jql_str(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def ready_jql(cfg: Config) -> str:
-    from delivery.workflow import READY_STATUSES
-
-    ids = sorted(cfg.workflow.statuses[s] for s in READY_STATUSES if s in cfg.workflow.statuses)
+def _assigned_jql(cfg: Config, statuses: Iterable[Status]) -> str:
+    ids = sorted(cfg.workflow.statuses[s] for s in statuses if s in cfg.workflow.statuses)
     parts = [
         f"project = {_jql_str(cfg.jira.project_key)}",
         f"assignee = {_jql_str(cfg.identity.developer_jira_account_id)}",
@@ -226,6 +224,19 @@ def ready_jql(cfg: Config) -> str:
     if cfg.jira.required_label:
         parts.append(f"labels = {_jql_str(cfg.jira.required_label)}")
     return " AND ".join(parts) + " ORDER BY key ASC"
+
+
+def ready_jql(cfg: Config) -> str:
+    from delivery.workflow import READY_STATUSES
+
+    return _assigned_jql(cfg, READY_STATUSES)
+
+
+def active_jql(cfg: Config) -> str:
+    """The developer's tickets in "agent working" statuses (to find ones moved there by hand)."""
+    from delivery.workflow import ACTIVE_STATUSES
+
+    return _assigned_jql(cfg, ACTIVE_STATUSES)
 
 
 def coordination_jql(cfg: Config) -> str:

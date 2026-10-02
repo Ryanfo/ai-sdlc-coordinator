@@ -25,7 +25,7 @@ from delivery.publication import (
 from delivery.resources import ResourceExhausted
 from delivery.runtime import ChildCallback, Decision, Deps, RunContext
 from delivery.stages import STRATEGIES, OutputInvalid, StageStrategy, WorkerFailure
-from delivery.workflow import STAGES, Stage, Status
+from delivery.workflow import STAGES, STATUS_NAMES, Stage, Status
 
 
 class StopRequested(Exception):
@@ -52,7 +52,9 @@ class StageExecutor:
         self.on_child = on_child
 
     # ------------------------------------------------------------------ creation
-    def create_run(self, ticket: TicketContext, intake: Intake, attempt: int = 1) -> RunContext:
+    def create_run(
+        self, ticket: TicketContext, intake: Intake, attempt: int = 1, adopted: bool = False
+    ) -> RunContext:
         cfg = self.deps.cfg
         stage = intake.stage
         brief_digest = digest(brief_text(ticket.issue))
@@ -70,6 +72,7 @@ class StageExecutor:
             state=RunState.DISCOVERED,
             attempt_key=attempt_key(ticket.key, stage, input_revision),
             entry_history_id=intake.entry.history_id if intake.entry else None,
+            adopted=adopted,
             input_revision=input_revision,
             brief_digest=brief_digest,
             selected_comment_ids=[c.id for c in intake.selected],
@@ -182,7 +185,14 @@ class StageExecutor:
             rc.save("starting")
         pub = rc.publisher()
         sd = STAGES[rc.record.stage]
-        await pub.transition(rc.key, ready, sd.start_action)
+        if rc.record.adopted:
+            # A human already chose the start action; repeating it is impossible and unneeded.
+            issue = await self.deps.jira.get_issue(rc.key)
+            current = rc.cfg.status_by_id().get(issue.view.status_id)
+            if current is not active:
+                raise TicketMoved(rc.key, active, current)
+        else:
+            await pub.transition(rc.key, ready, sd.start_action)
         rc.shared = rc.shared.model_copy(
             update={
                 "worker_id": rc.cfg.identity.worker_id,
@@ -205,7 +215,11 @@ class StageExecutor:
                 rc.key,
                 "start",
                 comments.started(
-                    rc.record.stage.value, rc.run_id, rc.cfg.identity.worker_id, rc.intake.reason
+                    rc.record.stage.value,
+                    rc.run_id,
+                    rc.cfg.identity.worker_id,
+                    rc.intake.reason,
+                    moved_by_hand=STATUS_NAMES[active] if rc.record.adopted else None,
                 ),
             )
         rc.record = rc.record.model_copy(update={"state": RunState.RUNNING, "heartbeat_at": utcnow()})

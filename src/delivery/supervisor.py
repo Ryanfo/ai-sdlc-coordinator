@@ -38,6 +38,7 @@ from delivery.ownership import (
     FileLock,
     LockHeld,
     TicketClaims,
+    active_jql,
     evaluate_eligibility,
     ready_jql,
     supervisor_lock,
@@ -46,7 +47,7 @@ from delivery.ports import IntegrationError
 from delivery.proc import pid_alive, process_start_marker, signal_group
 from delivery.publication import Publisher
 from delivery.runtime import Deps, RunContext
-from delivery.workflow import STAGES, Stage, Status
+from delivery.workflow import STAGES, STATUS_NAMES, Stage, Status, stage_for_active
 
 log = logging.getLogger("delivery")
 
@@ -89,6 +90,7 @@ class Supervisor:
             developer_account_id=self.cfg.identity.developer_jira_account_id,
         )
         self.corrupt: dict[str, str] = {}
+        self._noted: set[str] = set()
         self.backoff_until: float = 0.0
         self.backoff_seconds: float = 0.0
 
@@ -178,6 +180,7 @@ class Supervisor:
             return report
         try:
             issues = await self.deps.jira.search(ready_jql(self.cfg))
+            working = await self.deps.jira.search(active_jql(self.cfg))
         except IntegrationError as exc:
             # Back off the Jira request stream only; running sessions are unaffected.
             self.backoff_seconds = min(max(self.backoff_seconds * 2, 15.0), 600.0)
@@ -209,13 +212,64 @@ class Supervisor:
         for ready_at, key, ctx, stage in sorted(candidates, key=lambda c: (c[0], c[1])):
             report.discovered.append({"ticket": key, "stage": stage.value, "ready_at": ready_at})
             await self.consider(ctx, stage, report)
+        for issue in working:
+            await self._check_moved_by_hand(issue.key, issue.view.status_id, report)
         self.record = self.record.model_copy(
             update={"last_poll_at": utcnow(), "last_poll_error": "", "heartbeat_at": utcnow()}
         )
         self.deps.store.save_supervisor(self.record)
         return report
 
-    async def consider(self, ctx: TicketContext, stage: Stage, report: PollReport) -> None:
+    async def _check_moved_by_hand(self, key: str, status_id: str, report: PollReport) -> None:
+        """A ticket of ours in an "agent working" status with no session behind it.
+
+        Only the coordinator should make the start move, but nothing in Jira stops a human doing
+        it (for example dragging the card to the Agent working column). If the ticket came
+        straight from the stage's ready status and no run of ours consumed that ready entry,
+        evaluate it exactly as if it were still ready and, if valid, take it over without
+        repeating the start transition. Anything else is left alone and explained.
+        """
+        if key in self.sessions or key in self.corrupt:
+            return
+        status = self.cfg.status_by_id().get(status_id)
+        sd = stage_for_active(status) if status else None
+        if status is None or sd is None:
+            return
+        local = [e.record for e in self.deps.store.runs_for_ticket(key) if e.record]
+        if any(r.state not in TERMINAL for r in local):
+            return  # an interrupted run of ours: startup recovery and `delivery recover` own it
+        try:
+            ctx = await load_context(self.deps.jira, self.cfg, key)
+        except (IntegrationError, RecordCorrupt) as exc:
+            report.skipped.append({"ticket": key, "reason": str(exc)})
+            return
+        came_in = ctx.latest_entry(status_id)
+        ready_entry = ctx.latest_entry(self.cfg.status_id(sd.ready))
+        if came_in is None or came_in.from_id != self.cfg.status_id(sd.ready) or ready_entry is None:
+            self._note_once(
+                f"{key}:{came_in.history_id if came_in else '-'}",
+                f"{key} is in {STATUS_NAMES[status]} but did not arrive from "
+                f"{STATUS_NAMES[sd.ready]}; leaving it alone (`delivery inspect {key}` explains)",
+            )
+            report.skipped.append({"ticket": key, "reason": "in an agent-working status without a run"})
+            return
+        if any(r.stage is sd.stage and r.entry_history_id == ready_entry.history_id for r in local):
+            return  # this coordinator made that move; its run has already finished
+        self._note_once(
+            f"{key}:{came_in.history_id}",
+            f"{key} was moved into {STATUS_NAMES[status]} by hand; checking it as if it were in "
+            f"{STATUS_NAMES[sd.ready]}",
+        )
+        await self.consider(ctx, sd.stage, report, adopt=True)
+
+    def _note_once(self, marker: str, message: str) -> None:
+        if marker not in self._noted:
+            self._noted.add(marker)
+            self.emit(message)
+
+    async def consider(
+        self, ctx: TicketContext, stage: Stage, report: PollReport, adopt: bool = False
+    ) -> None:
         key = ctx.key
         foreign = (
             ctx.record.current_state in ACTIVE_RUN_STATES
@@ -255,9 +309,10 @@ class Supervisor:
             return
         if self.dry_run:
             report.started.append(key)
-            self.emit(f"[dry-run] would start {stage.value} for {key}: {intake.kind.value} {intake.reason}")
+            verb = "take over" if adopt else "start"
+            self.emit(f"[dry-run] would {verb} {stage.value} for {key}: {intake.kind.value} {intake.reason}")
             return
-        rc = executor.create_run(ctx, intake)
+        rc = executor.create_run(ctx, intake, adopted=adopt)
         if not self.claims.claim(key, rc.run_id):
             rc.record = rc.record.model_copy(
                 update={"state": RunState.FAILED, "reason": "ticket already claimed"}

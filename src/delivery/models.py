@@ -344,6 +344,8 @@ class RunRecord(Model):
     state: RunState
     attempt_key: str
     entry_history_id: str | None = None
+    # A human performed the start action in Jira; the run took over without repeating it.
+    adopted: bool = False
     input_revision: str | None = None
     brief_digest: str | None = None
     selected_comment_ids: list[str] = Field(default_factory=list)

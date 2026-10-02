@@ -16,7 +16,7 @@ decision for the current gate, a recorded release). Outcomes:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol
@@ -53,6 +53,7 @@ from delivery.workflow import (
     PAUSED_STATUSES,
     ROUTES,
     STAGES,
+    STATUS_NAMES,
     Actor,
     Requirement,
     Stage,
@@ -224,6 +225,33 @@ def _decided(gate: GateRecord, ev: GateEval, state: GateState) -> GateRecord:
     return gate.model_copy(update={"state": state, "evidence": ev.evidence, "decided_at": utcnow()})
 
 
+# Jira-only review gates: (review status, approve target, change target, approve, change kinds).
+# The code gate also needs GitHub evidence, so it is only decided on its own route.
+_JIRA_GATES: dict[GateKind, tuple[Status, Status, Status, DecisionKind, set[DecisionKind]]] = {
+    GateKind.SPEC: (
+        Status.SPECIFICATION_REVIEW,
+        Status.READY_PLANNING,
+        Status.READY_REFINEMENT,
+        DecisionKind.APPROVE_SPEC,
+        {DecisionKind.CHANGE_SPEC},
+    ),
+    GateKind.PLAN: (
+        Status.PLAN_REVIEW,
+        Status.READY_DEVELOPMENT,
+        Status.READY_PLANNING,
+        DecisionKind.APPROVE_PLAN,
+        {DecisionKind.CHANGE_PLAN},
+    ),
+    GateKind.RELEASE: (
+        Status.RELEASE_REVIEW,
+        Status.READY_RELEASE,
+        Status.READY_RELEASE_PREPARATION,
+        DecisionKind.APPROVE_RELEASE,
+        {DecisionKind.CHANGE_RELEASE},
+    ),
+}
+
+
 class IntakeEvaluator:
     def __init__(self, cfg: Config, github: GitHubPort | None) -> None:
         self.cfg = cfg
@@ -292,6 +320,32 @@ class IntakeEvaluator:
             approvers=approvers or self.approvers,
         )
 
+    def catch_up_gates(self, ctx: TicketContext) -> SharedExecutionRecord:
+        """Record approvals the coordinator did not see as they happened.
+
+        A gate is normally decided when the coordinator finds the ticket in the ready status the
+        approval led to. If a human moved the ticket on before the next poll (for example by
+        dragging it on the board), that moment is missed. The decision is still in Jira's
+        history, so validate it there exactly as it would have been validated live: approval
+        transition out of the review status by an approver, after the gate was published, with
+        the current token in a comment.
+        """
+        rec = ctx.record
+        for kind, (review, approve_to, change_to, approve, change) in _JIRA_GATES.items():
+            gate = current_gate(rec.gates, kind)
+            if gate is None or gate.state is not GateState.PENDING:
+                continue
+            for entry in ctx.changes:
+                if entry.from_id != self.ids[review] or entry.to_id != self.ids[approve_to]:
+                    continue
+                if entry.created < gate.published_at:
+                    continue
+                ev = self._gate_eval(ctx, gate, entry, review, approve_to, change_to, approve, change)
+                if ev.outcome is GateOutcome.APPROVED:
+                    rec = _with_gate(rec, _decided(gate, ev, GateState.APPROVED))
+                    break
+        return rec
+
     def prerequisites(self, stage: Stage, rec: SharedExecutionRecord) -> str | None:
         need: list[GateKind] = []
         if stage in (
@@ -323,6 +377,9 @@ class IntakeEvaluator:
     # ------------------------------------------------------------------ main
     async def evaluate(self, ctx: TicketContext, stage: Stage) -> Intake:
         sd = STAGES[stage]
+        caught = self.catch_up_gates(ctx)
+        if caught is not ctx.record:
+            ctx = replace(ctx, record=caught)
         rec = ctx.record
         entry = ctx.latest_entry(self.ids[sd.ready])
         if entry is None:
@@ -362,8 +419,11 @@ class IntakeEvaluator:
         if pause is None:
             return self._block(
                 stage,
-                f"resumed from {src.value} but no pause is recorded",
-                "Contact the delivery lead; the shared record is missing.",
+                f"the ticket came back from {STATUS_NAMES[src]} through a resume action, but the "
+                "coordinator never paused it there (it was probably moved by hand)",
+                f"Choose Resume {stage.value.replace('_', ' ')} to continue. Ticket moves are made "
+                "by the coordinator; humans approve, answer and resume.",
+                kind="moved_by_hand",
                 entry=entry,
             )
         if resume_route(src, STAGES[stage].ready, pause.resume_stage) is None:

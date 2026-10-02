@@ -32,10 +32,17 @@ def _session_line(run_id: str, worker_id: str) -> str:
     return f"Run `{run_id}` on worker `{worker_id}`."
 
 
-def started(stage: str, run_id: str, worker_id: str, reason: str) -> str:
-    return (
+def started(stage: str, run_id: str, worker_id: str, reason: str, moved_by_hand: str | None = None) -> str:
+    text = (
         f"**{STAGE_TITLES.get(stage, stage)} started.** {_session_line(run_id, worker_id)}\nInput: {reason}"
     )
+    if moved_by_hand:
+        text += (
+            f"\nThis ticket was moved into {moved_by_hand} by hand before the coordinator picked it "
+            "up. The decision that made it ready was checked as usual and the work has started. "
+            "Next time, leave the ticket in its Ready status; the coordinator moves it within a minute."
+        )
+    return text
 
 
 def spec_gate(token: str, url: str, revision: int, summary: str, approvers: str) -> str:
