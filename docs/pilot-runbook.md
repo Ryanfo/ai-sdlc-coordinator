@@ -8,19 +8,19 @@ the pilot project and repository only.
 
 | Item | Value | Done |
 |---|---|---|
-| Jira site URL | | ☐ |
-| Project key | | ☐ |
-| Jira plan (Free / Standard / Premium) | | ☐ |
-| Workflow configured per `docs/jira-workflow-setup.md`; `workflow inspect` clean | | ☐ |
-| Delivery resume stage field ID | | ☐ |
-| Developer account ID (supervisor identity) | | ☐ |
-| Approver account ID(s) (not the developer) | | ☐ |
+| Jira site URL | https://anddigitaltransformation.atlassian.net | ☑ |
+| Project key | SDLC (team-managed; Story and Bug carry the delivery workflow) | ☑ |
+| Jira plan (Free / Standard / Premium) | company paid plan | ☑ |
+| Workflow configured per `docs/jira-workflow-setup.md`; `workflow verify` clean | 2 Oct 2026: 31 transitions walked, all routes match (resume actions not hidden by field conditions; coordinator enforces) | ☑ |
+| Delivery resume stage field ID | customfield_11807 | ☑ |
+| Developer account ID (supervisor identity) | 5b51e9f46a66cf638d2cb417; token in macOS Keychain (`delivery-jira`) | ☑ |
+| Approver account ID(s) (not the developer) | pilot: the developer approves (accepted limitation; doctor warns) | ☑ |
 | Second developer identity (for cross-developer overlap) | | ☐ |
 | Pilot repository URL (public, generic task-list app) | https://github.com/Ryanfo/delivery-pilot-app | ☑ |
 | Base branch protection: PR, 1 review, stale dismissal, required checks lint/typecheck/unit/build/e2e, up to date, no force push or deletion | applied 1 Oct 2026 (admins included) | ☑ |
 | Independent GitHub reviewer login | | ☐ |
 | `claude auth login` done; `doctor --claude-probe` READY | | ☐ |
-| `delivery doctor` READY; `run --dry-run` clean | | ☐ |
+| `delivery doctor` READY; `run --dry-run` clean | 2 Oct 2026 | ☑ |
 
 ## 1. Foundation (human-owned, before any feature ticket)
 

@@ -12,7 +12,7 @@ config_version = 1
 
 [identity]
 # Your stable Jira account ID (not your display name or email).
-# Find it with `delivery doctor` after setting JIRA_EMAIL / JIRA_API_TOKEN.
+# Find it with `delivery credentials check` once the token is stored.
 developer_jira_account_id = "YOUR_ACCOUNT_ID"
 # Names this registered machine. Only one supervisor per Jira identity may run.
 worker_id = "my-laptop"
@@ -24,9 +24,14 @@ supported_issue_types = ["Story", "Task", "Bug"]
 # Set to an opt-in label such as "agent-enabled" when sharing an existing project.
 # Empty means project + status + assignee filters only (dedicated pilot project).
 required_label = ""
-# site_api_token: Basic auth with JIRA_EMAIL + JIRA_API_TOKEN against base_url.
+# site_api_token: Basic auth with your Atlassian email + API token against base_url.
 # scoped_api_token: scoped token via the Atlassian API gateway (also set cloud_id).
 auth_profile = "site_api_token"
+# Never put the token in this file. On macOS, store it once in the Keychain with
+# `delivery credentials set --config <this file>`; it is read from there on every run.
+# Elsewhere (or to override), export the environment variables named below.
+email = "you@example.com"
+token_keychain_service = "delivery-jira"
 email_env = "JIRA_EMAIL"
 token_env = "JIRA_API_TOKEN"
 # cloud_id = ""

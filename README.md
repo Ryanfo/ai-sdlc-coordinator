@@ -92,9 +92,10 @@ Edit it. Everything is commented; the important values are:
 
 | Setting | Value |
 |---|---|
-| `identity.developer_jira_account_id` | Your Jira **account ID** (shown by `delivery doctor` once Jira auth works) |
+| `identity.developer_jira_account_id` | Your Jira **account ID** (shown by `delivery credentials check` once Jira auth works) |
 | `identity.worker_id` | A name for this laptop |
-| `jira.base_url`, `jira.project_key` | From your Jira administrator |
+| `jira.base_url`, `jira.project_key`, `jira.email` | From your Jira administrator; your Atlassian email |
+| `jira.supported_issue_types` | Only issue types that carry the delivery workflow (team-managed projects give each type its own) |
 | `repository.url`, `base_branch`, `checkout_path` | The application repository |
 | `repository.worktree_root`, `runtime.state_dir` | Local folders **outside** any Git checkout |
 | `approvals.jira_account_ids`, `approvals.github_logins` | The humans who approve, and the independent GitHub reviewer |
@@ -107,12 +108,24 @@ supervisor runs every eligible ticket assigned to you.
 ## 4. Jira and GitHub authentication
 
 Jira (site API token profile). Create a token at
-https://id.atlassian.com/manage-profile/security/api-tokens, then export it in the shell that
-runs the supervisor without putting it in your shell history:
+https://id.atlassian.com/manage-profile/security/api-tokens and put your Atlassian email in
+the config (`jira.email`; it is not a secret). The token itself never goes in the config.
+
+On macOS, store the token once in your login Keychain. The command asks for it (nothing is
+shown), checks it with Jira first, and stores it only if Jira accepts it:
 
 ```bash
-export JIRA_EMAIL="you@example.com"
+delivery credentials set --config ~/delivery.local.toml
 ```
+
+Paste once and press Enter; do not paste anything after it finishes. Every `delivery` command
+then reads the token from the Keychain (`jira.token_keychain_service`, default
+`delivery-jira`) and never prints it. `delivery credentials check` confirms Jira still accepts
+it; after rotating a token, run `credentials set` again.
+
+On Linux/WSL2 (or to override the Keychain), export the variables named by `jira.email_env`
+and `jira.token_env` in the shell that runs the supervisor, without putting the token in your
+shell history:
 
 ```bash
 read -rs JIRA_API_TOKEN && export JIRA_API_TOKEN
@@ -133,7 +146,17 @@ your Git credentials.
 delivery workflow inspect --config ~/delivery.local.toml
 ```
 
-Paste the printed `[workflow.statuses]` and `[jira.fields]` block into your config. Then:
+Paste the printed `[workflow.statuses]` and `[jira.fields]` block into your config. Once per
+project (or after changing the workflow), prove every route with real tickets:
+
+```bash
+delivery workflow verify --config ~/delivery.local.toml --yes
+```
+
+It creates two **unassigned** test tickets labelled `delivery-workflow-check` (no supervisor
+picks them up), walks them through every status and reports missing or unexpected
+transitions, the starting status, the resume field, issue properties and changelog
+authorship. Delete the test tickets afterwards (`labels = delivery-workflow-check`). Then:
 
 ```bash
 delivery doctor --config ~/delivery.local.toml

@@ -43,7 +43,7 @@ from delivery.workflow import (
 )
 
 Level = Literal["ok", "warn", "fail", "skip", "info"]
-PLACEHOLDERS = ("YOUR_", "APPROVER_ACCOUNT_ID", "your-site", "your-org", "/absolute/path/")
+PLACEHOLDERS = ("YOUR_", "APPROVER_ACCOUNT_ID", "your-site", "your-org", "/absolute/path/", "you@example.com")
 
 
 @dataclass
@@ -325,16 +325,23 @@ async def check_claude(cfg: Config, report: Report) -> None:
         )
 
 
-async def check_jira(cfg: Config, jira: JiraPort | None, report: Report) -> None:
+async def check_jira(
+    cfg: Config, jira: JiraPort | None, report: Report, credentials_problem: str = ""
+) -> None:
     if jira is None:
+        detail = credentials_problem or f"{cfg.jira.email_env}/{cfg.jira.token_env} not set"
         report.add(
             "jira",
             "credentials",
             "fail",
-            f"{cfg.jira.email_env}/{cfg.jira.token_env} not set in this environment",
-            "Export them securely (see README: Jira authentication).",
+            detail,
+            "Store the token once with `delivery credentials set` (macOS Keychain) or export "
+            "the environment variables (see README: Jira authentication).",
         )
         return
+    source = getattr(jira, "credential_source", "")
+    if source:
+        report.add("jira", "credentials", "ok", f"API token from {source} (value never shown)")
     try:
         me = await jira.myself()
     except AuthError as exc:
@@ -504,6 +511,46 @@ async def check_github(cfg: Config, gh: GitHubPort | None, report: Report) -> No
     )
 
 
+async def check_git_push(cfg: Config, report: Report, url: str | None = None) -> None:
+    """Non-mutating proof that Git itself (not just the gh API) can authenticate a push.
+
+    ``git push --dry-run`` negotiates with the remote's receive-pack, which requires push
+    credentials and permission, but sends nothing and creates no ref.
+    """
+    from delivery.proc import run_process
+
+    target = url or cfg.repository.url
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    git = ["git", "-c", "user.name=doctor", "-c", "user.email=doctor@localhost", "-c", "commit.gpgsign=false"]
+    with tempfile.TemporaryDirectory(prefix="delivery-push-") as tmp:
+        where = Path(tmp)
+        await run_process([*git, "init", "-q"], cwd=where, env=env, timeout=30)
+        await run_process(
+            [*git, "commit", "-q", "--allow-empty", "-m", "doctor push probe"], cwd=where, env=env, timeout=30
+        )
+        ref = f"refs/heads/delivery-doctor-probe-{secrets.token_hex(4)}"
+        res = await run_process(
+            [*git, "push", "--dry-run", "--porcelain", target, f"HEAD:{ref}"], cwd=where, env=env, timeout=60
+        )
+    if res.returncode == 0 and not res.timed_out:
+        report.add(
+            "git",
+            "push access",
+            "ok",
+            f"Git can authenticate a push to {cfg.repository.slug} (dry run; nothing was pushed)",
+        )
+    else:
+        detail = (res.stderr or res.stdout).strip().splitlines()[-1:] or ["timed out"]
+        report.add(
+            "git",
+            "push access",
+            "fail",
+            f"git push --dry-run failed: {detail[0][:300]}",
+            "Configure Git credentials for github.com, for example `gh auth setup-git`.",
+        )
+
+
 def check_lock(cfg: Config, report: Report) -> None:
     lock = supervisor_lock(cfg)
     try:
@@ -516,7 +563,9 @@ def check_lock(cfg: Config, report: Report) -> None:
         report.add("ownership", "supervisor", "info", f"supervisor running: {exc.holder}")
 
 
-async def run_doctor(cfg: Config, jira: JiraPort | None, gh: GitHubPort | None) -> Report:
+async def run_doctor(
+    cfg: Config, jira: JiraPort | None, gh: GitHubPort | None, credentials_problem: str = ""
+) -> Report:
     report = Report()
     report.add(
         "runtime", "python", "ok" if sys.version_info >= (3, 11) else "fail", platform.python_version()
@@ -525,8 +574,9 @@ async def run_doctor(cfg: Config, jira: JiraPort | None, gh: GitHubPort | None) 
     check_paths(cfg, report)
     check_plugin(cfg, report)
     await check_claude(cfg, report)
-    await check_jira(cfg, jira, report)
+    await check_jira(cfg, jira, report, credentials_problem)
     await check_github(cfg, gh, report)
+    await check_git_push(cfg, report)
     check_lock(cfg, report)
     return report
 

@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 from datetime import datetime
 from typing import Any
@@ -20,6 +19,7 @@ import httpx
 
 from delivery.adf import adf_to_text
 from delivery.config import Config
+from delivery.credentials import CredentialsMissing, JiraCredentials, Runner, resolve_jira
 from delivery.ownership import IssueView
 from delivery.ports import (
     AuthError,
@@ -55,21 +55,26 @@ class JiraCredentialsMissing(AuthError):
 
 
 class JiraClient:
-    def __init__(self, cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        transport: httpx.AsyncBaseTransport | None = None,
+        keychain: Runner | None = None,
+        credentials: JiraCredentials | None = None,
+    ) -> None:
         self.cfg = cfg
-        email = os.environ.get(cfg.jira.email_env, "")
-        token = os.environ.get(cfg.jira.token_env, "")
-        if not email or not token:
-            raise JiraCredentialsMissing(
-                f"set {cfg.jira.email_env} and {cfg.jira.token_env} in the coordinator's environment"
-            )
+        try:
+            creds = credentials or resolve_jira(cfg, keychain)
+        except CredentialsMissing as exc:
+            raise JiraCredentialsMissing(str(exc)) from None
+        self.credential_source = creds.source
         if cfg.jira.auth_profile == "scoped_api_token":
             base = f"https://api.atlassian.com/ex/jira/{cfg.jira.cloud_id}"
         else:
             base = cfg.jira.base_url
         self.http = httpx.AsyncClient(
             base_url=base,
-            auth=(email, token),
+            auth=(creds.email, creds.token),
             headers={"Accept": "application/json", "User-Agent": "delivery-coordinator"},
             timeout=httpx.Timeout(30.0, connect=10.0),
             transport=transport,
@@ -295,6 +300,20 @@ class JiraClient:
             body["fields"] = fields
         await self._write("POST", f"/rest/api/3/issue/{key}/transitions", json=body)
 
+    async def create_issue(
+        self, project: str, issue_type: str, summary: str, description: dict[str, Any], labels: list[str]
+    ) -> str:
+        """Setup and checks only (``workflow verify``); the coordinator never creates tickets."""
+        fields = {
+            "project": {"key": project},
+            "issuetype": {"name": issue_type},
+            "summary": summary,
+            "description": description,
+            "labels": labels,
+        }
+        r = await self._write("POST", "/rest/api/3/issue", json={"fields": fields})
+        return str(r.json()["key"])
+
     async def add_comment(self, key: str, adf: dict[str, Any]) -> JiraComment:
         r = await self._write("POST", f"/rest/api/3/issue/{key}/comment", json={"body": adf})
         c = r.json()
@@ -330,6 +349,11 @@ class JiraClient:
                 cat = (s.get("statusCategory") or {}).get("key", "")
                 seen[str(s["id"])] = JiraStatusInfo(str(s["id"]), s.get("name", ""), cat)
         return list(seen.values())
+
+    async def issue_type_statuses(self, project_key: str) -> dict[str, set[str]]:
+        """Status IDs per issue type: team-managed projects can give each type its own workflow."""
+        d = (await self._read("GET", f"/rest/api/3/project/{project_key}/statuses")).json()
+        return {it.get("name", ""): {str(s["id"]) for s in it.get("statuses", [])} for it in d}
 
     async def fields(self) -> list[JiraFieldInfo]:
         d = (await self._read("GET", "/rest/api/3/field")).json()

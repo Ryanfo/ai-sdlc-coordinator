@@ -97,6 +97,10 @@ class JiraConfig(StrictModel):
     auth_profile: Literal["site_api_token", "scoped_api_token"] = "site_api_token"
     email_env: str = "JIRA_EMAIL"
     token_env: str = "JIRA_API_TOKEN"  # noqa: S105 - an env var name, not a secret
+    # The account email is not a secret; the environment variable wins when both are set.
+    email: str = ""
+    # macOS Keychain service holding the API token (account = email). Never the token itself.
+    token_keychain_service: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]{1,100}$")
     cloud_id: str | None = None
     fields: JiraFieldsConfig = JiraFieldsConfig()
 
@@ -113,6 +117,13 @@ class JiraConfig(StrictModel):
     def _env(cls, v: str) -> str:
         if not ENV_NAME.match(v):
             raise ValueError("must be an environment variable name, not a secret value")
+        return v
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, v: str) -> str:
+        if v and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", v):
+            raise ValueError("must be the Atlassian account email address")
         return v
 
     @field_validator("required_label")

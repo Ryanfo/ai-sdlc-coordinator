@@ -81,6 +81,9 @@ class FakeJira:
         self.calls: list[tuple[str, str]] = []
         self.action_names = dict(DEFAULT_ACTION_NAMES)
         self.drop_routes: set[tuple[Status, Status]] = set()
+        self.type_statuses: dict[str, set[str]] = {
+            t: set(status_ids.values()) for t in ("Story", "Task", "Bug")
+        }
 
     # ------------------------------------------------------------------ test helpers
     @property
@@ -261,6 +264,14 @@ class FakeJira:
             self.lose_next.discard("do_transition")
             raise UncertainResult("response lost after transition applied")
 
+    async def create_issue(
+        self, project: str, issue_type: str, summary: str, description: dict[str, Any], labels: list[str]
+    ) -> str:
+        self._guard("create_issue")
+        key = f"{project}-{next(self.ids)}"
+        self.create(key, summary, adf_to_text(description), None, issue_type=issue_type, labels=tuple(labels))
+        return key
+
     async def add_comment(self, key: str, adf: dict[str, Any]) -> JiraComment:
         self._guard("add_comment", key)
         self._issue(key)
@@ -294,6 +305,9 @@ class FakeJira:
             JiraStatusInfo(sid, STATUS_NAMES[s], STATUS_CATEGORIES[s].value)
             for s, sid in self.status_ids.items()
         ]
+
+    async def issue_type_statuses(self, project_key: str) -> dict[str, set[str]]:
+        return {k: set(v) for k, v in self.type_statuses.items()}
 
     async def fields(self) -> list[JiraFieldInfo]:
         return [JiraFieldInfo("customfield_10050", "Delivery resume stage", True, "option")]

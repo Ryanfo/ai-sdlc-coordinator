@@ -56,7 +56,7 @@ def test_missing_credentials_are_reported_by_name(
 ) -> None:
     monkeypatch.delenv("JIRA_EMAIL", raising=False)
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
-    with pytest.raises(JiraCredentialsMissing, match="JIRA_EMAIL and JIRA_API_TOKEN"):
+    with pytest.raises(JiraCredentialsMissing, match="JIRA_EMAIL"):
         JiraClient(make_config())
 
 

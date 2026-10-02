@@ -86,8 +86,8 @@ Defects found only by the real runs, all fixed and covered by tests or the probe
 
 | Item | Needed from |
 |---|---|
-| Jira project, workflow, resume field, account IDs, plan tier | Jira administrator / you |
-| `delivery workflow inspect` and `delivery doctor` against the live project | After the above |
+| ~~Jira project, workflow, resume field, account IDs, plan tier~~ | Done 2 Oct 2026: SDLC on anddigitaltransformation.atlassian.net (team-managed, paid plan); only Story and Bug carry the delivery workflow, so `supported_issue_types = ["Story", "Bug"]`; resume field customfield_11807; the developer is also the pilot approver (doctor warns) |
+| ~~`workflow verify`, `delivery doctor` and `run --dry-run` against the live project~~ | Done 2 Oct 2026: 31 transitions walked with labelled unassigned test tickets, all routes match; first walk found two missing transitions (Blocked → Resume release verification, Verifying → Ask questions), since added. Resume actions are not hidden by field conditions (team-managed); the coordinator rejects a wrong resume. Doctor READY; dry run clean |
 | ~~Pilot GitHub repository with branch protection~~ | Done: https://github.com/Ryanfo/delivery-pilot-app (public); CI green on `main`; protection: PR + 1 non-author review, stale dismissal, last-push approval, required lint/typecheck/unit/build/e2e from GitHub Actions, up to date, admins included, no force push or deletion |
 | Independent GitHub reviewer | A second person |
 | Second developer identity for cross-developer evidence | A second Jira user running a supervisor |
@@ -97,5 +97,11 @@ Defects found only by the real runs, all fixed and covered by tests or the probe
 
 See [security-boundary.md](security-boundary.md): single Jira identity cannot be separated by
 Jira; no distributed lock across machines; advisory overlap detection; coordinator-run checks
-execute repository code unsandboxed; no workflow-creation helper (setup is done in the Jira UI
-and validated read-only by `delivery workflow inspect`).
+execute repository code unsandboxed; no workflow-creation helper (setup is done in the Jira UI,
+mapped read-only by `delivery workflow inspect` and proven with test tickets by
+`delivery workflow verify`).
+
+Live findings from setup (2 Oct 2026): the `security add-generic-password` password prompt
+silently truncates input at 128 characters, shorter than Atlassian API tokens (~190), so
+`delivery credentials set` reads the token itself, checks it with Jira first and stores it via
+`security -i` on standard input (never in argv), then reads it back to confirm.

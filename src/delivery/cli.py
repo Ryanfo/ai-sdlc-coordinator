@@ -100,13 +100,14 @@ async def _doctor(args: argparse.Namespace) -> int:
     from delivery.jira import JiraClient, JiraCredentialsMissing
 
     cfg = _load(args)
+    problem = ""
     try:
-        jira = JiraClient(cfg)
-    except JiraCredentialsMissing:
-        jira = None
+        jira: JiraClient | None = JiraClient(cfg)
+    except JiraCredentialsMissing as exc:
+        jira, problem = None, str(exc)
     gh = GhClient(cfg.repository.slug) if shutil.which("gh") else None
     try:
-        report = await run_doctor(cfg, jira, gh)
+        report = await run_doctor(cfg, jira, gh, problem)
         if args.claude_probe:
             await claude_probe(cfg, report)
     finally:
@@ -425,6 +426,118 @@ async def _dispatch(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+async def _workflow_verify(args: argparse.Namespace) -> int:
+    from delivery.jira import JiraClient
+    from delivery.workflow_check import CHECK_LABEL, render, verify_workflow
+
+    cfg = _load(args)
+    missing = cfg.workflow.missing_statuses()
+    if missing:
+        print(f"Map every status first ({len(missing)} missing); run `delivery workflow inspect`.")
+        return EXIT_CONFIG
+    if not args.yes:
+        print(
+            f"This creates two unassigned test tickets in {cfg.jira.project_key} labelled "
+            f"{CHECK_LABEL!r}, walks them through every status, and leaves them in Done and "
+            "Cancelled for you to delete. Re-run with --yes to proceed."
+        )
+        return EXIT_FAIL
+    jira = JiraClient(cfg)
+    try:
+        report = await verify_workflow(cfg, jira, emit=(lambda _: None) if args.json else print)
+    finally:
+        await jira.close()
+    _print(report.as_json(), args.json, render(report))
+    return EXIT_OK if report.ok else EXIT_FAIL
+
+
+def _keychain_target(cfg: Config) -> tuple[str, str] | None:
+    service, email = cfg.jira.token_keychain_service, cfg.jira.email
+    if not service or not email:
+        print(
+            "Set both under [jira] in the config first, for example:\n"
+            '  email = "you@example.com"\n  token_keychain_service = "delivery-jira"',
+            file=sys.stderr,
+        )
+        return None
+    return service, email
+
+
+async def _jira_whoami(cfg: Config, credentials: Any = None) -> str | None:
+    """Return the authenticated display name, or print why Jira refused and return None."""
+    from delivery.jira import JiraClient
+    from delivery.ports import AuthError, IntegrationError
+
+    jira = JiraClient(cfg, credentials=credentials)
+    try:
+        me = await jira.myself()
+    except AuthError as exc:
+        print(
+            f"Jira refused the token ({exc.status}). Check it was copied in full and has not "
+            "been revoked, then run `delivery credentials set` again.",
+            file=sys.stderr,
+        )
+        return None
+    except IntegrationError as exc:
+        print(f"Could not reach Jira: {exc}", file=sys.stderr)
+        return None
+    finally:
+        await jira.close()
+    return f"{me.display_name} ({me.account_id}) using the token from {jira.credential_source}"
+
+
+def cmd_credentials(args: argparse.Namespace) -> int:
+    import getpass
+
+    from delivery.credentials import (
+        SECURITY,
+        TOKEN_SHAPE,
+        JiraCredentials,
+        keychain_available,
+        keychain_write,
+    )
+
+    cfg = _load(args)
+    if args.action == "check":
+        who = asyncio.run(_jira_whoami(cfg))
+        print(f"Jira accepts the stored token: authenticated as {who}." if who else "Not authenticated.")
+        return EXIT_OK if who else EXIT_FAIL
+    if not keychain_available():
+        print("The macOS Keychain is not available here; export the environment variables instead.")
+        return EXIT_CONFIG
+    target = _keychain_target(cfg)
+    if target is None:
+        return EXIT_CONFIG
+    service, email = target
+    if args.action == "delete":
+        r = subprocess.run(
+            [SECURITY, "delete-generic-password", "-s", service, "-a", email],
+            check=False,
+            capture_output=True,
+        )
+        print("Removed the Keychain item." if r.returncode == 0 else "No Keychain item to remove.")
+        return EXIT_OK
+    token = getpass.getpass(f"Paste the Jira API token for {email} (nothing is shown), then Enter: ").strip()
+    if not TOKEN_SHAPE.match(token):
+        print(
+            f"That does not look like an API token ({len(token)} characters); nothing was stored.",
+            file=sys.stderr,
+        )
+        return EXIT_FAIL
+    who = asyncio.run(_jira_whoami(cfg, JiraCredentials(email, token, "the value just pasted")))
+    if not who:
+        print("Nothing was stored.", file=sys.stderr)
+        return EXIT_FAIL
+    try:
+        keychain_write(service, email, token)
+    except (OSError, ValueError) as exc:
+        print(f"Jira accepted the token but storing it failed: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    print(f"Jira accepted the token: authenticated as {who.split(' using ')[0]}.")
+    print(f"Stored in your login Keychain (service {service!r}, account {email}); read back intact.")
+    return EXIT_OK
+
+
 def cmd_schemas(args: argparse.Namespace) -> int:
     from delivery.models import InputEnvelope, result_json_schema
 
@@ -467,6 +580,14 @@ def parser() -> argparse.ArgumentParser:
     wf = sub.add_parser("workflow", help="workflow mapping tools").add_subparsers(dest="wf", required=True)
     sp = with_config(wf.add_parser("inspect", help="resolve statuses/transitions and print a config block"))
     sp.set_defaults(afunc=_workflow_inspect)
+    sp = with_config(
+        wf.add_parser("verify", help="walk labelled test tickets through every status (writes to Jira)")
+    )
+    sp.add_argument("--yes", action="store_true", help="confirm creating and transitioning test tickets")
+    sp.set_defaults(afunc=_workflow_verify)
+    sp = with_config(sub.add_parser("credentials", help="store or check the Jira API token (macOS Keychain)"))
+    sp.add_argument("action", choices=["set", "check", "delete"])
+    sp.set_defaults(func=cmd_credentials)
     sp = with_config(sub.add_parser("run", help="run the supervisor in the foreground"))
     sp.add_argument("--once", action="store_true", help="one cycle: dispatch all eligible tickets and wait")
     sp.add_argument("--dry-run", action="store_true", help="discovery only: no Claude, writes or transitions")
@@ -511,6 +632,13 @@ def main(argv: list[str] | None = None) -> int:
         print("Configuration problems:", file=sys.stderr)
         for p in exc.problems:
             print(f"  - {p}", file=sys.stderr)
+        return EXIT_CONFIG
+    except Exception as exc:
+        from delivery.jira import JiraCredentialsMissing
+
+        if not isinstance(exc, JiraCredentialsMissing):
+            raise
+        print(f"Jira credentials: {exc}", file=sys.stderr)
         return EXIT_CONFIG
     except KeyboardInterrupt:
         return 130

@@ -152,3 +152,18 @@ async def test_workflow_inspect_resolves_ids_and_flags_wrong_transitions(make_co
         for m in wf.transitions_checked["specification_review"]["missing"]
     )
     assert "[workflow.statuses]" in wf.toml() and f'backlog = "{STATUS_IDS[Status.BACKLOG]}"' in wf.toml()
+
+
+async def test_git_push_check_is_a_dry_run(tmp_path: Path, make_config: ConfigFactory) -> None:
+    from delivery.doctor import check_git_push
+    from gitutil import make_origin, sh
+
+    origin = make_origin(tmp_path)
+    cfg = make_config()
+    report = Report()
+    await check_git_push(cfg, report, url=str(origin))
+    assert report.checks[-1].level == "ok" and "nothing was pushed" in report.checks[-1].detail
+    heads = sh("--git-dir", str(origin), "for-each-ref", "--format=%(refname)", "refs/heads", cwd=tmp_path)
+    assert heads.splitlines() == ["refs/heads/main"]  # the dry run created no branch
+    await check_git_push(cfg, report, url=str(tmp_path / "missing.git"))
+    assert report.checks[-1].level == "fail" and "gh auth setup-git" in report.checks[-1].action
