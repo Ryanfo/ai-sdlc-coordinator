@@ -20,7 +20,8 @@ specification review, or ask the questions that block a usable specification.
 
 ## Steps
 
-1. Read `brief`, `selected_comments` and every file in `prior_drafts`. If a prior draft
+1. Read `brief`, `selected_comments`, every file in `attachments` (designs and screenshots
+   are part of the brief) and every file in `prior_drafts`. If a prior draft
    exists, revise it: keep what was not challenged, apply every answer and every numbered
    feedback item (`F1`...), and record each change in the revision history.
 2. Read the application's standards from the working directory (`CLAUDE.md`, `docs/`) and
@@ -30,7 +31,9 @@ specification review, or ask the questions that block a usable specification.
    `${CLAUDE_PLUGIN_ROOT}/templates/specification.md`. It must contain: problem/outcome,
    scope and exclusions, numbered acceptance criteria (`AC1`, `AC2`...), non-functional
    needs, constraints, dependencies, assumptions, open questions and revision history.
-   Preserve the original brief in the "Original brief" section verbatim.
+   Preserve the original brief in the "Original brief" section verbatim. List every
+   attachment you used under "Designs and attachments" with what it defines, and turn
+   what the designs require into acceptance criteria rather than leaving it implied.
 4. Decide the outcome:
    - `needs_clarification` when an answer would materially change scope or acceptance
      criteria and you cannot make a safe, explicit assumption. Still write the full draft,

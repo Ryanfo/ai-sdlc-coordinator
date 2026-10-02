@@ -39,7 +39,9 @@ acceptance criterion in the approved specification is met, following the approve
 
 ## Steps
 
-1. Read the approved specification and plan from `approved_artefacts`.
+1. Read the approved specification and plan from `approved_artefacts`, and open the designs
+   in `attachments` they refer to. Match layout, copy and states shown there; where a design
+   and the specification disagree, follow the specification and note it.
 2. Implement in small steps. Run the relevant tests and type checks as you go using the
    project's scripts (for example `npm run test:unit`, `npm run typecheck`).
 3. Before finishing, run the configured checks listed in `configured_checks` that you can

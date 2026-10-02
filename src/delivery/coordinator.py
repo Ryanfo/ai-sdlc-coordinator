@@ -11,6 +11,7 @@ import contextlib
 from datetime import timedelta
 
 from delivery import comments
+from delivery.attachments import ATTACHMENT_STAGES, fetch_attachments
 from delivery.claude import ClaudeStatus
 from delivery.git import BranchDiverged, GitError, WorktreeConflict
 from delivery.intake import Intake, IntakeKind, TicketContext, brief_text, load_context
@@ -101,6 +102,7 @@ class StageExecutor:
         strategy = STRATEGIES[stage](rc)
         try:
             await self._start(rc, sd.ready, sd.active)
+            await self._fetch_attachments(rc)
             decision = await self._decide(rc, strategy, sd.active)
             rc.record.outputs["decision"] = decision.model_dump(mode="json")
             rc.record = rc.record.model_copy(update={"state": RunState.PUBLISHING})
@@ -173,6 +175,23 @@ class StageExecutor:
         except (PublicationError, BranchDiverged) as exc:
             await self._fail(rc, str(exc), "Inspect and fix the remote state, then `delivery recover`.")
         return rc.record
+
+    async def _fetch_attachments(self, rc: RunContext) -> None:
+        if rc.record.stage not in ATTACHMENT_STAGES or not rc.ticket.issue.attachments:
+            return
+        rc.attachments, rc.attachments_skipped = await fetch_attachments(
+            rc.cfg.jira.attachments,
+            self.deps.jira,
+            rc.ticket.issue.attachments,
+            rc.inputs_dir / "attachments",
+        )
+        rc.journal.events.append(
+            "attachments",
+            {
+                "given": [{"file": a.filename, "sha256": a.sha256, "size": a.size} for a in rc.attachments],
+                "skipped": [{"file": a.filename, "reason": a.reason} for a in rc.attachments_skipped],
+            },
+        )
 
     async def _start(self, rc: RunContext, ready: Status, active: Status) -> None:
         """Start publication. Re-entrant: on resume, uncertain start operations are reconciled

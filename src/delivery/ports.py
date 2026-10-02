@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Protocol
 
 from delivery.ownership import IssueView
@@ -87,6 +88,18 @@ class IssueLink:
 
 
 @dataclass(frozen=True)
+class Attachment:
+    """Metadata of a file attached to a Jira issue (images pasted into a description too)."""
+
+    id: str
+    filename: str
+    mime_type: str
+    size: int
+    created: datetime | None = None
+    author_account_id: str | None = None
+
+
+@dataclass(frozen=True)
 class JiraIssue:
     view: IssueView
     description_text: str = ""
@@ -95,6 +108,7 @@ class JiraIssue:
     links: tuple[IssueLink, ...] = ()
     resolution: str | None = None
     assignee_name: str = ""
+    attachments: tuple[Attachment, ...] = ()
 
     @property
     def key(self) -> str:
@@ -130,6 +144,7 @@ class JiraPort(Protocol):
     async def get_property(self, key: str, name: str) -> dict[str, Any] | None: ...
     async def set_property(self, key: str, name: str, value: dict[str, Any]) -> None: ...
     async def set_fields(self, key: str, fields: dict[str, Any]) -> None: ...
+    async def download_attachment(self, attachment_id: str, dest: Path, max_bytes: int) -> int: ...
     async def project_statuses(self, project_key: str) -> list[JiraStatusInfo]: ...
     async def fields(self) -> list[JiraFieldInfo]: ...
     async def user(self, account_id: str) -> JiraUser | None: ...

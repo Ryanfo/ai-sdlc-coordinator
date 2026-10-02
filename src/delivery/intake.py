@@ -208,7 +208,17 @@ class CodeEvidence(Protocol):
 
 
 def brief_text(issue: JiraIssue) -> str:
-    return f"{issue.view.summary}\n\n{issue.description_text}".strip()
+    """The brief as one string; its digest decides whether the input changed.
+
+    Attachments are part of the brief: adding, replacing or removing a design changes it.
+    """
+    text = f"{issue.view.summary}\n\n{issue.description_text}".strip()
+    if issue.attachments:
+        listed = sorted(issue.attachments, key=lambda a: a.id)
+        text += "\n\nAttachments:\n" + "\n".join(
+            f"- {a.filename} ({a.mime_type or 'unknown type'}, {a.size} bytes, id {a.id})" for a in listed
+        )
+    return text
 
 
 def brief_is_usable(issue: JiraIssue) -> bool:

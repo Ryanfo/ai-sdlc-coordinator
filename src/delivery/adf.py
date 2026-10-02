@@ -132,6 +132,9 @@ def _text_of(node: Node) -> str:
         return str((node.get("attrs") or {}).get("url", ""))
     if t == "emoji":
         return str((node.get("attrs") or {}).get("text", ""))
+    if t in ("media", "mediaInline"):
+        attrs = node.get("attrs") or {}
+        return f"[attachment: {attrs.get('alt') or attrs.get('id') or 'file'}]"
     return "".join(_text_of(c) for c in node.get("content", []) or [])
 
 

@@ -21,6 +21,9 @@ Accessibility, performance, security, privacy, compatibility.
 ## Constraints
 Technical, data, policy and time constraints.
 
+## Designs and attachments
+- `<filename>` (sha256 `<first 12>`): what it defines (screens, states, copy). Write "None" if there are none.
+
 ## Dependencies
 Other tickets, services, designs or existing behaviour this relies on.
 

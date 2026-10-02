@@ -30,6 +30,7 @@ from delivery.intake import (
     IntakeKind,
     RecordCorrupt,
     TicketContext,
+    brief_text,
     load_context,
 )
 from delivery.journal import JournalCorrupt, RunJournal, SupervisorRecord
@@ -295,7 +296,7 @@ class Supervisor:
                 await self._explain_wait(ctx, intake)
             return
         executor = self.executor
-        brief_digest = digest(f"{ctx.issue.view.summary}\n\n{ctx.issue.description_text}".strip())
+        brief_digest = digest(brief_text(ctx.issue))
         attempt = f"{key}:{stage.value}:{digest(intake.material(brief_digest))}"
         existing = self.deps.store.find_attempt(attempt)
         if existing and existing.record:

@@ -236,6 +236,21 @@ Specifications, plans, footprints, reviews and release documents are versioned o
 `delivery/<KEY>` branch of the application repository. The Jira comments link to exact
 commits.
 
+### Designs and attachments
+
+Attach designs, screenshots or documents to the Jira ticket (or paste images into the
+description). The coordinator downloads them with your Jira login and gives them to Claude as
+read-only inputs for refinement, planning, development and verification; Claude's own
+sessions still have no network access. Only images (PNG, JPEG, GIF, WebP), PDFs and plain
+text files are handed over, each checked against its file type and size limits
+(`[jira.attachments]`); anything else is listed as skipped with the reason. The specification
+records which attachments it used (name and fingerprint). Adding or replacing an attachment
+counts as a change to the brief.
+
+Figma links cannot be opened by Claude: export the frames you mean as PNG or PDF and attach
+them. Attachments are never committed to the repository, but the documents Claude writes
+describe them, so do not attach confidential designs to tickets for a public repository.
+
 ## 8. Answer questions and request changes
 
 Every decision comment uses a token the coordinator posts, so your intent is never guessed.

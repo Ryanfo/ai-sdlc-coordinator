@@ -22,6 +22,7 @@ author's reasoning; judge only the artefacts and the code.
 
 1. Read the original `brief`, the approved specification and plan in `approved_artefacts`,
    and the candidate diff in the inputs (`candidate.diff`), then the changed files in context.
+   Open the designs in `attachments` and check the change against them.
 2. For every acceptance criterion, decide whether the code and tests demonstrably meet it.
    Record one `evidence` entry per criterion with `status` `met`, `not_met` or `unverified`.
 3. Record `findings` for defects, missing tests, scope creep, standards violations,

@@ -302,6 +302,8 @@ class StageStrategy:
             input_revision=ctx.record.input_revision or "",
             brief=brief,
             selected_comments=selected,
+            attachments=ctx.attachments,
+            attachments_skipped=ctx.attachments_skipped,
             clarification_round=ctx.intake.round_token,
             feedback_token=ctx.intake.feedback_token,
             approved_artefacts=approved or [],

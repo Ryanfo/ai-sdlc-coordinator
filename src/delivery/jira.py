@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import random
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -22,6 +23,7 @@ from delivery.config import Config
 from delivery.credentials import CredentialsMissing, JiraCredentials, Runner, resolve_jira
 from delivery.ownership import IssueView
 from delivery.ports import (
+    Attachment,
     AuthError,
     IntegrationError,
     IssueLink,
@@ -169,6 +171,18 @@ class JiraClient:
             links=tuple(links),
             resolution=(f.get("resolution") or {}).get("name") if f.get("resolution") else None,
             assignee_name=assignee.get("displayName", ""),
+            attachments=tuple(
+                Attachment(
+                    str(a.get("id", "")),
+                    str(a.get("filename", "")),
+                    str(a.get("mimeType", "")),
+                    int(a.get("size") or 0),
+                    _ts(a.get("created")) if a.get("created") else None,
+                    (a.get("author") or {}).get("accountId"),
+                )
+                for a in f.get("attachment") or []
+                if a.get("id")
+            ),
         )
 
     @property
@@ -185,6 +199,7 @@ class JiraClient:
             "updated",
             "issuelinks",
             "resolution",
+            "attachment",
         ]
         if self._resume_field:
             fields.append(self._resume_field)
@@ -299,6 +314,39 @@ class JiraClient:
         if fields:
             body["fields"] = fields
         await self._write("POST", f"/rest/api/3/issue/{key}/transitions", json=body)
+
+    async def download_attachment(self, attachment_id: str, dest: Path, max_bytes: int) -> int:
+        """Stream one attachment to ``dest`` (never more than ``max_bytes``). Returns its size.
+
+        Jira answers with a redirect to its media service; the redirect URL carries its own
+        short-lived token, and httpx drops our Authorization header on the cross-host hop.
+        """
+        tmp = dest.with_name(dest.name + ".part")
+        size = 0
+        try:
+            async with self.http.stream(
+                "GET", f"/rest/api/3/attachment/content/{attachment_id}", follow_redirects=True
+            ) as r:
+                if r.status_code >= 400:
+                    await r.aread()
+                    raise self._error(r)
+                with tmp.open("wb") as fh:
+                    async for chunk in r.aiter_bytes():
+                        size += len(chunk)
+                        if size > max_bytes:
+                            raise IntegrationError(f"attachment {attachment_id} exceeds {max_bytes} bytes")
+                        fh.write(chunk)
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            tmp.unlink(missing_ok=True)
+            raise IntegrationError(
+                f"attachment {attachment_id} download failed: {exc}", retryable=True
+            ) from None
+        except IntegrationError:
+            tmp.unlink(missing_ok=True)
+            raise
+        tmp.chmod(0o600)
+        tmp.replace(dest)
+        return size
 
     async def create_issue(
         self, project: str, issue_type: str, summary: str, description: dict[str, Any], labels: list[str]

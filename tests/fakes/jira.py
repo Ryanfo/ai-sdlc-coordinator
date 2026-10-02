@@ -14,11 +14,13 @@ import itertools
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from delivery.adf import adf_to_text, markdown_to_adf
 from delivery.ownership import IssueView
 from delivery.ports import (
+    Attachment,
     IntegrationError,
     IssueLink,
     JiraComment,
@@ -55,6 +57,7 @@ class FakeIssue:
     created: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated: datetime = field(default_factory=lambda: datetime.now(UTC))
     resolution: str | None = None
+    files: dict[str, tuple[Attachment, bytes]] = field(default_factory=dict)
 
 
 class FakeJira:
@@ -116,6 +119,16 @@ class FakeJira:
         issue = FakeIssue(key, summary, description, status, assignee, **kw)
         self.issues[key] = issue
         return issue
+
+    def attach(
+        self, key: str, filename: str, data: bytes, mime: str = "", author: str | None = None
+    ) -> Attachment:
+        """A human attaches a file (or pastes an image into the description)."""
+        issue = self.issues[key]
+        att = Attachment(str(next(self.ids)), filename, mime, len(data), self.tick(), author)
+        issue.files[att.id] = (att, data)
+        issue.updated = self.clock
+        return att
 
     def human_comment(self, key: str, author: str, text: str) -> JiraComment:
         t = self.tick()
@@ -208,6 +221,7 @@ class FakeJira:
             tuple(i.links),
             i.resolution,
             assignee_name=f"user:{i.assignee}" if i.assignee else "",
+            attachments=tuple(a for a, _ in i.files.values()),
         )
 
     # ------------------------------------------------------------------ JiraPort
@@ -298,6 +312,17 @@ class FakeJira:
     async def set_fields(self, key: str, fields: dict[str, Any]) -> None:
         self._guard("set_fields", key)
         self._issue(key).fields.update(fields)
+
+    async def download_attachment(self, attachment_id: str, dest: Path, max_bytes: int) -> int:
+        self._guard("download_attachment", attachment_id)
+        for issue in self.issues.values():
+            if attachment_id in issue.files:
+                data = issue.files[attachment_id][1]
+                if len(data) > max_bytes:
+                    raise IntegrationError(f"attachment {attachment_id} exceeds {max_bytes} bytes")
+                dest.write_bytes(data)
+                return len(data)
+        raise NotFound(f"attachment {attachment_id} not found", status=404)
 
     async def project_statuses(self, project_key: str) -> list[JiraStatusInfo]:
         self._guard("project_statuses")

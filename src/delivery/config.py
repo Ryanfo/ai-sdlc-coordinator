@@ -92,6 +92,27 @@ class JiraFieldsConfig(StrictModel):
     resume_stage: str | None = Field(default=None, pattern=r"^customfield_\d+$")
 
 
+# File types handed to Claude: images and PDFs it can view, plain text it can read.
+# Excluded on purpose: SVG/HTML (active content), archives, office files and executables.
+SAFE_ATTACHMENT_TYPES = ("png", "jpg", "jpeg", "gif", "webp", "pdf", "txt", "md", "csv", "json")
+
+
+class AttachmentsConfig(StrictModel):
+    enabled: bool = True
+    max_file_mb: int = Field(default=20, ge=1, le=100)
+    max_total_mb: int = Field(default=100, ge=1, le=500)
+    file_types: list[str] = Field(default_factory=lambda: list(SAFE_ATTACHMENT_TYPES))
+
+    @field_validator("file_types")
+    @classmethod
+    def _types(cls, v: list[str]) -> list[str]:
+        v = [t.lower().lstrip(".") for t in v]
+        unsafe = sorted(set(v) - set(SAFE_ATTACHMENT_TYPES))
+        if unsafe:
+            raise ValueError(f"{unsafe} are not allowed; choose from {list(SAFE_ATTACHMENT_TYPES)}")
+        return v
+
+
 class JiraConfig(StrictModel):
     base_url: str
     project_key: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,9}$")
@@ -106,6 +127,7 @@ class JiraConfig(StrictModel):
     token_keychain_service: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]{1,100}$")
     cloud_id: str | None = None
     fields: JiraFieldsConfig = JiraFieldsConfig()
+    attachments: AttachmentsConfig = AttachmentsConfig()
 
     @field_validator("base_url")
     @classmethod

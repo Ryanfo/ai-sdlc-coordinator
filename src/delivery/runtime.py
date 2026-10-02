@@ -15,7 +15,7 @@ from delivery.config import Config
 from delivery.git import ManagedRepo
 from delivery.intake import Intake, TicketContext
 from delivery.journal import JournalStore, RunJournal, ensure_private_dir
-from delivery.models import Model, RunRecord, SharedExecutionRecord
+from delivery.models import AttachmentRef, Model, RunRecord, SharedExecutionRecord, SkippedAttachment
 from delivery.ownership import RepoLocks
 from delivery.plugin import PluginInfo
 from delivery.ports import GitHubPort, JiraPort
@@ -63,6 +63,8 @@ class RunContext:
     worktrees: dict[str, Path] = field(default_factory=dict)
     stop_reason: str | None = None
     stop_hold: bool = False
+    attachments: list[AttachmentRef] = field(default_factory=list)
+    attachments_skipped: list[SkippedAttachment] = field(default_factory=list)
 
     @property
     def key(self) -> str:

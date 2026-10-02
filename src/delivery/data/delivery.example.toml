@@ -36,6 +36,15 @@ email_env = "JIRA_EMAIL"
 token_env = "JIRA_API_TOKEN"
 # cloud_id = ""
 
+[jira.attachments]
+# Ticket attachments (designs, screenshots, PDFs) are downloaded by the coordinator and given
+# to Claude as read-only inputs for refinement, planning, development and verification.
+# Only these types are ever handed over (SVG, HTML, archives and executables never are).
+enabled = true
+max_file_mb = 20
+max_total_mb = 100
+file_types = ["png", "jpg", "jpeg", "gif", "webp", "pdf", "txt", "md", "csv", "json"]
+
 [jira.fields]
 # Single-select "Delivery resume stage" custom field from the workflow setup.
 # `delivery workflow inspect` prints the ID. Leave unset to rely on coordinator
