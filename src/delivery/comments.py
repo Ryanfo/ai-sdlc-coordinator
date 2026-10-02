@@ -316,6 +316,25 @@ def candidate_ready(candidate_no: int, sha: str, pr_url: str, summary: str) -> s
     )
 
 
+def follow_up(candidate_no: int, sha: str, url: str, requests: list[str], was_in: str, moved: bool) -> str:
+    lines = [
+        f"## Follow-up change: candidate c{candidate_no}",
+        f"Commit `{sha}`: {url}",
+        "",
+        "The developer kept the development session open after it finished and asked Claude for:",
+        *[f"- {r}" for r in requests],
+        "",
+        "The coordinator pushed the change as a new candidate. Earlier code and acceptance "
+        "approvals do not cover it.",
+    ]
+    lines.append(
+        f"The ticket moved from {was_in} back to Ready for verification; review and verification start again."
+        if moved
+        else "Verification of the new candidate starts automatically."
+    )
+    return "\n".join(lines)
+
+
 def overlap_warning(f: OverlapFinding, assignees: dict[str, str | None], here: str) -> str:
     other = f.other if f.ticket == here else f.ticket
     sev = "Sequencing decision needed" if f.severity is Severity.BLOCK else "Overlap warning"

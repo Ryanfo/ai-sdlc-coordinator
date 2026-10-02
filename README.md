@@ -384,6 +384,61 @@ The terminal's start and finish blocks show the same command and a link to a rea
 the log (`claude-<procedure>.txt`). When a stage ends Blocked, the finish block also prints the
 session's last steps and what to do.
 
+### Watching Claude work and typing to it
+
+Turn on interactive sessions and each Claude session runs as a normal interactive `claude`
+(the full terminal interface) inside tmux, instead of `claude -p`. A terminal window opens on
+it as it starts, so you can watch every step and type to Claude at any point: your message is
+picked up after its current step. Pressing `Esc` interrupts it, as usual. Closing the window
+only detaches it; the session keeps running.
+
+```bash
+brew install tmux
+```
+
+Then add to your config:
+
+```toml
+[claude.interactive]
+enabled = true
+```
+
+Claude Code asks whether to trust every new git worktree, and each run gets a fresh one. The
+coordinator answers yes for its own worktrees under `worktree_root` and nowhere else. Print
+mode never asks, and restricted mode ignores the repository's `.claude` settings either way.
+Claude Code keeps a trust entry per worktree in `~/.claude.json`.
+
+The restrictions are the same as print mode (restricted mode, the generated permission profile
+and sandbox, the allowed tools, no credentials in the environment). The coordinator still only
+accepts a schema-checked result: Claude writes it to a file, and a hook keeps Claude working
+until the file is valid. `delivery doctor --claude-probe` runs its safety probe this way when
+interactive sessions are on.
+
+**Sessions stay open after the work.** Once Claude hands its result over, the coordinator
+carries on (comments, pushes, moves the ticket) and the session stays open, so you can keep
+asking Claude about what it did. In a development session you can also ask for changes: each
+time Claude finishes a reply with the code changed, the coordinator pushes the change as the
+next candidate (Claude never pushes), says so in Jira, and moves the ticket back to **Ready for
+verification** so the new candidate is verified and reviewed again; earlier code and
+acceptance approvals no longer count. This happens while the ticket is in Ready for
+verification, Code review, Acceptance review or Changes requested and no run is working on it;
+otherwise the change waits and the terminal says why. It needs three transitions in Jira,
+named **Submit follow-up changes**, from Code review, Acceptance review and Changes requested to
+Ready for verification (`delivery workflow verify --yes` checks them once they exist).
+
+A session closes when you type `/exit` (or `delivery close <ticket>`), after `idle_close_hours`
+with nothing happening, when a new run of the same stage starts for the ticket, or when the
+ticket is done or cancelled. Its conversation is kept with the run's logs
+(`claude-<procedure>-after`), and changes that were never pushed are saved: as the unfinished
+work the next development run continues from, or as a patch whose path the terminal prints.
+Set `keep_open = false` to close sessions as soon as the result is handed over.
+
+| Command | What it does |
+|---|---|
+| `delivery attach PILOT-123` | Open the ticket's session in this terminal (`Ctrl-b d` leaves it running) |
+| `delivery sessions` | Every Claude session in tmux: working, or open for questions |
+| `delivery close PILOT-123` | End a session left open for questions |
+
 ### Long sessions, guardrails and resuming
 
 Each session has generous turn and time limits (500 turns and 2 hours for implementation).
@@ -425,6 +480,7 @@ delivery dispatch pause --reason "machine busy" --config ~/delivery.local.toml
 | Command | What it does |
 |---|---|
 | `logs` | Readable Claude session log for a ticket; `--follow` to watch live |
+| `attach` / `sessions` / `close` | Interactive sessions in tmux: open one, list them, end one left open |
 | `status` | Every session: ticket, stage, run/session ID, state, start time, next action |
 | `inspect` | Why a ticket is (not) eligible, its gates, pause, candidate, overlaps, local runs; read-only |
 | `stop` | Stops one ticket's session and keeps its work; other sessions continue |

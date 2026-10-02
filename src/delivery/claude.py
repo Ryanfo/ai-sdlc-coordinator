@@ -13,13 +13,13 @@ import json
 import os
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from delivery.proc import ProcessStartError, base_child_env, run_process
+from delivery.proc import ProcessStartError, base_child_env, run_process, terminate_group
 
 # Environment variables that would switch billing/provider or override the subscription.
 CONFLICTING_ENV = (
@@ -254,6 +254,12 @@ class ClaudeInvocation:
     model: str | None = None
     extra_env: dict[str, str] = field(default_factory=dict)
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    # Used by interactive sessions (delivery.interactive), where the result arrives as a file.
+    ticket: str = ""
+    session_dir: Path | None = None
+    result_path: Path | None = None
+    schema_path: Path | None = None
+    expect: dict[str, Any] = field(default_factory=dict)
 
     def prompt(self) -> str:
         return (
@@ -289,6 +295,27 @@ class ClaudeInvocation:
 
 
 @dataclass
+class ChildHandle:
+    """A running Claude session, whichever runner started it."""
+
+    pid: int
+    stop: Callable[[], Awaitable[None]]
+    # True while a person is taking part in the session (the stall guardrail then waits).
+    human_active: Callable[[], bool] = lambda: False
+
+
+@dataclass
+class OpenSession:
+    """An interactive session that stays open after handing its result to the coordinator."""
+
+    name: str
+    session_dir: Path
+    transcript: str | None
+    mirrored_lines: int
+    human_prompts: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ClaudeOutcome:
     status: ClaudeStatus
     detail: str = ""
@@ -303,6 +330,7 @@ class ClaudeOutcome:
     subtype: str = ""
     duration: float = 0.0
     tools: list[str] = field(default_factory=list)
+    open_session: OpenSession | None = None
 
 
 _AUTH_HINTS = re.compile(
@@ -409,9 +437,14 @@ class ClaudeRunner:
     async def run(
         self,
         inv: ClaudeInvocation,
-        on_start: Callable[[asyncio.subprocess.Process], None] | None = None,
+        on_start: Callable[[ChildHandle], None] | None = None,
     ) -> ClaudeOutcome:
         env = worker_env(inv.extra_env)
+
+        def started(proc: asyncio.subprocess.Process) -> None:
+            if on_start:
+                on_start(ChildHandle(proc.pid, lambda: terminate_group(proc)))
+
         try:
             res = await run_process(
                 inv.argv(self.executable),
@@ -420,7 +453,7 @@ class ClaudeRunner:
                 timeout=inv.timeout,
                 stdout_path=inv.stdout_path,
                 stderr_path=inv.stderr_path,
-                on_start=on_start,
+                on_start=started,
                 max_capture=20_000_000,
             )
         except ProcessStartError as exc:

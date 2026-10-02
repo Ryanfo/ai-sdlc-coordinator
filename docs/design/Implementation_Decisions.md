@@ -24,6 +24,8 @@ Baseline documents, in precedence order:
 | Pilot ticket | "Case-insensitive title search" with the open question "should search include the description?". | Handoff §21, adapted |
 | Overlap detection | Plan stage publishes `plan/vNNN.footprint.json` on the delivery branch. The coordinator compares footprints of all active tickets in the project (not only its own) at five checkpoints. This is advisory, not a lock. | Amendment §4–5 |
 | Integration evidence | Verification checks both the candidate head and an integration tree (latest base + interacting candidates), recording the head, base and tested tree. | Amendment §6 |
+| Interactive sessions (optional) | `[claude.interactive]` runs each procedure as an interactive `claude` in the coordinator's own tmux server, so the developer can watch and type. `claude --bg`/`attach` was rejected: it refuses `--print`, ignores `--session-id`, and a session started while the background service runs takes the service's environment, not the coordinator's sanitised one. The result comes from a file checked by a coordinator-generated Stop hook; the folder-trust question is answered only for managed worktrees (trust of a parent folder does not cover git repositories). | User, 2 Oct 2026 |
+| Follow-up changes | With `keep_open`, a development session stays open after hand-off. The coordinator (never Claude) pushes changes made there as the next candidate, supersedes code and later approvals and moves the ticket from Code review, Acceptance review or Changes requested back to Ready for verification (`Submit follow-up changes`). | User, 2 Oct 2026 |
 
 ## Machine findings (M0 probe)
 

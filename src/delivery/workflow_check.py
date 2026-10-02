@@ -20,6 +20,7 @@ from delivery.adf import markdown_to_adf
 from delivery.config import Config
 from delivery.ports import IntegrationError, JiraPort, JiraTransition
 from delivery.workflow import (
+    FOLLOW_UP_ROUTES,
     PAUSED_STATUSES,
     ROUTES,
     STATUS_NAMES,
@@ -136,10 +137,13 @@ class _Walker:
         return f"{t.name} -> {target.value if target else t.to_status_name or t.to_status_id}"
 
     def _expected(self, status: Status) -> set[tuple[str, Status]]:
+        follow_ups = self.cfg.claude.interactive.follow_ups
         return {
             (self.cfg.workflow.action_name(r.action), r.target)
             for r in ROUTES
-            if r.source is status and r.resume_stage is None
+            if r.source is status
+            and r.resume_stage is None
+            and (follow_ups or r.action is not Action.SUBMIT_FOLLOW_UP)
         }
 
     async def status_of(self, key: str) -> Status | None:
@@ -159,6 +163,12 @@ class _Walker:
             self.cfg.workflow.action_name(r.action) for r in ROUTES if r.source is status and r.resume_stage
         }
         optional = {(n, dst) for (src, dst), names in OPTIONAL.items() if src is status for n in names}
+        # Follow-up transitions are only required with interactive sessions kept open.
+        optional |= {
+            (self.cfg.workflow.action_name(r.action), r.target)
+            for r in FOLLOW_UP_ROUTES
+            if r.source is status
+        }
         for t in offered:
             if (t.name, self.by_id.get(t.to_status_id)) in optional:
                 self.report.info.append(f"{STATUS_NAMES[status]}: optional route present: {self._label(t)}")

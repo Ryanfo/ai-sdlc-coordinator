@@ -5,6 +5,7 @@ from __future__ import annotations
 import textwrap
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from delivery.comments import STAGE_TITLES
 from delivery.config import Config
@@ -72,6 +73,12 @@ def session_started(
         if adopted
         else f"{STATUS_NAMES[sd.ready]} -> {STATUS_NAMES[sd.active]}"
     )
+    interactive = cfg.claude.interactive
+    if interactive.enabled:
+        window = "a window opens on it; " if interactive.window != "none" else ""
+        watch = f"{window}`delivery attach {record.ticket_key}` to watch or type to Claude"
+    else:
+        watch = f"delivery logs {record.ticket_key} --follow"
     return block(
         f"{verb}  {_stage_title(record.stage)}  {record.ticket_key}",
         [
@@ -80,9 +87,29 @@ def session_started(
             ("Claude", f"{', '.join(sd.procedures)} on {_models(cfg, record.stage)}"),
             ("Run", record.run_id),
             ("Jira", ticket_url(cfg, record.ticket_key)),
-            ("Watch", f"delivery logs {record.ticket_key} --follow"),
+            ("Watch", watch),
         ],
     )
+
+
+def follow_up_published(
+    cfg: Config, key: str, n: int, sha: str, files: int, was_in: str, asked: list[str]
+) -> str:
+    return block(
+        f"FOLLOW-UP  Development  {key}  -  pushed as c{n}",
+        [
+            ("Asked", "; ".join(asked)[:300]),
+            ("Commit", f"{sha[:12]}  ({files} file{'s' if files != 1 else ''} changed)"),
+            ("Status", f"{was_in} -> Ready for verification (verification and review start again)"),
+            ("Jira", ticket_url(cfg, key)),
+            ("Session", f"still open: delivery attach {key}"),
+        ],
+    )
+
+
+def open_session_closed(rec: Any, reason: str, kept: str) -> str:
+    text = f"{rec.ticket_key}: closed the open {rec.procedure} session ({reason})"
+    return line(text + (f"; {kept}" if kept else ""))
 
 
 def latest_transcript(log_dir: Path | None) -> Path | None:
@@ -116,6 +143,11 @@ def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path
         took = f"{secs // 60}m {secs % 60:02d}s"
     trouble = record.state in (RunState.BLOCKED, RunState.FAILED)
     log_file = latest_transcript(log_dir)
+    from delivery.open_sessions import SessionRegistry
+
+    still_open = [
+        r.procedure for r in SessionRegistry(cfg.runtime.state_dir).all() if r.run_id == record.run_id
+    ]
     return block(
         f"FINISHED  {_stage_title(record.stage)}  {record.ticket_key}  -  {outcome}",
         [
@@ -127,6 +159,17 @@ def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path
             ("Jira", ticket_url(cfg, record.ticket_key)),
             ("Logs", f"delivery logs {record.ticket_key}"),
             ("Log file", log_file.as_uri() if log_file else ""),
+            (
+                "Claude",
+                f"{', '.join(still_open)} still open for questions: delivery attach {record.ticket_key}"
+                + (
+                    " (changes you ask for are pushed as a new candidate)"
+                    if record.stage is Stage.DEVELOPMENT and cfg.claude.interactive.follow_ups
+                    else ""
+                )
+                if still_open
+                else "",
+            ),
         ],
         log_tail(log_dir) if trouble else None,
     )
@@ -146,6 +189,13 @@ def supervisor_started(cfg: Config, version: str) -> str:
             (
                 "Models",
                 distinct[0] if len(distinct) == 1 else ", ".join(f"{p} {m}" for p, m in models.items()),
+            ),
+            (
+                "Sessions",
+                "interactive in tmux; `delivery attach <ticket>` to watch or type"
+                + ("; left open for questions after the work" if cfg.claude.interactive.keep_open else "")
+                if cfg.claude.interactive.enabled
+                else "",
             ),
             ("Stop", "Ctrl-C (running sessions are saved and resume on restart)"),
         ],

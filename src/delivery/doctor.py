@@ -35,6 +35,7 @@ from delivery.plugin import PluginError, load_plugin
 from delivery.ports import AuthError, GitHubPort, IntegrationError, JiraPort, NotFound
 from delivery.workflow import (
     DEFAULT_ACTION_NAMES,
+    FOLLOW_UP_ROUTES,
     ROUTES,
     STATUS_CATEGORIES,
     STATUS_NAMES,
@@ -142,12 +143,21 @@ async def inspect_workflow(cfg: Config, jira: JiraPort) -> WorkflowReport:
         if not sample:
             continue
         offered = await jira.transitions(sample[0].key)
-        expected = {(r.action, r.target) for r in ROUTES if r.source is st and r.action is not Action.CANCEL}
+        follow_ups = cfg.claude.interactive.follow_ups
+        expected = {
+            (r.action, r.target)
+            for r in ROUTES
+            if r.source is st
+            and r.action is not Action.CANCEL
+            and (follow_ups or r.action is not Action.SUBMIT_FOLLOW_UP)
+        }
+        # Follow-up transitions are only needed with interactive sessions kept open.
+        allowed = {(cfg.workflow.action_name(r.action), r.target) for r in FOLLOW_UP_ROUTES if r.source is st}
         names = {(t.name, by_id.get(t.to_status_id)) for t in offered}
         want = {(cfg.workflow.action_name(a), tgt) for a, tgt in expected}
         missing_routes = sorted(f"{n} -> {t.value}" for n, t in want - names if t)
         extra = sorted(
-            f"{n} -> {t.value if t else '?'}" for n, t in names - want if t is not Status.CANCELLED
+            f"{n} -> {t.value if t else '?'}" for n, t in names - want - allowed if t is not Status.CANCELLED
         )
         checked[st.value] = {"sample": sample[0].key, "missing": missing_routes, "unexpected": extra}
         if missing_routes:
@@ -291,8 +301,59 @@ def check_models(cfg: Config, report: Report) -> None:
     report.add("claude", "models", "info", detail + "; `--claude-probe` checks each one works")
 
 
+def check_interactive(cfg: Config, report: Report) -> None:
+    from delivery.tmux import Tmux
+
+    ic = cfg.claude.interactive
+    if not ic.enabled:
+        report.add(
+            "claude",
+            "sessions",
+            "info",
+            "print mode (claude -p); set [claude.interactive] enabled = true to watch sessions in "
+            "tmux and type to Claude",
+        )
+        return
+    path = Tmux(ic.tmux).path()
+    if path is None:
+        report.add("claude", "tmux", "fail", f"{ic.tmux!r} not found", "Install tmux (brew install tmux).")
+    else:
+        report.add(
+            "claude",
+            "sessions",
+            "ok",
+            f"interactive, in tmux ({path}); "
+            + ("left open for questions after hand-off" if ic.keep_open else "closed at hand-off"),
+        )
+    report.add(
+        "claude",
+        "folder trust",
+        "info",
+        "Claude Code asks whether to trust each new git worktree; the coordinator answers yes for "
+        f"its own worktrees under {cfg.repository.worktree_root} (print mode never asks; restricted "
+        "mode ignores the repository's .claude settings either way)",
+    )
+    if ic.window != "none":
+        if sys.platform != "darwin":
+            report.add("claude", "window", "warn", "windows open on macOS only", "Use `delivery attach`.")
+        elif ic.window == "iTerm" and not Path("/Applications/iTerm.app").exists():
+            report.add("claude", "window", "warn", "iTerm is not installed", 'Set window = "Terminal".')
+        else:
+            report.add("claude", "window", "ok", f"a {ic.window} window opens on each session")
+    if ic.follow_ups:
+        report.add(
+            "claude",
+            "follow-ups",
+            "info",
+            "changes made in an open development session are pushed as a new candidate; the ticket "
+            "needs Submit follow-up changes transitions from Code review, Acceptance review and "
+            "Changes requested to Ready for verification (checked with the workflow)",
+        )
+
+
 async def check_claude(cfg: Config, report: Report) -> None:
     check_models(cfg, report)
+    check_interactive(cfg, report)
     exe = cfg.claude.executable
     if not shutil.which(exe) and not Path(exe).exists():
         report.add("claude", "cli", "fail", f"{exe!r} not found", "Install Claude Code and sign in.")
@@ -678,7 +739,12 @@ async def probe_models(cfg: Config, report: Report) -> None:
 async def claude_probe(cfg: Config, report: Report) -> None:
     """Spend a little subscription usage to prove plugin loading and permission denials."""
     await probe_models(cfg, report)
-    with tempfile.TemporaryDirectory(prefix="delivery-probe-") as tmp_s:
+    interactive = cfg.claude.interactive.enabled
+    # An interactive session needs a folder Claude Code trusts: the worktree root.
+    where = cfg.repository.worktree_root if interactive else None
+    if where is not None:
+        where.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="delivery-probe-", dir=where) as tmp_s:
         tmp = Path(tmp_s)
         wt, out, inputs, scratch = tmp / "worktree", tmp / "output", tmp / "inputs", tmp / "tmp"
         for d in (wt, out, inputs, scratch):
@@ -757,7 +823,30 @@ async def claude_probe(cfg: Config, report: Report) -> None:
             max_turns=30,
             extra_env={"TMPDIR": str(scratch)},
         )
-        outcome = await ClaudeRunner(cfg.claude.executable).run(inv)
+        if interactive:
+            from delivery.interactive import InteractiveRunner
+
+            (inputs / "result.schema.json").write_text(json.dumps(PROBE_SCHEMA))
+            inv.ticket = "doctor-probe"
+            inv.session_dir = tmp / "session"
+            inv.result_path = out / "result.json"
+            inv.schema_path = inputs / "result.schema.json"
+            inv.expect = {
+                "contract_id": "delivery.smoke-test/v1",
+                "required_keys": ["contract_id", "attempts"],
+            }
+            runner = InteractiveRunner(
+                cfg.claude.executable,
+                cfg.claude.interactive.model_copy(update={"keep_open": False, "window": "none"}),
+                cfg.runtime.state_dir,
+                worktree_root=cfg.repository.worktree_root,
+            )
+            outcome = await runner.run(inv)
+        else:
+            outcome = await ClaudeRunner(cfg.claude.executable).run(inv)
+        report.add(
+            "probe", "session mode", "info", "interactive (tmux)" if interactive else "print (claude -p)"
+        )
         if outcome.status is not ClaudeStatus.OK:
             report.add("probe", "claude run", "fail", f"{outcome.status.value}: {outcome.detail}")
             return

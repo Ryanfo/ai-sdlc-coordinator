@@ -16,11 +16,9 @@ import shutil
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import ValidationError
-
 from delivery import comments
 from delivery.checks import all_passed, run_checks
-from delivery.claude import ClaudeInvocation, ClaudeOutcome, ClaudeStatus
+from delivery.claude import ChildHandle, ClaudeInvocation, ClaudeOutcome, ClaudeStatus, OpenSession
 from delivery.gates import (
     current_gate,
     evaluate_ci,
@@ -29,6 +27,7 @@ from delivery.gates import (
 )
 from delivery.git import GitError, blob_url, commit_url
 from delivery.guardrails import Watchdog
+from delivery.interactive import RESULT_FILE
 from delivery.journal import atomic_write_json, ensure_private_dir
 from delivery.models import (
     ArtefactPointer,
@@ -54,13 +53,16 @@ from delivery.models import (
     result_json_schema,
     utcnow,
 )
+from delivery.open_sessions import OpenRecord, SessionRegistry
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
 from delivery.permissions import PROCEDURE_ROLES, PROTECTED_WORKTREE_PATHS, build_profile
-from delivery.proc import terminate_group
 from delivery.publication import Posted
 from delivery.resources import port_env
+from delivery.results import OutputInvalid, validate_result
 from delivery.runtime import Decision, RunContext
+from delivery.session_hook import read_events
+from delivery.tmux import for_config as tmux_for
 from delivery.transcript import write_transcript
 from delivery.workflow import Action, Stage, Status
 
@@ -79,51 +81,6 @@ class WorkerFailure(Exception):
         if self.outcome and self.outcome.status in (ClaudeStatus.AUTH, ClaudeStatus.USAGE_LIMIT):
             return "provider_" + self.outcome.status.value
         return "worker_failure"
-
-
-class OutputInvalid(Exception):
-    pass
-
-
-# --------------------------------------------------------------------------- validation
-
-
-def validate_result(
-    raw: dict[str, Any] | None,
-    *,
-    contract_id: str,
-    procedure: str,
-    run_id: str,
-    ticket: str,
-    stage: Stage,
-    input_revision: str,
-) -> StageResult:
-    if raw is None:
-        raise OutputInvalid("no structured result")
-    try:
-        result = StageResult.model_validate(raw)
-    except ValidationError as exc:
-        raise OutputInvalid(
-            f"result does not match the contract ({exc.error_count()} errors): "
-            + "; ".join(e["msg"] for e in exc.errors()[:5])
-        ) from None
-    problems = []
-    if result.contract_id != contract_id:
-        problems.append(
-            f"contract_id {result.contract_id!r} is not {contract_id!r} "
-            "(procedure did not load or is a different version)"
-        )
-    if result.procedure != procedure:
-        problems.append(f"procedure {result.procedure!r} is not {procedure!r}")
-    if result.run_id != run_id or result.ticket_key != ticket:
-        problems.append("run or ticket identity does not match the envelope")
-    if result.stage is not stage:
-        problems.append(f"stage {result.stage.value} is not {stage.value}")
-    if result.input_revision != input_revision:
-        problems.append("input_revision does not match the envelope")
-    if problems:
-        raise OutputInvalid("; ".join(problems))
-    return result
 
 
 def safe_output_file(root: Path, rel: str) -> Path:
@@ -369,6 +326,9 @@ class StageStrategy:
         # The envelope must live in a directory the restricted session may read.
         env_path = ctx.inputs_dir / f"envelope-{procedure}.json"
         atomic_write_json(env_path, envelope)
+        # Interactive sessions write their result to a file and read the schema from here.
+        schema_path = ctx.inputs_dir / "result.schema.json"
+        atomic_write_json(schema_path, result_json_schema())
         inv = ClaudeInvocation(
             run_id=ctx.run_id,
             procedure=procedure,
@@ -385,6 +345,18 @@ class StageStrategy:
             max_turns=ctx.cfg.claude.turns_for(procedure),
             model=ctx.cfg.claude.model_for(procedure),
             extra_env={"TMPDIR": str(ctx.tmp_dir), **port_env(ports or {})},
+            ticket=ctx.key,
+            session_dir=ctx.journal.dir / "sessions" / procedure,
+            result_path=out_dir / RESULT_FILE,
+            schema_path=schema_path,
+            expect={
+                "contract_id": ctx.deps.plugin.contracts[procedure],
+                "procedure": procedure,
+                "run_id": ctx.run_id,
+                "ticket": ctx.key,
+                "stage": self.stage.value,
+                "input_revision": ctx.record.input_revision or "",
+            },
         )
         ctx.journal.events.append(
             "claude_start",
@@ -396,16 +368,16 @@ class StageStrategy:
             },
         )
 
-        def on_start(proc: asyncio.subprocess.Process) -> None:
+        def on_start(child: ChildHandle) -> None:
             if ctx.on_child:
-                ctx.on_child(ctx.key, proc)
+                ctx.on_child(ctx.key, child)
             from delivery.models import ChildProcess
 
             ctx.record = ctx.record.model_copy(
                 update={
                     "child": ChildProcess(
-                        pid=proc.pid,
-                        pgid=proc.pid,
+                        pid=child.pid,
+                        pgid=child.pid,
                         started_at=utcnow(),
                         argv0=ctx.cfg.claude.executable,
                         session_label=inv.session_id,
@@ -413,18 +385,15 @@ class StageStrategy:
                     "state": RunState.RUNNING,
                 }
             )
-            ctx.save("child_started", procedure=procedure, pid=proc.pid)
-
-            async def stop() -> None:
-                await terminate_group(proc)
-
+            ctx.save("child_started", procedure=procedure, pid=child.pid)
             guards = ctx.cfg.claude.guardrails
             watchdog.append(
                 Watchdog(
                     inv.stdout_path,
                     loop_repeats=guards.loop_repeats,
                     stall_seconds=guards.stall_minutes * 60,
-                    stop=stop,
+                    stop=child.stop,
+                    quiet_ok=child.human_active,
                 )
             )
             watch_tasks.append(asyncio.create_task(watchdog[0].run()))
@@ -471,7 +440,7 @@ class StageStrategy:
         if outcome.status is not ClaudeStatus.OK:
             raise WorkerFailure(procedure, outcome, outcome.detail or outcome.status.value)
         try:
-            return validate_result(
+            result = validate_result(
                 outcome.structured,
                 contract_id=ctx.deps.plugin.contracts[procedure],
                 procedure=procedure,
@@ -481,6 +450,8 @@ class StageStrategy:
                 input_revision=ctx.record.input_revision or "",
             )
         except OutputInvalid as exc:
+            if outcome.open_session is not None:
+                await tmux_for(ctx.cfg.claude.interactive).kill(outcome.open_session.name)
             so = outcome.structured or {}
             hint = (
                 f" (worker reported: {str(so.get('blocker_reason') or so.get('summary'))[:300]})"
@@ -488,6 +459,34 @@ class StageStrategy:
                 else ""
             )
             raise WorkerFailure(procedure, outcome, f"output rejected: {exc}{hint}") from None
+        if outcome.open_session is not None:
+            self.keep_open(procedure, worktree, outcome.open_session)
+        return result
+
+    def keep_open(self, procedure: str, worktree: Path, session: OpenSession) -> None:
+        """Track a session left open after hand-off (delivery.open_sessions); keep its worktree."""
+        ctx = self.ctx
+        events = len(read_events(session.session_dir))
+        SessionRegistry(ctx.cfg.runtime.state_dir).save(
+            OpenRecord(
+                name=session.name,
+                ticket_key=ctx.key,
+                run_id=ctx.run_id,
+                stage=self.stage,
+                procedure=procedure,
+                worktree=str(worktree),
+                worktrees=[str(worktree)],
+                journal_dir=str(ctx.journal.dir),
+                session_dir=str(session.session_dir),
+                transcript=session.transcript or "",
+                mirrored_lines=session.mirrored_lines,
+                events_seen=events,
+            )
+        )
+        ctx.journal.events.append(
+            "session_kept_open",
+            {"procedure": procedure, "tmux_session": session.name, "human_prompts": session.human_prompts},
+        )
 
     def worker_decision(self, result: StageResult) -> Decision | None:
         """Map a non-completed worker outcome to a decision."""
@@ -634,8 +633,16 @@ class StageStrategy:
         raise NotImplementedError
 
     async def cleanup(self) -> None:
+        held = SessionRegistry(self.ctx.cfg.runtime.state_dir).held_worktrees(self.ctx.run_id)
         for name, path in list(self.ctx.record.worktrees.items()):
             try:
+                if path in held:
+                    # An open session still works here; it is removed when the session closes.
+                    # Free any other branch for later runs (the feature branch stays, so that
+                    # follow-up changes commit to it; a new development run closes the session).
+                    if name != "feature":
+                        await self.deps.repo.git("checkout", "-q", "--detach", cwd=Path(path), check=False)
+                    continue
                 await self.deps.repo.remove_worktree(Path(path))
             except Exception as exc:
                 self.ctx.journal.events.append("cleanup_failed", {"worktree": name, "error": str(exc)})
@@ -1286,6 +1293,7 @@ class DevelopmentStage(StageStrategy):
             update={"candidate_sha": sha, "pr_number": pr.number, "pr_url": pr.url}
         )
         ctx.save("candidate_published", sha=sha, pr=pr.number)
+        SessionRegistry(ctx.cfg.runtime.state_dir).published(ctx.run_id, sha, n)
         changed = list(d.extra.get("changed", []))
         files = {
             f"{ctx.doc_root}/executions/{ctx.run_id}.json": self.execution_summary(

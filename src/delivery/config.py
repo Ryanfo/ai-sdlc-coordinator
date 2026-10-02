@@ -229,6 +229,33 @@ class GuardrailsConfig(StrictModel):
     stall_minutes: int = Field(default=15, ge=2, le=180)
 
 
+class InteractiveConfig(StrictModel):
+    """Run each Claude session as a normal interactive session inside tmux (see delivery.interactive).
+
+    You can watch it work and type to it. The coordinator still reads a schema-checked result,
+    from a file the session writes; a Stop hook keeps Claude working until that file is valid.
+    """
+
+    enabled: bool = False
+    tmux: str = "tmux"
+    # Name of the coordinator's private tmux server (tmux -L). Change it only to run two
+    # coordinators on one machine.
+    socket: str = Field(default="delivery", pattern=r"^[A-Za-z0-9_-]{1,40}$")
+    # Open a terminal window attached to each session as it starts ("none": attach yourself
+    # with `delivery attach <ticket>`). Opening windows works on macOS only.
+    window: Literal["Terminal", "iTerm", "none"] = "Terminal"
+    # Once Claude has handed its result to the coordinator, leave the session open for
+    # questions. In a development session, changes you ask for there are pushed as a new
+    # candidate and the ticket goes back to Ready for verification.
+    keep_open: bool = True
+    # Close an open session after this long with nothing happening in it.
+    idle_close_hours: int = Field(default=12, ge=1, le=336)
+
+    @property
+    def follow_ups(self) -> bool:
+        return self.enabled and self.keep_open
+
+
 class ClaudeConfig(StrictModel):
     executable: str = "claude"
     plugin_path: Path
@@ -240,6 +267,7 @@ class ClaudeConfig(StrictModel):
     # Per-procedure session timeouts in minutes (others use runtime.timeout_seconds).
     timeout_minutes: dict[str, int] = Field(default_factory=dict)
     guardrails: GuardrailsConfig = GuardrailsConfig()
+    interactive: InteractiveConfig = InteractiveConfig()
     allow_paid_api_fallback: bool = False
     permission_profile: Literal["local_pilot"] = "local_pilot"
     # Default model for every procedure; None means Claude Code's own default.

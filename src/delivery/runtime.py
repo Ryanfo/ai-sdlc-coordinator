@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,11 +9,12 @@ from typing import Any
 
 from pydantic import Field
 
-from delivery.claude import ClaudeRunner
+from delivery.claude import ChildHandle, ClaudeRunner
 from delivery.config import Config
 from delivery.figma import FigmaPort
 from delivery.git import ManagedRepo
 from delivery.intake import Intake, TicketContext
+from delivery.interactive import InteractiveRunner
 from delivery.journal import JournalStore, RunJournal, ensure_private_dir
 from delivery.models import (
     AttachmentRef,
@@ -31,7 +31,7 @@ from delivery.ports import GitHubPort, JiraPort
 from delivery.publication import Publisher
 from delivery.resources import PortRegistry
 
-ChildCallback = Callable[[str, "asyncio.subprocess.Process | None"], None]
+ChildCallback = Callable[[str, "ChildHandle | None"], None]
 
 
 @dataclass
@@ -40,7 +40,7 @@ class Deps:
     jira: JiraPort
     github: GitHubPort
     repo: ManagedRepo
-    claude: ClaudeRunner
+    claude: ClaudeRunner | InteractiveRunner
     store: JournalStore
     plugin: PluginInfo
     locks: RepoLocks

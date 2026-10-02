@@ -42,8 +42,22 @@ def _git_identity(checkout: Path) -> tuple[str, str]:
     return get("user.name") or "delivery coordinator", get("user.email") or "delivery-coordinator@localhost"
 
 
-def build_deps(cfg: Config) -> Any:
+def _claude_runner(cfg: Config) -> Any:
+    """Print mode (``claude -p``), or interactive sessions in tmux when configured."""
     from delivery.claude import ClaudeRunner
+    from delivery.interactive import InteractiveRunner
+
+    if cfg.claude.interactive.enabled:
+        return InteractiveRunner(
+            cfg.claude.executable,
+            cfg.claude.interactive,
+            cfg.runtime.state_dir,
+            worktree_root=cfg.repository.worktree_root,
+        )
+    return ClaudeRunner(cfg.claude.executable)
+
+
+def build_deps(cfg: Config) -> Any:
     from delivery.git import ManagedRepo
     from delivery.github import GhClient
     from delivery.jira import JiraClient
@@ -71,7 +85,7 @@ def build_deps(cfg: Config) -> Any:
         JiraClient(cfg),
         GhClient(cfg.repository.slug),
         repo,
-        ClaudeRunner(cfg.claude.executable),
+        _claude_runner(cfg),
         JournalStore(cfg.runtime.state_dir, cfg.identity_key),
         load_plugin(cfg.claude.plugin_path),
         locks,
@@ -284,6 +298,13 @@ async def _status(args: argparse.Namespace) -> int:
             f"started {s['started_at']} pid {s['child_pid']}"
             for s in live["sessions"]
         ]
+        if live.get("open_sessions"):
+            lines.append(f"Claude sessions open for questions ({len(live['open_sessions'])}):")
+            lines += [
+                f"  {o['ticket']:<12} {o['procedure']:<20} delivery attach {o['ticket']}"
+                + (f"  [waiting: {o['held']}]" if o.get("held") else "")
+                for o in live["open_sessions"]
+            ]
     lines.append("Latest run per ticket:")
     lines += [
         f"  {r['ticket']:<12} {r.get('stage', '-'):<20} {r['state']:<15} {r.get('next_action', '')}"
@@ -648,6 +669,100 @@ def cmd_logs(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _tmux(cfg: Config) -> Any:
+    from delivery.tmux import for_config
+
+    return for_config(cfg.claude.interactive, cfg.runtime.state_dir)
+
+
+def _ticket_sessions(cfg: Config, ticket: str, procedure: str | None) -> list[str]:
+    from delivery.tmux import session_name
+
+    names = asyncio.run(_tmux(cfg).sessions())
+    prefix = session_name(ticket, procedure) if procedure else session_name(ticket, "")
+    return [n for n in names if n.startswith(prefix)]
+
+
+def cmd_attach(args: argparse.Namespace) -> int:
+    """Open a ticket's Claude session in this terminal (Ctrl-b d leaves it running)."""
+    from delivery.open_sessions import SessionRegistry
+
+    cfg = _load(args)
+    tmux = _tmux(cfg)
+    if not tmux.available():
+        print(f"{cfg.claude.interactive.tmux!r} is not installed (brew install tmux).", file=sys.stderr)
+        return EXIT_FAIL
+    found = _ticket_sessions(cfg, args.ticket, args.procedure)
+    if not found:
+        others = asyncio.run(tmux.sessions())
+        print(f"No Claude session is running for {args.ticket}.", file=sys.stderr)
+        if others:
+            print("Running: " + ", ".join(others), file=sys.stderr)
+        return EXIT_FAIL
+    open_names = {r.name for r in SessionRegistry(cfg.runtime.state_dir).all()}
+    # Prefer the session that is working now over ones left open for questions.
+    found.sort(key=lambda n: n in open_names)
+    if len(found) > 1:
+        print(f"{args.ticket} has {len(found)} sessions ({', '.join(found)}); opening {found[0]}.")
+        print("Use --procedure to choose another.")
+    argv = tmux.attach_argv(found[0])
+    os.execvp(argv[0], argv)  # noqa: S606 (argument array, no shell: become the tmux client)
+    return EXIT_OK  # not reached
+
+
+def cmd_sessions(args: argparse.Namespace) -> int:
+    """Claude sessions in tmux: working now, or left open for questions."""
+    from delivery.open_sessions import SessionRegistry
+
+    cfg = _load(args)
+    names = asyncio.run(_tmux(cfg).sessions())
+    kept = {r.name: r for r in SessionRegistry(cfg.runtime.state_dir).all()}
+    rows = []
+    for n in names:
+        r = kept.get(n)
+        rows.append(
+            {
+                "tmux_session": n,
+                "state": "open for questions" if r else "working",
+                "ticket": r.ticket_key if r else n.rsplit("-", 2)[0],
+                "procedure": r.procedure if r else "",
+                "since": r.opened_at.isoformat() if r else "",
+                "follow_ups": [f"c{f['candidate']}" for f in r.followups] if r else [],
+                "waiting": r.held if r else "",
+            }
+        )
+    if not rows:
+        _print(rows, args.json, "No Claude sessions are running.")
+        return EXIT_OK
+    lines = [
+        f"  {row['tmux_session']:<36} {row['state']:<20}"
+        + (f" follow-ups {', '.join(row['follow_ups'])}" if row["follow_ups"] else "")
+        + (f" [waiting: {row['waiting']}]" if row["waiting"] else "")
+        for row in rows
+    ]
+    _print(rows, args.json, "\n".join(["Claude sessions (delivery attach <ticket>):", *lines]))
+    return EXIT_OK
+
+
+def cmd_close(args: argparse.Namespace) -> int:
+    """End a ticket's open Claude sessions (as /exit would); the coordinator then tidies up."""
+    from delivery.open_sessions import SessionRegistry
+
+    cfg = _load(args)
+    kept = {r.name for r in SessionRegistry(cfg.runtime.state_dir).all()}
+    found = [n for n in _ticket_sessions(cfg, args.ticket, args.procedure) if n in kept]
+    if not found:
+        print(f"{args.ticket} has no Claude session open for questions.")
+        return EXIT_FAIL
+    for n in found:
+        asyncio.run(_tmux(cfg).kill(n))
+    print(
+        f"Ended {', '.join(found)}. The running coordinator keeps the conversation in the run's logs, "
+        "saves any unpublished changes and removes the worktree within a few seconds."
+    )
+    return EXIT_OK
+
+
 def cmd_schemas(args: argparse.Namespace) -> int:
     from delivery.models import InputEnvelope, result_json_schema
 
@@ -736,6 +851,18 @@ def parser() -> argparse.ArgumentParser:
     sp.add_argument("--results", dest="verbose_results", action="store_true", help="also show tool output")
     sp.add_argument("--raw", action="store_true", help="print the raw log file paths (for jq)")
     sp.set_defaults(func=cmd_logs)
+    sp = with_config(sub.add_parser("attach", help="open a ticket's Claude session in this terminal"))
+    sp.add_argument("ticket")
+    sp.add_argument("--procedure", help="which session, if the ticket has several (e.g. implement-ticket)")
+    sp.set_defaults(func=cmd_attach)
+    sp = with_config(
+        sub.add_parser("sessions", help="Claude sessions in tmux: working or open for questions")
+    )
+    sp.set_defaults(func=cmd_sessions)
+    sp = with_config(sub.add_parser("close", help="end a ticket's Claude session left open for questions"))
+    sp.add_argument("ticket")
+    sp.add_argument("--procedure")
+    sp.set_defaults(func=cmd_close)
     sp = with_config(sub.add_parser("dispatch", help="pause or resume new launches"))
     sp.add_argument("action", choices=["pause", "resume"])
     sp.add_argument("--reason")

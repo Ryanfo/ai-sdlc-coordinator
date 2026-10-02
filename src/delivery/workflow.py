@@ -131,6 +131,7 @@ class Action(StrEnum):
     ACCEPT_DELIVERY = "accept_delivery"
     REQUEST_ACCEPTANCE_CHANGES = "request_acceptance_changes"
     SUBMIT_IMPLEMENTATION_CHANGES = "submit_implementation_changes"
+    SUBMIT_FOLLOW_UP = "submit_follow_up"
     REVISE_SCOPE = "revise_scope"
     START_RELEASE_PREPARATION = "start_release_preparation"
     COMPLETE_RELEASE_PREPARATION = "complete_release_preparation"
@@ -177,6 +178,7 @@ DEFAULT_ACTION_NAMES: dict[Action, str] = {
     Action.ACCEPT_DELIVERY: "Accept delivery",
     Action.REQUEST_ACCEPTANCE_CHANGES: "Request acceptance changes",
     Action.SUBMIT_IMPLEMENTATION_CHANGES: "Submit implementation changes",
+    Action.SUBMIT_FOLLOW_UP: "Submit follow-up changes",
     Action.REVISE_SCOPE: "Revise scope",
     Action.START_RELEASE_PREPARATION: "Start release preparation",
     Action.COMPLETE_RELEASE_PREPARATION: "Complete release preparation",
@@ -462,7 +464,19 @@ def _coordinator_routes() -> tuple[Route, ...]:
     return tuple(routes)
 
 
-ROUTES: tuple[Route, ...] = _HUMAN_MAIN + _HUMAN_RESUME + _HUMAN_CANCEL + _coordinator_routes()
+# A developer can keep talking to a finished development session (interactive sessions with
+# keep_open). The coordinator publishes changes made there as a new candidate, which must be
+# verified and reviewed again, so the ticket returns to Ready for verification.
+FOLLOW_UP_SOURCES = (Status.CODE_REVIEW, Status.ACCEPTANCE_REVIEW, Status.CHANGES_REQUESTED)
+FOLLOW_UP_STATUSES = frozenset({Status.READY_VERIFICATION, *FOLLOW_UP_SOURCES})
+FOLLOW_UP_ROUTES: tuple[Route, ...] = tuple(
+    Route(s, Action.SUBMIT_FOLLOW_UP, Status.READY_VERIFICATION, Actor.COORDINATOR, Requirement.STAGE_SUCCESS)
+    for s in FOLLOW_UP_SOURCES
+)
+
+ROUTES: tuple[Route, ...] = (
+    _HUMAN_MAIN + _HUMAN_RESUME + _HUMAN_CANCEL + _coordinator_routes() + FOLLOW_UP_ROUTES
+)
 
 
 class IllegalTransition(Exception):

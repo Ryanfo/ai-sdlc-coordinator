@@ -47,6 +47,254 @@ DEFAULT_FILES = {
 }
 
 
+def write_outputs(b: dict, procedure: str, ticket: str, envelope: dict) -> list[dict]:
+    out_dir = Path(envelope["output"]["artifact_dir"])
+    out_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = []
+    if procedure in DEFAULT_FILES and not b.get("skip_output"):
+        name, kind, text = DEFAULT_FILES[procedure]
+        (out_dir / name).write_text(b.get("content", text))
+        artifacts.append({"path": b.get("artifact_path", name), "kind": kind})
+    for rel, text in (b.get("edit") or {}).items():
+        p = Path(os.getcwd()) / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+        artifacts.append({"path": rel, "kind": "code"})
+    if procedure == "implement-ticket" and not b.get("edit") and not b.get("no_changes"):
+        p = Path(os.getcwd()) / "src" / f"{ticket.lower()}.ts"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"export const {ticket.replace('-', '_').lower()} = true;\n")
+        artifacts.append({"path": f"src/{ticket.lower()}.ts", "kind": "code"})
+    for rel, text in (b.get("tamper") or {}).items():
+        (Path(os.getcwd()) / rel).write_text(text)
+    return artifacts
+
+
+def build_result(
+    b: dict, procedure: str, ticket: str, envelope: dict, plugin_dir: str, artifacts: list[dict]
+) -> dict:
+    skill = Path(plugin_dir) / "skills" / procedure / "SKILL.md"
+    contract = re.search(r"contract_id:\s*`([^`]+)`", skill.read_text()).group(1)  # type: ignore[union-attr]
+    result = {
+        "schema_version": 1,
+        "contract_id": b.get("contract_id", contract),
+        "run_id": envelope["run_id"],
+        "ticket_key": ticket,
+        "stage": envelope["stage"],
+        "procedure": procedure,
+        "input_revision": envelope["input_revision"],
+        "outcome": b.get("outcome", "completed"),
+        "summary": b.get("summary", f"{procedure} done for {ticket}"),
+        "artifacts": artifacts,
+        "questions": b.get("questions", []),
+        "findings": b.get("findings", []),
+        "evidence": b.get(
+            "evidence",
+            [
+                {
+                    "criterion_id": "AC1",
+                    "description": "ok",
+                    "status": "met" if procedure.startswith(("verify", "review")) else "defined",
+                }
+            ],
+        ),
+        "worker_checks": b.get("worker_checks", []),
+        "blocker_reason": b.get("blocker_reason", ""),
+    }
+    if procedure == "plan-ticket":
+        result["footprint"] = b.get(
+            "footprint", {"paths": [f"src/{ticket.lower()}.ts"], "components": [f"comp-{ticket}"]}
+        )
+    if procedure == "prepare-release":
+        result["release"] = {
+            "candidate_sha": envelope["source"]["candidate_sha"],
+            "smoke_steps": ["open"],
+            "rollback_steps": ["revert"],
+        }
+    result.update(b.get("override", {}))
+    return result
+
+
+def interactive(argv: list[str], scenario_path: Path) -> int:
+    """Stand-in for an interactive session (no -p), run by the coordinator inside tmux.
+
+    Runs the hooks from --settings exactly as Claude Code would, writes a transcript in Claude
+    Code's format, and then reads lines typed into the pane: ``EDIT <path> <text>`` changes a
+    file in the worktree, ``/exit`` ends the session, anything else gets a short reply.
+    """
+    import subprocess
+
+    prompt = argv[0]
+    settings = json.loads(Path(arg(argv, "--settings") or "").read_text())
+    hooks = settings.get("hooks") or {}
+    session = arg(argv, "--session-id") or str(uuid.uuid4())
+    plugin_dir = arg(argv, "--plugin-dir") or ""
+    transcripts = scenario_path.parent / "transcripts"
+    transcripts.mkdir(exist_ok=True)
+    transcript = transcripts / f"{session}.jsonl"
+    log_dir = scenario_path.parent / "invocations"
+    log_dir.mkdir(exist_ok=True)
+
+    def t(entry: dict) -> None:
+        with transcript.open("a") as fh:
+            fh.write(json.dumps({"sessionId": session, "uuid": str(uuid.uuid4()), **entry}) + "\n")
+
+    def say(text: str, **extra: object) -> None:
+        t(
+            {
+                "type": "assistant",
+                "message": {"id": str(uuid.uuid4()), "content": [{"type": "text", "text": text}]},
+                **extra,
+            }
+        )
+
+    def hook(name: str, **payload: object) -> dict | None:
+        reply = None
+        for group in hooks.get(name, []):
+            for h in group.get("hooks", []):
+                # Hook commands are shell strings, run through a shell as Claude Code does.
+                res = subprocess.run(  # noqa: S602
+                    h["command"],
+                    shell=True,
+                    input=json.dumps({"session_id": session, "transcript_path": str(transcript), **payload}),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if res.stdout.strip():
+                    reply = json.loads(res.stdout)
+        return reply
+
+    hook("SessionStart", source="startup")
+    m = re.match(r"^/delivery:([a-z-]+) (\S+)", prompt)
+    if not m:
+        t({"type": "system", "subtype": "informational", "content": f"Unknown command: {prompt.split()[0]}"})
+        return wait_for_input(hook, t, say)
+    procedure, envelope_path = m.group(1), Path(m.group(2))
+    envelope = json.loads(envelope_path.read_text())
+    ticket = envelope.get("ticket_key", "doctor-probe")
+    b = next_behaviour(scenario_path, ticket, procedure)
+    (log_dir / f"{ticket}-{procedure}-{uuid.uuid4().hex[:8]}.json").write_text(
+        json.dumps(
+            {
+                "argv": argv,
+                "cwd": os.getcwd(),
+                "env_keys": sorted(os.environ),
+                "pid": os.getpid(),
+                "procedure": procedure,
+                "ticket": ticket,
+                "interactive": True,
+                "started": time.time(),
+            }
+        )
+    )
+    hook("UserPromptSubmit", prompt=prompt)
+    t({"type": "user", "message": {"role": "user", "content": prompt}})
+    if b.get("no_plugin"):
+        t(
+            {
+                "type": "system",
+                "subtype": "informational",
+                "content": f"Unknown command: /delivery:{procedure}",
+            }
+        )
+        return wait_for_input(hook, t, say)
+    t(
+        {
+            "type": "user",
+            "isMeta": True,
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Base directory for this skill: {plugin_dir}/skills/{procedure}\n\n# {procedure}",
+                    }
+                ],
+            },
+        }
+    )
+    result_path = Path(re.search(r"JSON object to (\S+?);", prompt).group(1))  # type: ignore[union-attr]
+    if b.get("usage_limit"):
+        say(
+            "Claude usage limit reached. Your limit resets at 5pm.",
+            isApiErrorMessage=True,
+            error="rate_limit",
+        )
+        hook("Stop", stop_hook_active=False)
+        return wait_for_input(hook, t, say)
+    artifacts = write_outputs(b, procedure, ticket, envelope)
+    result = build_result(b, procedure, ticket, envelope, plugin_dir, artifacts)
+    if b.get("deny"):
+        t(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "d1",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_d1",
+                            "name": "Bash",
+                            "input": {"command": "gh auth status"},
+                        }
+                    ],
+                },
+            }
+        )
+        t(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_d1",
+                            "is_error": True,
+                            "content": "Permission to use Bash with command gh auth status has been denied.",
+                        }
+                    ]
+                },
+            }
+        )
+    forget = int(b.get("forget_result", 0))  # stops before writing the result this many times
+    if not forget:
+        result_path.write_text(json.dumps(result))
+    say(f"{procedure} done")
+    reply = hook("Stop", stop_hook_active=False)
+    while reply and reply.get("decision") == "block":
+        t({"type": "user", "isMeta": True, "message": {"content": f"Stop hook feedback:\n{reply['reason']}"}})
+        forget -= 1
+        if forget <= 0 and not b.get("never_result"):
+            result_path.write_text(json.dumps(result))
+        say("Wrote the result.")
+        reply = hook("Stop", stop_hook_active=True)
+    return wait_for_input(hook, t, say)
+
+
+def wait_for_input(hook, t, say) -> int:  # type: ignore[no-untyped-def]
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        if line == "/exit":
+            hook("SessionEnd", reason="prompt_input_exit")
+            return 0
+        hook("UserPromptSubmit", prompt=line)
+        t({"type": "user", "message": {"role": "user", "content": line}})
+        if line.startswith("EDIT "):
+            _, rel, text = line.split(" ", 2)
+            target = Path(os.getcwd()) / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text + "\n")
+            say(f"Changed {rel}.")
+        else:
+            say(f"You said: {line}")
+        hook("Stop", stop_hook_active=False)
+    hook("SessionEnd", reason="other")
+    return 0
+
+
 def main() -> int:
     argv = sys.argv[1:]
     scenario_path = Path(argv[argv.index("--scenario") + 1])
@@ -86,6 +334,8 @@ def main() -> int:
             )
         )
         return 0
+    if "-p" not in argv:
+        return interactive(argv, scenario_path)
     prompt = arg(argv, "-p") or ""
     m = re.match(r"^/delivery:([a-z-]+) (\S+)", prompt)
     if not m:
@@ -217,25 +467,7 @@ def main() -> int:
         print("boom", file=sys.stderr)
         return int(b["exit_code"])
 
-    out_dir = Path(envelope["output"]["artifact_dir"])
-    out_dir.mkdir(parents=True, exist_ok=True)
-    artifacts = []
-    if procedure in DEFAULT_FILES and not b.get("skip_output"):
-        name, kind, text = DEFAULT_FILES[procedure]
-        (out_dir / name).write_text(b.get("content", text))
-        artifacts.append({"path": b.get("artifact_path", name), "kind": kind})
-    for rel, text in (b.get("edit") or {}).items():
-        p = Path(os.getcwd()) / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text)
-        artifacts.append({"path": rel, "kind": "code"})
-    if procedure == "implement-ticket" and not b.get("edit") and not b.get("no_changes"):
-        p = Path(os.getcwd()) / "src" / f"{ticket.lower()}.ts"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(f"export const {ticket.replace('-', '_').lower()} = true;\n")
-        artifacts.append({"path": f"src/{ticket.lower()}.ts", "kind": "code"})
-    for rel, text in (b.get("tamper") or {}).items():
-        (Path(os.getcwd()) / rel).write_text(text)
+    artifacts = write_outputs(b, procedure, ticket, envelope)
     if b.get("loop"):
         # Stuck: the same failing command with the same output, until the coordinator stops it.
         for i in range(int(b["loop"])):
@@ -300,45 +532,7 @@ def main() -> int:
         )
         return 1
 
-    skill = Path(plugin_dir) / "skills" / procedure / "SKILL.md"
-    contract = re.search(r"contract_id:\s*`([^`]+)`", skill.read_text()).group(1)  # type: ignore[union-attr]
-    result = {
-        "schema_version": 1,
-        "contract_id": b.get("contract_id", contract),
-        "run_id": envelope["run_id"],
-        "ticket_key": ticket,
-        "stage": envelope["stage"],
-        "procedure": procedure,
-        "input_revision": envelope["input_revision"],
-        "outcome": b.get("outcome", "completed"),
-        "summary": b.get("summary", f"{procedure} done for {ticket}"),
-        "artifacts": artifacts,
-        "questions": b.get("questions", []),
-        "findings": b.get("findings", []),
-        "evidence": b.get(
-            "evidence",
-            [
-                {
-                    "criterion_id": "AC1",
-                    "description": "ok",
-                    "status": "met" if procedure.startswith(("verify", "review")) else "defined",
-                }
-            ],
-        ),
-        "worker_checks": b.get("worker_checks", []),
-        "blocker_reason": b.get("blocker_reason", ""),
-    }
-    if procedure == "plan-ticket":
-        result["footprint"] = b.get(
-            "footprint", {"paths": [f"src/{ticket.lower()}.ts"], "components": [f"comp-{ticket}"]}
-        )
-    if procedure == "prepare-release":
-        result["release"] = {
-            "candidate_sha": envelope["source"]["candidate_sha"],
-            "smoke_steps": ["open"],
-            "rollback_steps": ["revert"],
-        }
-    result.update(b.get("override", {}))
+    result = build_result(b, procedure, ticket, envelope, plugin_dir, artifacts)
     print(
         json.dumps(
             {

@@ -22,6 +22,7 @@ from typing import Any
 
 from delivery import __version__, console
 from delivery import comments as comment_text
+from delivery.claude import ChildHandle
 from delivery.control import ControlServer, socket_path
 from delivery.coordinator import StageExecutor
 from delivery.intake import (
@@ -35,6 +36,7 @@ from delivery.intake import (
 )
 from delivery.journal import JournalCorrupt, RunJournal, SupervisorRecord
 from delivery.models import ACTIVE_RUN_STATES, RunRecord, RunState, digest, utcnow
+from delivery.open_sessions import OpenSessions
 from delivery.ownership import (
     FileLock,
     LockHeld,
@@ -58,7 +60,7 @@ class Session:
     key: str
     rc: RunContext
     task: asyncio.Task[RunRecord]
-    process: asyncio.subprocess.Process | None = None
+    process: ChildHandle | None = None
 
 
 @dataclass
@@ -94,6 +96,14 @@ class Supervisor:
         self._noted: set[str] = set()
         self.backoff_until: float = 0.0
         self.backoff_seconds: float = 0.0
+        # Tickets being started or having a follow-up published: never both at once.
+        self.busy: set[str] = set()
+        self.open: OpenSessions | None = (
+            OpenSessions(deps, self.emit, is_running=lambda k: k in self.sessions, busy=self.busy)
+            if self.cfg.claude.interactive.enabled
+            else None
+        )
+        self._open_task: asyncio.Task[None] | None = None
 
     # ------------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Supervisor:
@@ -137,7 +147,17 @@ class Supervisor:
                 loop.add_signal_handler(sig, self.stop_event.set)
 
     async def shutdown(self) -> None:
-        """Stop and checkpoint every owned child, then release the identity lock."""
+        """Stop and checkpoint every owned child, then release the identity lock.
+
+        Sessions left open for questions keep running in tmux; they are watched again on restart.
+        """
+        if self._open_task:
+            self._open_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._open_task
+        if self.open and (left := self.open.registry.all()):
+            names = ", ".join(f"{r.ticket_key} {r.procedure}" for r in left)
+            self.emit(console.line(f"still open in tmux (watched again on restart): {names}"))
         tasks = []
         for s in list(self.sessions.values()):
             s.rc.stop_reason, s.rc.stop_hold = "supervisor shutdown", False
@@ -159,6 +179,8 @@ class Supervisor:
         if not self.dry_run:
             await self.deps.repo.ensure()
         await self.reconcile()
+        if self.open and not self.dry_run and not once:
+            self._open_task = asyncio.create_task(self._watch_open(), name="open-sessions")
         while not self.stop_event.is_set():
             if not self.record.dispatch_paused:
                 await self.poll_once()
@@ -172,6 +194,17 @@ class Supervisor:
             delay = max(delay, self.backoff_until - asyncio.get_running_loop().time())
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.stop_event.wait(), timeout=delay)
+
+    async def _watch_open(self) -> None:
+        """Sessions left open after hand-off: follow-up changes, closing (delivery.open_sessions)."""
+        assert self.open is not None
+        while not self.stop_event.is_set():
+            try:
+                await self.open.tick()
+            except Exception:
+                log.exception("open-session check failed")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.stop_event.wait(), timeout=OPEN_SESSION_TICK_SECONDS)
 
     # ------------------------------------------------------------------ discovery
     async def poll_once(self) -> PollReport:
@@ -313,15 +346,24 @@ class Supervisor:
             verb = "take over" if adopt else "start"
             self.emit(f"[dry-run] would {verb} {stage.value} for {key}: {intake.kind.value} {intake.reason}")
             return
-        rc = executor.create_run(ctx, intake, adopted=adopt)
-        if not self.claims.claim(key, rc.run_id):
-            rc.record = rc.record.model_copy(
-                update={"state": RunState.FAILED, "reason": "ticket already claimed"}
-            )
-            rc.save("claim_refused")
-            report.skipped.append({"ticket": key, "reason": "ticket already claimed by another run"})
+        if key in self.busy:
+            report.skipped.append({"ticket": key, "reason": "a follow-up change is being published"})
             return
-        self._launch(rc)
+        self.busy.add(key)
+        try:
+            rc = executor.create_run(ctx, intake, adopted=adopt)
+            if not self.claims.claim(key, rc.run_id):
+                rc.record = rc.record.model_copy(
+                    update={"state": RunState.FAILED, "reason": "ticket already claimed"}
+                )
+                rc.save("claim_refused")
+                report.skipped.append({"ticket": key, "reason": "ticket already claimed by another run"})
+                return
+            if self.open:
+                await self.open.close_for_run(key, stage)
+            self._launch(rc)
+        finally:
+            self.busy.discard(key)
         report.started.append(key)
 
     def _launch(self, rc: RunContext, resume: bool = False, publish_only: bool = False) -> None:
@@ -361,7 +403,7 @@ class Supervisor:
             )
         )
 
-    def _on_child(self, key: str, proc: asyncio.subprocess.Process | None) -> None:
+    def _on_child(self, key: str, proc: ChildHandle | None) -> None:
         if key in self.sessions:
             self.sessions[key].process = proc
 
@@ -441,11 +483,15 @@ class Supervisor:
             self._launch(rc, resume=True, publish_only=True)
             return "reconciling publication"
         if rec.state in (RunState.DISCOVERED, RunState.STARTING) and ctx.status is sd.ready:
+            if self.open:
+                await self.open.close_for_run(rec.ticket_key, rec.stage)
             self._launch(rc, resume=True)
             return "restarting prepared attempt"
         if ctx.status is sd.active and rec.state in (*ACTIVE_RUN_STATES, RunState.INTERRUPTED):
             rc.record = rec.model_copy(update={"state": RunState.RUNNING, "held": False, "hold_reason": ""})
             rc.save("resumed")
+            if self.open:
+                await self.open.close_for_run(rec.ticket_key, rec.stage)
             self._launch(rc, resume=True)
             return "resuming interrupted work with a fresh session"
         self.claims.release(rec.ticket_key, rec.run_id)
@@ -598,6 +644,10 @@ class Supervisor:
             return {
                 "ok": True,
                 "sessions": self.session_rows(),
+                "open_sessions": [
+                    {"ticket": r.ticket_key, "procedure": r.procedure, "tmux": r.name, "held": r.held}
+                    for r in (self.open.registry.all() if self.open else [])
+                ],
                 "dispatch_paused": self.record.dispatch_paused,
                 "corrupt": self.corrupt,
                 "worker_id": self.cfg.identity.worker_id,
@@ -623,5 +673,6 @@ class Supervisor:
 
 
 TERMINAL = frozenset({RunState.AWAITING_HUMAN, RunState.COMPLETED, RunState.FAILED, RunState.BLOCKED})
+OPEN_SESSION_TICK_SECONDS = 3.0
 
 __all__ = ["JournalCorrupt", "LockHeld", "PollReport", "Supervisor"]

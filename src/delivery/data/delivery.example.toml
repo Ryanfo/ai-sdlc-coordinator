@@ -104,6 +104,16 @@ permission_profile = "local_pilot"
 # loop_repeats = 6     # same step with the same result this many times in its last 30 steps
 # stall_minutes = 15   # no activity in the session log for this long
 
+# Watch Claude work and type to it: each session runs as a normal interactive `claude` in tmux
+# (brew install tmux) with the same restrictions, and a terminal window opens on it.
+# [claude.interactive]
+# enabled = true
+# window = "Terminal"       # or "iTerm", or "none" (then: delivery attach <ticket>)
+# keep_open = true          # stay open for questions after handing over the result; changes
+#                           # you ask for in a development session are pushed as a new
+#                           # candidate and the ticket returns to Ready for verification
+# idle_close_hours = 12
+
 [approvals]
 # Humans allowed to approve specification, plan, acceptance and release gates.
 jira_account_ids = ["APPROVER_ACCOUNT_ID"]

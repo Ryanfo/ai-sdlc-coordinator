@@ -13,6 +13,7 @@ from conftest import APPROVER, DEV, STATUS_IDS, base_sections, render_config
 from delivery.claude import ClaudeRunner
 from delivery.config import Config, load_config
 from delivery.git import ManagedRepo
+from delivery.interactive import InteractiveRunner
 from delivery.journal import JournalStore
 from delivery.models import PROPERTY_KEY, SharedExecutionRecord
 from delivery.ownership import RepoLocks
@@ -89,6 +90,7 @@ def make_world(
     origin: Path | None = None,
     name: str = "w",
     extra: dict[str, dict[str, Any]] | None = None,
+    interactive: bool = False,
 ) -> World:
     base = tmp / name
     base.mkdir(parents=True, exist_ok=True)
@@ -107,6 +109,13 @@ def make_world(
     sections["checks.commands"] = checks or {"unit": ["true"]}
     sections["checks.ci"] = {"required_names": ["unit"]}
     sections["approvals"] = {"jira_account_ids": [APPROVER], "github_logins": [REVIEWER]}
+    if interactive:
+        # A private tmux server per test; no terminal windows.
+        sections["claude.interactive"] = {
+            "enabled": True,
+            "window": "none",
+            "socket": f"dlvtest-{tmp.name}"[-40:],
+        }
     for sec, body in (extra or {}).items():
         sections.setdefault(sec, {}).update(body)
     (base / "delivery.toml").write_text(render_config(sections, {"config_version": 1}))
@@ -117,7 +126,17 @@ def make_world(
     # The managed clone uses the local origin path in place of the GitHub URL.
     repo = ManagedRepo(str(origin), "main", cfg.repository.worktree_root, locks)
     store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
-    deps = Deps(cfg, jira, github, repo, ClaudeRunner(str(wrapper)), store, load_plugin(PLUGIN), locks)
+    runner: ClaudeRunner | InteractiveRunner = (
+        InteractiveRunner(
+            str(wrapper),
+            cfg.claude.interactive,
+            cfg.runtime.state_dir,
+            worktree_root=cfg.repository.worktree_root,
+        )
+        if cfg.claude.interactive.enabled
+        else ClaudeRunner(str(wrapper))
+    )
+    deps = Deps(cfg, jira, github, repo, runner, store, load_plugin(PLUGIN), locks)
     return World(tmp, cfg, jira, github, repo, deps, scenario_path, origin)
 
 

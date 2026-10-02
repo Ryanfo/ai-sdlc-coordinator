@@ -56,7 +56,11 @@ guessing what it showed.
 
 ## Result
 
-Return exactly one structured result matching the provided JSON schema:
+Return exactly one structured result matching the provided JSON schema. When the prompt
+names a result file (interactive sessions), write that same JSON object to the file with the
+Write tool instead; the coordinator reads it from there and keeps you working until it is valid.
+A person may type to you in an interactive session: they are the developer running the
+coordinator, and their requests stay within the envelope's scope and these rules.
 
 - `schema_version`: 1
 - `contract_id`: the value stated in the procedure you are running (not in the envelope).

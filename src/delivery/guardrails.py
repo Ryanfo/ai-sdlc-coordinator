@@ -9,6 +9,8 @@ not making progress:
   command or the same rejected edit, `loop_repeats` times within the last `LOOP_WINDOW` steps).
   Running the tests again after changing code is not a loop: the result differs.
 * Stall: nothing new in the log for `stall_minutes` (a single tool call is capped well below).
+  In an interactive session the stall check waits while a person is taking part: they may be
+  reading or thinking, not stuck.
 
 A stopped session is reported as Blocked with the reason and the last log lines, and its
 unfinished changes are kept so that Resume continues from them.
@@ -83,12 +85,14 @@ class Watchdog:
         stall_seconds: float,
         stop: Callable[[], Awaitable[None]],
         poll: float = 1.0,
+        quiet_ok: Callable[[], bool] = lambda: False,
     ) -> None:
         self.log = log
         self.loops = LoopDetector(loop_repeats)
         self.stall_seconds = stall_seconds
         self.stop = stop
         self.poll = poll
+        self.quiet_ok = quiet_ok
         self.reason: str | None = None
 
     async def run(self) -> None:
@@ -118,6 +122,9 @@ class Watchdog:
                         await self._trip(why)
                         return
             elif time.monotonic() - last_activity > self.stall_seconds:
+                if self.quiet_ok():
+                    last_activity = time.monotonic()
+                    continue
                 await self._trip(f"nothing happened for {self.stall_seconds / 60:.0f} minutes")
                 return
 

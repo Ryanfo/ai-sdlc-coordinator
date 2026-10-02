@@ -41,6 +41,35 @@ procedure), run/ticket/stage/input identity, artefact paths (no absolute paths, 
 symlinks; size limits), protected paths in the diff, tracked-file changes after review and
 verification, and the plugin load reported by the CLI's own `system/init` event.
 
+## Interactive sessions (`[claude.interactive] enabled`)
+
+The session is the interactive CLI in the coordinator's private tmux server instead of `-p`:
+
+```text
+tmux -L delivery new-session -d -s <ticket>-<procedure> -c <worktree> --
+  /usr/bin/env -i <PATH HOME USER locale TMPDIR ports TERM>
+  claude "<the same prompt> + write the result to <output>/result.json"
+  --restricted --plugin-dir <plugins/delivery> --settings <generated per run, plus hooks>
+  --strict-mcp-config --permission-mode dontAsk --tools <role set> --session-id <uuid>
+  --name "<ticket> <procedure>" --add-dir <output> --add-dir <inputs> --add-dir <plugin>
+```
+
+| Difference from print mode | Why it is safe |
+|---|---|
+| Result comes from `<output>/result.json`, not `--json-schema` | The same `validate_result` checks run twice: in the Stop hook (Claude is told to carry on until it passes, at most three times in a row) and again by the stage |
+| Plugin proof is the skill's "Base directory for this skill" transcript line, not `system/init` | It must point into the configured plugin directory; Claude Code's own "Unknown command: /delivery:…" notice fails the run at once. The contract ID check is unchanged |
+| Hooks (`python -m delivery.session_hook`) run outside the sandbox | They are written by the coordinator into its generated `--settings`; `--restricted` still ignores every other settings file, so the repository cannot add hooks. They only append to the run's session directory, which the session's own tools cannot write |
+| The environment comes from `env -i` | Exactly the variables listed; nothing from the coordinator or the tmux server leaks in |
+| Claude Code's folder-trust question is answered yes | Only for the coordinator's own worktrees under `worktree_root` (print mode skips the question). Trust lets a repository's `.claude` settings apply, which `--restricted` ignores anyway |
+| A person can type to Claude, and use Claude Code's mode switch | They are the developer the coordinator works for. `--restricted` still refuses bypassPermissions, the sandbox still applies to every shell command, and the deny rules are unchanged |
+| Claude Code saves the transcript under `~/.claude/projects` | It is mirrored into the run's logs as it is written, and that copy of the transcript is deleted when the session ends |
+| Sessions can stay open after hand-off and their changes are pushed | The coordinator pushes, never Claude (no credentials, push denied). Only from the feature worktree, fast-forward only, never protected paths, only while the ticket is in a review status or Ready for verification with no run working on it. Each push is a new candidate that supersedes code, acceptance and release approvals and goes back through verification |
+
+On 2 Oct 2026 (Claude Code 2.1.287, macOS) `--claude-probe` ran the same probe through an
+interactive session in tmux, with the folder-trust question answered by the coordinator: every
+row of the table below passed, the plugin proof came from the transcript, the result from the
+hook-checked file, and no transcript was left under `~/.claude/projects`.
+
 ## Verified on this machine (1 Oct 2026, Claude Code 2.1.278, macOS)
 
 `delivery doctor --claude-probe` ran a real session with the verifier profile:
