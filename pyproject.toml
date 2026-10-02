@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 delivery = "delivery.cli:main"
+coordinator = "delivery.cli:coordinator_main"
 
 [build-system]
 requires = ["hatchling>=1.24"]

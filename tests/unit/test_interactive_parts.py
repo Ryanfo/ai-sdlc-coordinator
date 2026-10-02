@@ -276,3 +276,22 @@ async def test_tmux_sessions_get_exactly_the_given_environment(tmp_path: Path) -
     finally:
         await t.kill(name)
     assert not await t.alive(name)
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        ([], ["run"]),
+        (["--dry-run"], ["run", "--dry-run"]),
+        (["-v", "--once"], ["-v", "run", "--once"]),
+        (["--config", "x.toml"], ["run", "--config", "x.toml"]),
+        (["attach", "PILOT-1"], ["attach", "PILOT-1"]),
+        (["status", "--json"], ["status", "--json"]),
+        (["--help"], ["--help"]),
+    ],
+)
+def test_coordinator_alone_starts_the_supervisor(argv: list[str], expected: list[str]) -> None:
+    from delivery.cli import coordinator_args, parser
+
+    sub = next(a for a in parser()._actions if a.dest == "command")
+    assert coordinator_args(argv, set(sub.choices)) == expected  # type: ignore[attr-defined]

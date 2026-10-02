@@ -56,12 +56,16 @@ uv run delivery --help
 ```
 
 The rest of this guide writes plain `delivery …`. To run it like that from any folder, install
-the command once. `--editable` means it runs this repository's code directly, so pulling
+the commands once. `--editable` means they run this repository's code directly, so pulling
 updates needs no reinstall:
 
 ```bash
 uv tool install --editable .
 ```
+
+This also installs `coordinator`: on its own it starts the supervisor with your config
+(`delivery run`), and `coordinator <command>` is `delivery <command>`, for example
+`coordinator attach PILOT-123`, `coordinator status` or `coordinator --dry-run`.
 
 Otherwise run every command from this folder with `uv run` in front, for example
 `uv run delivery doctor --config ~/delivery.local.toml`.

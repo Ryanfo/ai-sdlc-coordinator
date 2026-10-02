@@ -899,5 +899,25 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
+def coordinator_args(argv: list[str], commands: set[str]) -> list[str]:
+    """``coordinator`` alone starts the supervisor; ``coordinator <command>`` is ``delivery <command>``.
+
+    Options without a command go to ``run`` (``coordinator --dry-run``), except ``-v`` which is
+    the global verbose flag, and ``--help``/``--version`` which describe everything.
+    """
+    if any(a in commands for a in argv) or any(a in ("-h", "--help", "--version") for a in argv):
+        return argv
+    verbose = [a for a in argv if a in ("-v", "--verbose")]
+    return [*verbose, "run", *[a for a in argv if a not in ("-v", "--verbose")]]
+
+
+def coordinator_main(argv: list[str] | None = None) -> int:
+    """Entry point of the ``coordinator`` command (see :func:`coordinator_args`)."""
+    p = parser()
+    sub = next(a for a in p._actions if isinstance(a, argparse._SubParsersAction))
+    args = coordinator_args(sys.argv[1:] if argv is None else argv, set(sub.choices))
+    return main(args)
+
+
 if __name__ == "__main__":
     sys.exit(main())
