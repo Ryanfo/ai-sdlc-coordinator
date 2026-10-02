@@ -347,7 +347,11 @@ class Supervisor:
             finally:
                 self.claims.release(rc.key, rc.run_id)
                 self.sessions.pop(rc.key, None)
-                self.emit(console.session_finished(self.cfg, rc.record, rc.ticket.issue.view.summary))
+                self.emit(
+                    console.session_finished(
+                        self.cfg, rc.record, rc.ticket.issue.view.summary, rc.journal.dir / "logs"
+                    )
+                )
 
         task = asyncio.create_task(runner(), name=rc.run_id)
         self.sessions[rc.key] = Session(rc.key, rc, task)

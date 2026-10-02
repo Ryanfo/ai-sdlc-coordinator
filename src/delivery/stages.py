@@ -8,6 +8,7 @@ a crash without duplicating comments, commits, PRs or transitions.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import fnmatch
 import json
 import re
@@ -26,7 +27,8 @@ from delivery.gates import (
     gate_token,
     supersede_for_new_revision,
 )
-from delivery.git import blob_url, commit_url
+from delivery.git import GitError, blob_url, commit_url
+from delivery.guardrails import Watchdog
 from delivery.journal import atomic_write_json, ensure_private_dir
 from delivery.models import (
     ArtefactPointer,
@@ -42,6 +44,7 @@ from delivery.models import (
     OutputContract,
     OverlapContext,
     PauseInfo,
+    PriorWork,
     RunState,
     SelectedComment,
     Severity,
@@ -54,9 +57,11 @@ from delivery.models import (
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
 from delivery.permissions import PROCEDURE_ROLES, PROTECTED_WORKTREE_PATHS, build_profile
+from delivery.proc import terminate_group
 from delivery.publication import Posted
 from delivery.resources import port_env
 from delivery.runtime import Decision, RunContext
+from delivery.transcript import write_transcript
 from delivery.workflow import Action, Stage, Status
 
 MAX_OUTPUT_FILE_BYTES = 2_000_000
@@ -272,6 +277,7 @@ class StageStrategy:
         ports: dict[str, int] | None = None,
         review_report: str | None = None,
         write_globs: list[str] | None = None,
+        prior_work: PriorWork | None = None,
     ) -> InputEnvelope:
         ctx = self.ctx
         issue = ctx.ticket.issue
@@ -306,6 +312,7 @@ class StageStrategy:
             attachments_skipped=ctx.attachments_skipped,
             designs=ctx.designs,
             designs_skipped=ctx.designs_skipped,
+            prior_work=prior_work,
             clarification_round=ctx.intake.round_token,
             feedback_token=ctx.intake.feedback_token,
             approved_artefacts=approved or [],
@@ -372,10 +379,10 @@ class StageStrategy:
             settings_path=settings_path,
             tools=profile.tools,
             add_dirs=profile.add_dirs,
-            timeout=ctx.cfg.runtime.timeout_seconds,
+            timeout=ctx.cfg.claude.timeout_for(procedure, ctx.cfg.runtime.timeout_seconds),
             stdout_path=ctx.logs_dir / f"claude-{procedure}.jsonl",
             stderr_path=ctx.logs_dir / f"claude-{procedure}.stderr.log",
-            max_turns=ctx.cfg.claude.max_turns,
+            max_turns=ctx.cfg.claude.turns_for(procedure),
             model=ctx.cfg.claude.model_for(procedure),
             extra_env={"TMPDIR": str(ctx.tmp_dir), **port_env(ports or {})},
         )
@@ -408,12 +415,35 @@ class StageStrategy:
             )
             ctx.save("child_started", procedure=procedure, pid=proc.pid)
 
+            async def stop() -> None:
+                await terminate_group(proc)
+
+            guards = ctx.cfg.claude.guardrails
+            watchdog.append(
+                Watchdog(
+                    inv.stdout_path,
+                    loop_repeats=guards.loop_repeats,
+                    stall_seconds=guards.stall_minutes * 60,
+                    stop=stop,
+                )
+            )
+            watch_tasks.append(asyncio.create_task(watchdog[0].run()))
+
+        watchdog: list[Watchdog] = []
+        watch_tasks: list[asyncio.Task[None]] = []
         try:
             outcome = await self.deps.claude.run(inv, on_start=on_start)
         finally:
+            for t in watch_tasks:
+                t.cancel()
             if ctx.on_child:
                 ctx.on_child(ctx.key, None)
             ctx.record = ctx.record.model_copy(update={"child": None})
+            write_transcript(inv.stdout_path)
+        if watchdog and watchdog[0].reason:
+            outcome = dataclasses.replace(
+                outcome, status=ClaudeStatus.GUARDRAIL, detail=f"stopped by a guardrail: {watchdog[0].reason}"
+            )
         ctx.journal.events.append(
             "claude_end",
             {
@@ -971,6 +1001,11 @@ def findings_json(findings: list[OverlapFinding]) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- development
 
 
+def _ref(p: ArtefactPointer) -> str:
+    """Identity of an approved document, independent of where a run keeps its copy."""
+    return f"{p.kind.value}:v{p.revision}:{p.commit or ''}"
+
+
 class DevelopmentStage(StageStrategy):
     stage = Stage.DEVELOPMENT
 
@@ -1003,7 +1038,8 @@ class DevelopmentStage(StageStrategy):
         repo = self.deps.repo
         base = ctx.cfg.repository.base_branch
         wt = ctx.worktree_path("feature")
-        if not wt.exists():
+        fresh = not wt.exists()
+        if fresh:
             exists = await repo.remote_sha(ctx.feature_branch)
             start = f"origin/{ctx.feature_branch}" if exists else f"origin/{base}"
             await repo.add_worktree(wt, start=start, branch=ctx.feature_branch)
@@ -1037,6 +1073,7 @@ class DevelopmentStage(StageStrategy):
             )
         ports = ctx.record.ports or self.deps.ports.allocate(ctx.run_id)
         ctx.record = ctx.record.model_copy(update={"ports": ports})
+        prior = await self._continue_unfinished(wt, start_sha, spec, plan) if fresh else None
         out = ctx.output_dir("implement-ticket")
         env = self.envelope(
             "implement-ticket",
@@ -1046,9 +1083,16 @@ class DevelopmentStage(StageStrategy):
             ports=ports,
             source=self.source_refs(feature_commit=start_sha),
             write_globs=[f"{wt}/**", f"{out}/**"],
+            prior_work=prior,
         )
-        result = await self.run_procedure("implement-ticket", wt, env, ports=ports)
+        try:
+            result = await self.run_procedure("implement-ticket", wt, env, ports=ports)
+        except WorkerFailure:
+            # Out of turns or time, a provider limit: keep the unfinished changes for Resume.
+            await self._save_unfinished(wt, start_sha, spec, plan)
+            raise
         if (d := self.worker_decision(result)) is not None:
+            await self._save_unfinished(wt, start_sha, spec, plan)
             return d
         head = await repo.worktree_head(wt)
         if head != start_sha:
@@ -1087,6 +1131,70 @@ class DevelopmentStage(StageStrategy):
             result=result.model_dump(mode="json"),
             extra={"changed": changed, "start_sha": start_sha},
         )
+
+    async def _save_unfinished(
+        self, wt: Path, start_sha: str, spec: ArtefactPointer, plan: ArtefactPointer
+    ) -> None:
+        """Keep a session's unfinished changes so the next development run continues from them."""
+        ctx, repo = self.ctx, self.deps.repo
+        try:
+            await repo.git("add", "-A", cwd=wt)
+            target = ctx.journal.dir / "wip"
+            target.mkdir(mode=0o700, exist_ok=True)
+            patch = target / "changes.patch"
+            await repo.git("diff", "--cached", "--binary", f"--output={patch}", start_sha, cwd=wt)
+            files = await repo.changed_paths(wt, start_sha)
+        except (GitError, OSError) as exc:
+            ctx.journal.events.append("wip_not_saved", {"error": str(exc)[:300]})
+            return
+        if not files or not patch.exists() or patch.stat().st_size == 0:
+            return
+        patch.chmod(0o600)
+        meta = {"start_sha": start_sha, "spec": _ref(spec), "plan": _ref(plan), "files": files}
+        ctx.record.outputs["wip"] = meta
+        ctx.save("wip_saved", files=len(files))
+
+    async def _continue_unfinished(
+        self, wt: Path, start_sha: str, spec: ArtefactPointer, plan: ArtefactPointer
+    ) -> PriorWork | None:
+        """Apply the latest unfinished changes from an earlier run of this ticket, if they were
+        made from the same starting commit, specification and plan."""
+        ctx = self.ctx
+        for e in reversed(self.deps.store.runs_for_ticket(ctx.key)):
+            rec = e.record
+            if e.run_id == ctx.run_id or rec is None or rec.stage is not Stage.DEVELOPMENT:
+                continue
+            meta = rec.outputs.get("wip")
+            patch = e.journal.dir / "wip" / "changes.patch"
+            if not meta or not patch.exists():
+                continue
+            if (meta.get("start_sha"), meta.get("spec"), meta.get("plan")) != (
+                start_sha,
+                _ref(spec),
+                _ref(plan),
+            ):
+                return None  # the inputs moved on; start from the approved plan again
+            applied = await self.deps.repo.git(
+                "apply", "--index", "--binary", str(patch), cwd=wt, check=False
+            )
+            if applied.returncode != 0:
+                ctx.journal.events.append(
+                    "wip_not_applied", {"from": e.run_id, "error": applied.stderr[:300]}
+                )
+                return None
+            tail_path = None
+            logs = sorted((e.journal.dir / "logs").glob("claude-implement-ticket.jsonl"))
+            if logs:
+                from delivery.transcript import render_file
+
+                tail = [ln for ln in render_file(logs[-1]) if ln.strip()][-40:]
+                tail_file = ctx.inputs_dir / "prior-session-tail.txt"
+                tail_file.write_text("\n".join(tail) + "\n")
+                tail_path = str(tail_file)
+            ctx.record.outputs["continued_from"] = e.run_id
+            ctx.save("wip_applied", source=e.run_id, files=len(meta.get("files", [])))
+            return PriorWork(run_id=e.run_id, files=list(meta.get("files", [])), session_tail_path=tail_path)
+        return None
 
     async def publish(self, d: Decision) -> None:
         ctx = self.ctx

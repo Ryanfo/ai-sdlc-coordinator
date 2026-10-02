@@ -236,6 +236,69 @@ def main() -> int:
         artifacts.append({"path": f"src/{ticket.lower()}.ts", "kind": "code"})
     for rel, text in (b.get("tamper") or {}).items():
         (Path(os.getcwd()) / rel).write_text(text)
+    if b.get("loop"):
+        # Stuck: the same failing command with the same output, until the coordinator stops it.
+        for i in range(int(b["loop"])):
+            print(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": f"t{i}",
+                                    "name": "Bash",
+                                    "input": {"command": "npm run test:e2e"},
+                                }
+                            ]
+                        },
+                    }
+                ),
+                flush=True,
+            )
+            print(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": f"t{i}",
+                                    "content": "Error: port 5173 in use",
+                                }
+                            ]
+                        },
+                    }
+                ),
+                flush=True,
+            )
+        time.sleep(60)
+        return 0
+    if b.get("max_turns"):
+        # Ran out of turns part-way: edits above stay in the working copy, no final result.
+        print(
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "Still working on the e2e tests."}]},
+                }
+            )
+        )
+        print(
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "error_max_turns",
+                    "is_error": True,
+                    "num_turns": 41,
+                    "duration_ms": 1000,
+                    "permission_denials": [],
+                }
+            )
+        )
+        return 1
 
     skill = Path(plugin_dir) / "skills" / procedure / "SKILL.md"
     contract = re.search(r"contract_id:\s*`([^`]+)`", skill.read_text()).group(1)  # type: ignore[union-attr]

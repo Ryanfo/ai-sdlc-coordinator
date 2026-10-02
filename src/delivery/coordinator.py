@@ -356,9 +356,31 @@ class StageExecutor:
         elif status is ClaudeStatus.PLUGIN_MISSING:
             action = "Check `claude.plugin_path` and run `delivery doctor`, then resume."
         elif status is ClaudeStatus.TIMEOUT:
-            action = "The session exceeded runtime.timeout_seconds; inspect logs, then resume."
+            minutes = rc.cfg.claude.timeout_for(exc.procedure, rc.cfg.runtime.timeout_seconds) // 60
+            action = (
+                f"The session ran longer than its {minutes}-minute limit. Check the log; if it was "
+                f"making progress, raise [claude.timeout_minutes] {exc.procedure} in the config and "
+                "restart the coordinator, then resume."
+            )
+        elif status is ClaudeStatus.MAX_TURNS:
+            action = (
+                f"The session used all {rc.cfg.claude.turns_for(exc.procedure)} turns allowed for "
+                f"{exc.procedure}. Check the log; if it was making progress, raise "
+                f"[claude.turn_limits] {exc.procedure} in the config and restart the "
+                "coordinator, then resume."
+            )
+        elif status is ClaudeStatus.GUARDRAIL:
+            action = (
+                "The coordinator stopped the session because it was not making progress. Check the log "
+                "for what it was stuck on; add guidance as a comment or adjust the plan if needed, then "
+                "resume."
+            )
         else:
-            action = "Inspect the worker logs with `delivery inspect`, then resume."
+            action = "Check the session log, fix the cause, then resume."
+        action += f" Log: `delivery logs {rc.key}`."
+        if rc.record.outputs.get("wip"):
+            files = len(rc.record.outputs["wip"].get("files", []))
+            action += f" The unfinished changes ({files} files) were kept; resuming continues from them."
         if exc.outcome and exc.outcome.permission_denials:
             action += f" ({len(exc.outcome.permission_denials)} permission denials were recorded.)"
         return Decision(

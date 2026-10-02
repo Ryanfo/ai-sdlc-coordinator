@@ -39,6 +39,11 @@ acceptance criterion in the approved specification is met, following the approve
 
 ## Steps
 
+0. If `prior_work` is set, an earlier session stopped part-way and its unfinished changes are
+   already in the working copy. Read `prior_work.session_tail_path` to see where it stopped,
+   inspect the changes (`git status`, `git diff`), keep what is right and finish the remaining
+   work. Do not start again from scratch, and do not repeat a step that the tail shows failing
+   the same way more than once: try a different approach or report the blocker.
 1. Read the approved specification and plan from `approved_artefacts`, and open the designs
    in `attachments` and `designs` they refer to. Match layout, copy and states shown there; where a design
    and the specification disagree, follow the specification and note it.

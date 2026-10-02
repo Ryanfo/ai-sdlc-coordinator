@@ -41,4 +41,4 @@ def test_finished_block_shows_outcome_next_step_and_wraps_long_text(make_config:
     out = console.session_finished(make_config(), rec, "S")
     assert "FINISHED  Planning  PILOT-7  -  BLOCKED" in out
     assert "Next      Choose Resume planning." in out
-    assert all(len(line) <= 78 for line in out.splitlines())
+    assert all(len(line) <= 78 for line in out.splitlines() if "file://" not in line)

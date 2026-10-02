@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import textwrap
 from datetime import datetime
+from pathlib import Path
 
 from delivery.comments import STAGE_TITLES
 from delivery.config import Config
@@ -37,7 +38,7 @@ def ticket_url(cfg: Config, key: str) -> str:
     return f"{cfg.jira.base_url}/browse/{key}"
 
 
-def block(title: str, rows: list[tuple[str, str]]) -> str:
+def block(title: str, rows: list[tuple[str, str]], extra: list[str] | None = None) -> str:
     out = ["", RULE, f" {title}".ljust(WIDTH - 9) + f"{now():>9}", THIN]
     for label, value in rows:
         if not value:
@@ -45,6 +46,9 @@ def block(title: str, rows: list[tuple[str, str]]) -> str:
         wrapped = textwrap.wrap(value, WIDTH - LABEL - 2, break_long_words=False, break_on_hyphens=False)
         for i, part in enumerate(wrapped or [""]):
             out.append(f" {(label if i == 0 else ''):<{LABEL}}{part}")
+    if extra:
+        out.append(THIN)
+        out += [(" " + ln)[:WIDTH] for ln in extra]
     out += [RULE, ""]
     return "\n".join(out)
 
@@ -76,16 +80,42 @@ def session_started(
             ("Claude", f"{', '.join(sd.procedures)} on {_models(cfg, record.stage)}"),
             ("Run", record.run_id),
             ("Jira", ticket_url(cfg, record.ticket_key)),
+            ("Watch", f"delivery logs {record.ticket_key} --follow"),
         ],
     )
 
 
-def session_finished(cfg: Config, record: RunRecord, summary: str) -> str:
+def latest_transcript(log_dir: Path | None) -> Path | None:
+    if log_dir is None or not log_dir.is_dir():
+        return None
+    found = sorted(log_dir.glob("claude-*.txt"), key=lambda p: p.stat().st_mtime)
+    return found[-1] if found else None
+
+
+def log_tail(log_dir: Path | None, lines: int = 12) -> list[str]:
+    """The last meaningful lines of the most recent Claude session log in a run."""
+    from delivery.transcript import render_file
+
+    if log_dir is None or not log_dir.is_dir():
+        return []
+    logs = sorted(log_dir.glob("claude-*.jsonl"), key=lambda p: p.stat().st_mtime)
+    if not logs:
+        return []
+    try:
+        rendered = [ln for ln in render_file(logs[-1], width=WIDTH - 2) if ln.strip()]
+    except OSError:
+        return []
+    return [f"Last steps of {logs[-1].stem.removeprefix('claude-')}:", *rendered[-lines:]]
+
+
+def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path | None = None) -> str:
     outcome = OUTCOMES.get(record.state, record.state.value.upper())
     took = ""
     if record.started_at:
         secs = int((utcnow() - record.started_at).total_seconds())
         took = f"{secs // 60}m {secs % 60:02d}s"
+    trouble = record.state in (RunState.BLOCKED, RunState.FAILED)
+    log_file = latest_transcript(log_dir)
     return block(
         f"FINISHED  {_stage_title(record.stage)}  {record.ticket_key}  -  {outcome}",
         [
@@ -95,7 +125,10 @@ def session_finished(cfg: Config, record: RunRecord, summary: str) -> str:
             ("Took", took),
             ("Run", record.run_id),
             ("Jira", ticket_url(cfg, record.ticket_key)),
+            ("Logs", f"delivery logs {record.ticket_key}"),
+            ("Log file", log_file.as_uri() if log_file else ""),
         ],
+        log_tail(log_dir) if trouble else None,
     )
 
 

@@ -215,11 +215,31 @@ class RuntimeConfig(StrictModel):
         return _resolve_path(v, info)
 
 
+# Long procedures get more room by default; [claude.turn_limits] / timeout_minutes override.
+DEFAULT_TURN_LIMITS = {"implement-ticket": 500, "verify-ticket": 250, "review-ticket": 200}
+DEFAULT_TIMEOUT_MINUTES = {"implement-ticket": 120, "verify-ticket": 60, "review-ticket": 45}
+
+
+class GuardrailsConfig(StrictModel):
+    """Stop a session early when it is clearly not making progress (see delivery.guardrails)."""
+
+    # Same tool call with the same result this many times within its last 30 steps.
+    loop_repeats: int = Field(default=6, ge=3, le=50)
+    # No new activity in the session log for this long.
+    stall_minutes: int = Field(default=15, ge=2, le=180)
+
+
 class ClaudeConfig(StrictModel):
     executable: str = "claude"
     plugin_path: Path
     auth_profile: Literal["subscription"] = "subscription"
-    max_turns: int | None = Field(default=40, ge=1, le=500)
+    # Turn limit for procedures not listed in turn_limits (built-in defaults raise it for the
+    # long procedures). The loop and stall guardrails are the main protection, not this.
+    max_turns: int | None = Field(default=150, ge=1, le=2000)
+    turn_limits: dict[str, int] = Field(default_factory=dict)
+    # Per-procedure session timeouts in minutes (others use runtime.timeout_seconds).
+    timeout_minutes: dict[str, int] = Field(default_factory=dict)
+    guardrails: GuardrailsConfig = GuardrailsConfig()
     allow_paid_api_fallback: bool = False
     permission_profile: Literal["local_pilot"] = "local_pilot"
     # Default model for every procedure; None means Claude Code's own default.
@@ -250,6 +270,30 @@ class ClaudeConfig(StrictModel):
 
     def model_for(self, procedure: str) -> str | None:
         return self.models.get(procedure, self.model)
+
+    @field_validator("turn_limits", "timeout_minutes")
+    @classmethod
+    def _per_procedure(cls, v: dict[str, int]) -> dict[str, int]:
+        from delivery.plugin import PROCEDURES
+
+        unknown = sorted(set(v) - set(PROCEDURES))
+        if unknown:
+            raise ValueError(f"unknown procedures {unknown}; use one of {list(PROCEDURES)}")
+        if any(not 1 <= n <= 2000 for n in v.values()):
+            raise ValueError("values must be between 1 and 2000")
+        return v
+
+    def turns_for(self, procedure: str) -> int | None:
+        if procedure in self.turn_limits:
+            return self.turn_limits[procedure]
+        if self.max_turns is None:
+            return None
+        return max(DEFAULT_TURN_LIMITS.get(procedure, 0), self.max_turns)
+
+    def timeout_for(self, procedure: str, default_seconds: int) -> int:
+        if procedure in self.timeout_minutes:
+            return self.timeout_minutes[procedure] * 60
+        return max(DEFAULT_TIMEOUT_MINUTES.get(procedure, 0) * 60, default_seconds)
 
     @field_validator("plugin_path", mode="after")
     @classmethod

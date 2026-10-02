@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from delivery.config import Config, ConfigError, load_config, template_text
 from delivery.control import send, socket_path
 from delivery.journal import JournalStore
 from delivery.models import ACTIVE_RUN_STATES, RunState
+from delivery.workflow import Stage
 
 EXIT_OK, EXIT_FAIL, EXIT_CONFIG, EXIT_BUSY = 0, 1, 2, 3
 
@@ -582,6 +584,70 @@ def cmd_credentials(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_logs(args: argparse.Namespace) -> int:
+    """Readable Claude session transcripts for a ticket's runs."""
+    from delivery.models import ACTIVE_RUN_STATES
+    from delivery.transcript import follow, render_file
+
+    cfg = _load(args)
+    store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
+    runs = store.runs_for_ticket(args.ticket)
+    if not runs:
+        print(f"No runs recorded on this machine for {args.ticket}.")
+        return EXIT_FAIL
+    if args.list:
+        for e in runs:
+            r = e.record
+            when = r.created_at.astimezone().strftime("%d %b %H:%M") if r else "?"
+            state = f"{r.stage.value:<21} {r.state.value:<15}" if r else "CORRUPT"
+            print(f"{when}  {state} {e.run_id}")
+        return EXIT_OK
+    if args.run:
+        chosen = [e for e in runs if e.run_id == args.run]
+    elif args.stage:
+        chosen = [e for e in runs if e.record and e.record.stage.value == args.stage][-1:]
+    else:
+        chosen = runs[-1:]
+    if not chosen:
+        print("No matching run. Use --list to see them.", file=sys.stderr)
+        return EXIT_FAIL
+    entry = chosen[0]
+    rec = entry.record
+    logs = sorted((entry.journal.dir / "logs").glob("claude-*.jsonl"), key=lambda p: p.stat().st_mtime)
+    print(f"{args.ticket}  run {entry.run_id}")
+    if rec:
+        print(f"Stage {rec.stage.value}, state {rec.state.value}" + (f": {rec.reason}" if rec.reason else ""))
+        if rec.next_action:
+            print(f"Next: {rec.next_action}")
+    print(f"Folder: {entry.journal.dir}")
+    if not logs:
+        print("No Claude session has started for this run yet.")
+        return EXIT_OK
+    if args.raw:
+        for p in logs:
+            print(p)
+        return EXIT_OK
+    for i, p in enumerate(logs):
+        print("\n" + "=" * 78 + f"\n {p.stem.removeprefix('claude-')}\n" + "=" * 78)
+        last = i == len(logs) - 1
+        if args.follow and last:
+
+            def running(run_id: str = entry.run_id) -> bool:
+                for e in store.iter_runs(args.ticket):
+                    if e.run_id == run_id:
+                        return bool(e.record and e.record.state in ACTIVE_RUN_STATES)
+                return False
+
+            try:
+                follow(p, lambda line: print(line, flush=True), args.verbose_results, is_running=running)
+            except KeyboardInterrupt:
+                return EXIT_OK
+        else:
+            for line in render_file(p, args.verbose_results):
+                print(line)
+    return EXIT_OK
+
+
 def cmd_schemas(args: argparse.Namespace) -> int:
     from delivery.models import InputEnvelope, result_json_schema
 
@@ -604,8 +670,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command", required=True)
 
+    default_config = os.environ.get("DELIVERY_CONFIG") or str(Path.home() / "delivery.local.toml")
+
     def with_config(sp: argparse.ArgumentParser) -> argparse.ArgumentParser:
-        sp.add_argument("--config", required=True, help="path to your one local config file")
+        sp.add_argument(
+            "--config",
+            default=default_config,
+            help="path to your local config file (default: $DELIVERY_CONFIG or ~/delivery.local.toml)",
+        )
         sp.add_argument("--json", action="store_true", help="machine-readable output")
         return sp
 
@@ -655,6 +727,15 @@ def parser() -> argparse.ArgumentParser:
             sp.set_defaults(afunc=_inspect)
         else:
             sp.set_defaults(afunc=lambda a, n=name: _ticket_command(a, n))
+    sp = with_config(sub.add_parser("logs", help="readable Claude session transcripts for a ticket"))
+    sp.add_argument("ticket")
+    sp.add_argument("--list", action="store_true", help="list the ticket's runs")
+    sp.add_argument("--stage", choices=[st.value for st in Stage], help="latest run of this stage")
+    sp.add_argument("--run", help="a specific run ID (see --list)")
+    sp.add_argument("--follow", "-f", action="store_true", help="keep printing as a running session works")
+    sp.add_argument("--results", dest="verbose_results", action="store_true", help="also show tool output")
+    sp.add_argument("--raw", action="store_true", help="print the raw log file paths (for jq)")
+    sp.set_defaults(func=cmd_logs)
     sp = with_config(sub.add_parser("dispatch", help="pause or resume new launches"))
     sp.add_argument("action", choices=["pause", "resume"])
     sp.add_argument("--reason")

@@ -356,6 +356,48 @@ Overlap detection is advisory: it cannot see unpublished work on other laptops.
 
 ## 11. Day-to-day commands
 
+`--config` defaults to `~/delivery.local.toml` (or `$DELIVERY_CONFIG`), so it can be left out
+when your config lives there.
+
+### Reading what Claude did
+
+Every Claude session writes its log as it runs. Read it from the command line:
+
+```bash
+delivery logs PILOT-123
+```
+
+```bash
+delivery logs PILOT-123 --follow
+```
+
+| Option | What it shows |
+|---|---|
+| (none) | The latest run of the ticket: what Claude said, each tool it used (files read and edited, commands run), anything denied, and how the session ended |
+| `--follow` / `-f` | The same, live, until the session finishes |
+| `--list` | Every run of the ticket with its stage and state |
+| `--stage development` / `--run <id>` | A particular stage's latest run, or one run |
+| `--results` | Also the output of each tool call |
+| `--raw` | The raw log file paths (stream JSON, for `jq`) |
+
+The terminal's start and finish blocks show the same command and a link to a readable copy of
+the log (`claude-<procedure>.txt`). When a stage ends Blocked, the finish block also prints the
+session's last steps and what to do.
+
+### Long sessions, guardrails and resuming
+
+Each session has generous turn and time limits (500 turns and 2 hours for implementation).
+Two guardrails stop a session much earlier when it is clearly stuck: one that repeats the same
+step with the same result (`loop_repeats`, default 6 in its last 30 steps) or one with no
+activity for `stall_minutes` (default 15). Limits and guardrails are set under `[claude]`.
+
+When a development session stops before finishing (limit, guardrail, timeout or a usage
+limit), its unfinished changes are kept. After you choose **Resume development**, the next
+session starts from those changes, sees where the last one stopped, and carries on rather than
+starting again. If the specification or plan changed in between, it starts from the approved
+plan instead.
+
+
 ```bash
 delivery status --config ~/delivery.local.toml
 ```
@@ -382,6 +424,7 @@ delivery dispatch pause --reason "machine busy" --config ~/delivery.local.toml
 
 | Command | What it does |
 |---|---|
+| `logs` | Readable Claude session log for a ticket; `--follow` to watch live |
 | `status` | Every session: ticket, stage, run/session ID, state, start time, next action |
 | `inspect` | Why a ticket is (not) eligible, its gates, pause, candidate, overlaps, local runs; read-only |
 | `stop` | Stops one ticket's session and keeps its work; other sessions continue |
@@ -410,6 +453,8 @@ delivery dispatch pause --reason "machine busy" --config ~/delivery.local.toml
 | "It is in the Ready column" | Several statuses share a column; inspect the exact status |
 | Stays paused after answering | Check the round token and Q-IDs, then use the Submit answers action |
 | Approval rejected | Use the current token; the approver must make both the comment and the transition; for code, an independent GitHub review on the current head with CI green |
+| Blocked: maximum turns or time | The session was making progress but hit its limit: raise `[claude.turn_limits]` or `[claude.timeout_minutes]` for that procedure, restart, then Resume (it continues from the kept changes) |
+| Blocked: stopped by a guardrail | It repeated the same failing step or stalled. `delivery logs <KEY>` shows where; add guidance as a comment or adjust the plan, then Resume |
 | Blocked: usage limit or login | Run `claude auth login` or wait for the limit to reset, then Resume. No paid fallback |
 | Blocked: permission or sandbox | Run `delivery doctor --claude-probe`; never use bypass permissions |
 | Second supervisor refused | One already runs for your identity; use `delivery status` |

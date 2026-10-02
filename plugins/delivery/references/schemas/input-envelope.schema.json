@@ -344,6 +344,40 @@
       "title": "OverlapContext",
       "type": "object"
     },
+    "PriorWork": {
+      "additionalProperties": false,
+      "description": "Unfinished changes from an earlier session of this stage, already in the working copy.",
+      "properties": {
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Files",
+          "type": "array"
+        },
+        "session_tail_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Tail Path"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "title": "PriorWork",
+      "type": "object"
+    },
     "SelectedComment": {
       "additionalProperties": false,
       "properties": {
@@ -586,6 +620,17 @@
       },
       "title": "Designs Skipped",
       "type": "array"
+    },
+    "prior_work": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PriorWork"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "clarification_round": {
       "anyOf": [

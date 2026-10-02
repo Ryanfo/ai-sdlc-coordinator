@@ -279,6 +279,14 @@ class SkippedDesign(Model):
     reason: str
 
 
+class PriorWork(Model):
+    """Unfinished changes from an earlier session of this stage, already in the working copy."""
+
+    run_id: str
+    files: list[str] = Field(default_factory=list)
+    session_tail_path: str | None = None
+
+
 class InputEnvelope(Model):
     schema_version: Literal[1] = 1
     run_id: str
@@ -293,6 +301,7 @@ class InputEnvelope(Model):
     attachments_skipped: list[SkippedAttachment] = Field(default_factory=list)
     designs: list[DesignRef] = Field(default_factory=list)
     designs_skipped: list[SkippedDesign] = Field(default_factory=list)
+    prior_work: PriorWork | None = None
     clarification_round: str | None = None
     feedback_token: str | None = None
     approved_artefacts: list[ArtefactPointer] = Field(default_factory=list)

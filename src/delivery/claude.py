@@ -58,6 +58,7 @@ class ClaudeStatus(StrEnum):
     PLUGIN_MISSING = "plugin_missing"
     MALFORMED = "malformed"
     MAX_TURNS = "max_turns"
+    GUARDRAIL = "guardrail"
     ERROR = "error"
 
 

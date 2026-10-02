@@ -75,7 +75,7 @@ executable = "claude"
 plugin_path = "/absolute/path/to/delivery-platform/plugins/delivery"
 # Only the local Claude Code subscription login is supported. No API billing.
 auth_profile = "subscription"
-max_turns = 40
+max_turns = 150
 allow_paid_api_fallback = false
 permission_profile = "local_pilot"
 # Model for every procedure. Unset means Claude Code's own default for your plan.
@@ -90,6 +90,19 @@ permission_profile = "local_pilot"
 # plan-ticket = "opus"
 # implement-ticket = "opus"
 # review-ticket = "opus"
+
+# Turn and time limits per session. Defaults: 150 turns (500 for implement-ticket, 250 for
+# verify-ticket, 200 for review-ticket) and runtime.timeout_seconds (120 minutes for
+# implement-ticket, 60 for verify-ticket, 45 for review-ticket). These are backstops: the
+# guardrails below stop a session that loops or stalls long before them.
+# [claude.turn_limits]
+# implement-ticket = 800
+# [claude.timeout_minutes]
+# implement-ticket = 180
+
+# [claude.guardrails]
+# loop_repeats = 6     # same step with the same result this many times in its last 30 steps
+# stall_minutes = 15   # no activity in the session log for this long
 
 [approvals]
 # Humans allowed to approve specification, plan, acceptance and release gates.

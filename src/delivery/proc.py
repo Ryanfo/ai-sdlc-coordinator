@@ -8,6 +8,7 @@ Arguments are always argument arrays; nothing is interpolated into a shell.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import os
 import signal
@@ -89,6 +90,65 @@ async def terminate_group(proc: asyncio.subprocess.Process, grace: float = GRACE
     signal_group(pgid, signal.SIGKILL)
 
 
+class _Capture:
+    """Collects a stream in memory (head and tail kept when over the cap, never the middle)
+    while writing it line by line to a file, so logs exist while a child runs and survive a
+    timeout or stop."""
+
+    def __init__(self, path: Path | None, cap: int, redact_memory: bool) -> None:
+        self.cap = cap
+        self.redact_memory = redact_memory
+        self.head: list[bytes] = []
+        self.head_bytes = 0
+        self.tail: collections.deque[bytes] = collections.deque()
+        self.tail_bytes = 0
+        self.dropped = False
+        self.fh = None
+        if path:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            self.fh = os.fdopen(fd, "wb")
+
+    def _keep(self, line: bytes) -> None:
+        if self.head_bytes + len(line) <= self.cap // 2:
+            self.head.append(line)
+            self.head_bytes += len(line)
+            return
+        self.tail.append(line)
+        self.tail_bytes += len(line)
+        while self.tail_bytes > self.cap // 2 and len(self.tail) > 1:
+            self.tail_bytes -= len(self.tail.popleft())
+            self.dropped = True
+
+    def line(self, line: bytes) -> None:
+        self._keep(line)
+        if self.fh:
+            self.fh.write(redact(line.decode("utf-8", errors="replace")).encode())
+            self.fh.flush()
+
+    async def pump(self, stream: asyncio.StreamReader | None) -> None:
+        if stream is None:
+            return
+        pending = b""
+        while chunk := await stream.read(65536):
+            pending += chunk
+            *lines, pending = pending.split(b"\n")
+            for ln in lines:
+                self.line(ln + b"\n")
+        if pending:
+            self.line(pending)
+
+    def close(self) -> None:
+        if self.fh:
+            self.fh.close()
+            self.fh = None
+
+    def text(self) -> str:
+        middle = [b"...[output truncated]...\n"] if self.dropped else []
+        raw = b"".join([*self.head, *middle, *self.tail]).decode("utf-8", errors="replace")
+        return redact(raw) if self.redact_memory else raw
+
+
 async def run_process(
     argv: Sequence[str],
     *,
@@ -101,7 +161,7 @@ async def run_process(
     on_start: Callable[[asyncio.subprocess.Process], None] | None = None,
     max_capture: int = 2_000_000,
 ) -> ProcResult:
-    """Run a command in its own process group, capturing output (optionally to files)."""
+    """Run a command in its own process group, capturing output (and streaming it to files)."""
     start = time.monotonic()
     if not cwd.is_dir():
         raise ProcessStartError(f"working directory {cwd} does not exist")
@@ -119,36 +179,49 @@ async def run_process(
         raise ProcessStartError(f"cannot start {argv[0]!r}: {exc.strerror or exc}") from None
     if on_start:
         on_start(proc)
+    out = _Capture(stdout_path, max_capture, redact_memory=False)
+    err = _Capture(stderr_path, max_capture, redact_memory=True)
     timed_out = False
     cancelled = False
+
+    async def feed() -> None:
+        if stdin_data is not None and proc.stdin is not None:
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                proc.stdin.write(stdin_data)
+                await proc.stdin.drain()
+            proc.stdin.close()
+
+    tasks = [
+        asyncio.create_task(feed()),
+        asyncio.create_task(proc.wait()),
+        asyncio.create_task(out.pump(proc.stdout)),
+        asyncio.create_task(err.pump(proc.stderr)),
+    ]
     try:
-        out_b, err_b = await asyncio.wait_for(proc.communicate(stdin_data), timeout=timeout)
-    except TimeoutError:
-        timed_out = True
-        await terminate_group(proc)
-        out_b, err_b = b"", b""
+        # asyncio.wait never cancels: on timeout the readers keep draining what is left.
+        _, pending = await asyncio.wait(tasks, timeout=timeout)
+        if pending:
+            timed_out = True
+            await terminate_group(proc)
+            _, pending = await asyncio.wait(pending, timeout=5)
+            for t in pending:
+                t.cancel()
     except asyncio.CancelledError:
         cancelled = True
         await asyncio.shield(terminate_group(proc))
+        for t in tasks:
+            t.cancel()
         raise
     finally:
         if not cancelled and proc.returncode is None:
             await terminate_group(proc)
-    stdout = out_b[:max_capture].decode("utf-8", errors="replace")
-    stderr = redact(err_b[:max_capture].decode("utf-8", errors="replace"))
-    if stdout_path:
-        stdout_path.parent.mkdir(parents=True, exist_ok=True)
-        stdout_path.write_text(redact(stdout))
-        os.chmod(stdout_path, 0o600)
-    if stderr_path:
-        stderr_path.parent.mkdir(parents=True, exist_ok=True)
-        stderr_path.write_text(stderr)
-        os.chmod(stderr_path, 0o600)
+        out.close()
+        err.close()
     return ProcResult(
         tuple(argv),
         proc.returncode if proc.returncode is not None else -1,
-        stdout,
-        stderr,
+        out.text(),
+        err.text(),
         time.monotonic() - start,
         timed_out=timed_out,
     )
