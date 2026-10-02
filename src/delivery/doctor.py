@@ -529,6 +529,45 @@ async def check_github(cfg: Config, gh: GitHubPort | None, report: Report) -> No
     )
 
 
+async def check_figma(cfg: Config, report: Report, client: Any = None) -> None:
+    from delivery.credentials import resolve_figma
+    from delivery.figma import FigmaClient
+
+    if not cfg.figma.enabled:
+        report.add("figma", "designs", "info", "Figma integration disabled ([figma] enabled = false)")
+        return
+    token = None if client else resolve_figma(cfg)
+    if client is None and not token:
+        report.add(
+            "figma",
+            "token",
+            "info",
+            "no Figma token stored: Figma links in tickets will be listed to Claude as skipped",
+            "To use Figma designs, run `delivery credentials set figma`.",
+        )
+        return
+    figma = client or FigmaClient(str(token))
+    try:
+        me = await figma.me()
+        report.add(
+            "figma", "token", "ok", f"Figma accepts the token ({me.get('handle', '?')}); value never shown"
+        )
+    except AuthError as exc:
+        report.add(
+            "figma",
+            "token",
+            "fail",
+            str(exc)[:200],
+            "Create a token with File content: read-only and Current user: read, then "
+            "`delivery credentials set figma`.",
+        )
+    except IntegrationError as exc:
+        report.add("figma", "token", "warn", f"Figma unreachable: {exc}")
+    finally:
+        if client is None:
+            await figma.close()
+
+
 async def check_git_push(cfg: Config, report: Report, url: str | None = None) -> None:
     """Non-mutating proof that Git itself (not just the gh API) can authenticate a push.
 
@@ -595,6 +634,7 @@ async def run_doctor(
     await check_jira(cfg, jira, report, credentials_problem)
     await check_github(cfg, gh, report)
     await check_git_push(cfg, report)
+    await check_figma(cfg, report)
     check_lock(cfg, report)
     return report
 

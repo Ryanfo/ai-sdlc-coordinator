@@ -304,6 +304,8 @@ class StageStrategy:
             selected_comments=selected,
             attachments=ctx.attachments,
             attachments_skipped=ctx.attachments_skipped,
+            designs=ctx.designs,
+            designs_skipped=ctx.designs_skipped,
             clarification_round=ctx.intake.round_token,
             feedback_token=ctx.intake.feedback_token,
             approved_artefacts=approved or [],

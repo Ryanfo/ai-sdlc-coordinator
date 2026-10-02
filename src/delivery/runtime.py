@@ -12,10 +12,19 @@ from pydantic import Field
 
 from delivery.claude import ClaudeRunner
 from delivery.config import Config
+from delivery.figma import FigmaPort
 from delivery.git import ManagedRepo
 from delivery.intake import Intake, TicketContext
 from delivery.journal import JournalStore, RunJournal, ensure_private_dir
-from delivery.models import AttachmentRef, Model, RunRecord, SharedExecutionRecord, SkippedAttachment
+from delivery.models import (
+    AttachmentRef,
+    DesignRef,
+    Model,
+    RunRecord,
+    SharedExecutionRecord,
+    SkippedAttachment,
+    SkippedDesign,
+)
 from delivery.ownership import RepoLocks
 from delivery.plugin import PluginInfo
 from delivery.ports import GitHubPort, JiraPort
@@ -36,6 +45,7 @@ class Deps:
     plugin: PluginInfo
     locks: RepoLocks
     ports: PortRegistry = field(default_factory=PortRegistry)
+    figma: FigmaPort | None = None
 
 
 class Decision(Model):
@@ -65,6 +75,8 @@ class RunContext:
     stop_hold: bool = False
     attachments: list[AttachmentRef] = field(default_factory=list)
     attachments_skipped: list[SkippedAttachment] = field(default_factory=list)
+    designs: list[DesignRef] = field(default_factory=list)
+    designs_skipped: list[SkippedDesign] = field(default_factory=list)
 
     @property
     def key(self) -> str:

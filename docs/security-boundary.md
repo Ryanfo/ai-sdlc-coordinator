@@ -8,7 +8,7 @@ CLI, the operating system or the coordinator, not by instructions to the model.
 
 | Actor | Trusted for | Credentials it holds |
 |---|---|---|
-| Coordinator (`delivery` process) | Routing, validation, publication, approvals checking | Jira token (env), `gh` login, Git credentials |
+| Coordinator (`delivery` process) | Routing, validation, publication, approvals checking; fetching ticket attachments and linked Figma frames | Jira token and optional Figma token (macOS Keychain or env), `gh` login, Git credentials |
 | Claude worker session | Proposing artefacts and code inside its run | Your Claude subscription session only |
 | Ticket text, comments, application repo content | Requirements input only | none |
 | Humans | Scope, approvals, merge, release | their own |
@@ -93,3 +93,15 @@ cache under `node_modules`, binds a local port and connects to it.
 - **`claude auth status` can report a login whose OAuth session has expired.** Only the probe
   (or a real run) proves a working session; an expired session pauses tickets with an explicit
   "sign in" action and never switches billing.
+
+## Ticket attachments and Figma designs
+
+Claude's sessions cannot fetch anything themselves. The coordinator downloads ticket
+attachments (Jira login) and renders linked Figma frames (Figma token, `file_content:read`)
+into the run's `inputs/` directory, which the session may read but not edit. Only images,
+PDFs and plain text are handed over, each checked against its file signature and size limits;
+SVG, HTML, archives and executables never are. File names cannot leave the inputs directory.
+Jira's media redirect and Figma's pre-signed render URLs are fetched without our credentials.
+Attachment and design content is untrusted ticket data, like the brief: it cannot change
+tools, paths, checks or permissions. Figma snapshots are pinned to the file version the
+specification was written from, so later stages build and verify against what was approved.

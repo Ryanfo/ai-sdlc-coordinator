@@ -26,7 +26,7 @@ an integration tree; its results are authoritative.
 
 1. Read the brief, approved specification, the review report at `review_report_path`
    and `coordinator_checks.json` in the inputs (the coordinator's own check results).
-   Open the designs in `attachments` that acceptance criteria refer to.
+   Open the designs in `attachments` and `designs` that acceptance criteria refer to.
 2. Install dependencies if needed using the project's lockfile (`npm ci`). Use
    `ports.app` (and other entries in `ports`) for anything that listens.
 3. For each acceptance criterion, run the specific tests or a focused observation

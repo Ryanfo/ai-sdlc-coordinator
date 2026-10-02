@@ -143,3 +143,14 @@ allow_skipped = []
 # Optional component map in the application repository (base branch).
 component_map_path = "docs/architecture/components.toml"
 low_signal_paths = ["package-lock.json", "uv.lock", "CHANGELOG.md"]
+
+[figma]
+# Figma frames linked in a ticket description ("Copy link to selection" in Figma) are
+# snapshotted by the coordinator (PNG render, copy/typography/colour summary, layer data)
+# and given to Claude read-only. Claude never talks to Figma. Store a Figma personal access
+# token (scopes: File content read-only, Current user read) once with
+# `delivery credentials set figma`; without one, links are listed to Claude as skipped.
+enabled = true
+image_scale = 2      # render scale, 0.5-4
+max_frames = 10      # frames per ticket
+max_image_mb = 20

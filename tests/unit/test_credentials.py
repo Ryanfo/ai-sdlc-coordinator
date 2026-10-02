@@ -112,7 +112,7 @@ def test_set_stores_only_a_token_jira_accepts(
     writes: list[tuple[str, str, str]] = []
     monkeypatch.setattr(getpass, "getpass", lambda prompt="": TOKEN + "\n")
     monkeypatch.setattr(credentials, "keychain_available", lambda: True)
-    monkeypatch.setattr(credentials, "keychain_write", lambda *a: writes.append(a))
+    monkeypatch.setattr(credentials, "keychain_write", lambda *a: writes.append(a[:3]))
 
     async def whoami(cfg, creds=None):  # type: ignore[no-untyped-def]
         assert creds.token == TOKEN

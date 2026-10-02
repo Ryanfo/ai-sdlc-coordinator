@@ -58,6 +58,17 @@ def started(
     return text
 
 
+def design_drift(stage: str, frames: list[tuple[str, str]]) -> str:
+    listed = "\n".join(f"- [{name}]({url})" for name, url in frames)
+    return (
+        f"**Design changed in Figma since the specification was written.** "
+        f"{STAGE_TITLES.get(stage, stage)} is using the version the approved specification was "
+        f"based on, so the build matches what was approved. Changed frames:\n{listed}\n"
+        "To adopt the new design, choose Revise scope (or request specification changes) so the "
+        "specification is updated from it."
+    )
+
+
 def spec_gate(token: str, url: str, revision: int, summary: str, approvers: str) -> str:
     return "\n".join(
         [

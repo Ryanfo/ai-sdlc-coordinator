@@ -361,6 +361,27 @@ class OverlapConfig(StrictModel):
     )
 
 
+class FigmaConfig(StrictModel):
+    """Figma frames linked in a ticket, fetched by the coordinator (never by Claude)."""
+
+    enabled: bool = True
+    # macOS Keychain service and account holding a Figma personal access token
+    # (scopes: file_content:read, current_user:read). FIGMA_TOKEN in the environment wins.
+    token_keychain_service: str = Field(default="delivery-figma", pattern=r"^[A-Za-z0-9._-]{1,100}$")
+    token_account: str = Field(default="figma", pattern=r"^[A-Za-z0-9._@+-]{1,100}$")
+    token_env: str = "FIGMA_TOKEN"  # noqa: S105 - an env var name, not a secret
+    image_scale: float = Field(default=2.0, ge=0.5, le=4.0)
+    max_frames: int = Field(default=10, ge=1, le=50)
+    max_image_mb: int = Field(default=20, ge=1, le=100)
+
+    @field_validator("token_env")
+    @classmethod
+    def _env(cls, v: str) -> str:
+        if not ENV_NAME.match(v):
+            raise ValueError("must be an environment variable name, not a secret value")
+        return v
+
+
 class Config(StrictModel):
     config_version: Literal[1]
     identity: IdentityConfig
@@ -373,6 +394,7 @@ class Config(StrictModel):
     checks: ChecksConfig = ChecksConfig()
     workflow: WorkflowConfig = WorkflowConfig()
     overlap: OverlapConfig = OverlapConfig()
+    figma: FigmaConfig = FigmaConfig()
 
     # Set by load_config; not part of the file.
     source_path: Path | None = Field(default=None, exclude=True)

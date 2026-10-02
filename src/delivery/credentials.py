@@ -24,6 +24,7 @@ from delivery.config import Config
 SECURITY = "/usr/bin/security"
 # Atlassian API tokens are long base64url-style strings. Anything else is a bad paste.
 TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_=+/.-]{40,4096}$")
+FIGMA_TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_=+/.:-]{20,1024}$")
 
 # Runs `security` and returns (exit code, stdout). Injectable for tests.
 Runner = Callable[[list[str]], tuple[int, str]]
@@ -58,15 +59,15 @@ def keychain_read(service: str, account: str, runner: Runner | None = None) -> s
     return token if code == 0 and token else None
 
 
-def keychain_write(service: str, account: str, token: str) -> None:
+def keychain_write(service: str, account: str, token: str, shape: re.Pattern[str] = TOKEN_SHAPE) -> None:
     """Store the token, replacing any earlier one, and confirm it reads back intact.
 
     The `security add-generic-password` password prompt silently truncates input at 128
     characters (Atlassian tokens are ~190), and passing the token as an argument would expose it
     in the process list. Instead the command goes to `security -i` on standard input.
     """
-    if not TOKEN_SHAPE.match(token):
-        raise ValueError("that does not look like an Atlassian API token")
+    if not shape.match(token):
+        raise ValueError("that does not look like an API token")
     if any(c in '"\\' for c in service + account):
         raise ValueError("Keychain service and account cannot contain quotes or backslashes")
     command = (
@@ -101,3 +102,14 @@ def resolve_jira(cfg: Config, runner: Runner | None = None) -> JiraCredentials:
         f"set {j.token_env} in the environment, or set jira.token_keychain_service and run "
         "`delivery credentials set --config <file>`"
     )
+
+
+def resolve_figma(cfg: Config, runner: Runner | None = None) -> str | None:
+    """The Figma token, or None when none is configured (Figma links are then skipped)."""
+    f = cfg.figma
+    token = os.environ.get(f.token_env, "")
+    if token:
+        return token
+    if runner is None and not keychain_available():
+        return None
+    return keychain_read(f.token_keychain_service, f.token_account, runner)

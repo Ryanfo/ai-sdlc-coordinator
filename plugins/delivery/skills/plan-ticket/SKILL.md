@@ -21,7 +21,7 @@ specification, plus a change footprint the coordinator uses to detect overlappin
 
 1. Read the approved specification in `approved_artefacts` (kind `specification`). It is
    the scope. Do not add scope. If it cannot be implemented as written, ask a question.
-   Open the designs in `attachments` that the specification refers to, so the plan's
+   Open the designs in `attachments` and `designs` that the specification refers to, so the plan's
    components, states and tests match them.
 2. If `prior_drafts` contains an earlier plan, revise it and apply every numbered feedback
    item in `selected_comments`.

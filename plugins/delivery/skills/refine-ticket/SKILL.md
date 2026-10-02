@@ -20,7 +20,7 @@ specification review, or ask the questions that block a usable specification.
 
 ## Steps
 
-1. Read `brief`, `selected_comments`, every file in `attachments` (designs and screenshots
+1. Read `brief`, `selected_comments`, every file in `attachments` and `designs` (designs and screenshots
    are part of the brief) and every file in `prior_drafts`. If a prior draft
    exists, revise it: keep what was not challenged, apply every answer and every numbered
    feedback item (`F1`...), and record each change in the revision history.

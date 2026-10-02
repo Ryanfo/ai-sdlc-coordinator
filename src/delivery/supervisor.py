@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from delivery import __version__
+from delivery import __version__, console
 from delivery import comments as comment_text
 from delivery.control import ControlServer, socket_path
 from delivery.coordinator import StageExecutor
@@ -163,7 +163,7 @@ class Supervisor:
             if not self.record.dispatch_paused:
                 await self.poll_once()
             elif not once:
-                self.emit("dispatch paused; existing sessions continue")
+                self.emit(console.line("dispatch paused; existing sessions continue"))
             if once:
                 if self.sessions:
                     await asyncio.wait([s.task for s in self.sessions.values()])
@@ -189,7 +189,7 @@ class Supervisor:
             report.error = str(exc)
             self.record = self.record.model_copy(update={"last_poll_error": str(exc)[:500]})
             self.deps.store.save_supervisor(self.record)
-            self.emit(f"poll failed ({exc}); retrying in {self.backoff_seconds:.0f}s")
+            self.emit(console.line(f"poll failed ({exc}); retrying in {self.backoff_seconds:.0f}s"))
             return report
         self.backoff_seconds = 0.0
         candidates: list[tuple[str, str, TicketContext, Stage]] = []
@@ -266,7 +266,7 @@ class Supervisor:
     def _note_once(self, marker: str, message: str) -> None:
         if marker not in self._noted:
             self._noted.add(marker)
-            self.emit(message)
+            self.emit(console.line(message))
 
     async def consider(
         self, ctx: TicketContext, stage: Stage, report: PollReport, adopt: bool = False
@@ -347,14 +347,14 @@ class Supervisor:
             finally:
                 self.claims.release(rc.key, rc.run_id)
                 self.sessions.pop(rc.key, None)
-                self.emit(
-                    f"{rc.key} {rc.record.stage.value}: {rc.record.state.value} {rc.record.reason[:160]}"
-                )
+                self.emit(console.session_finished(self.cfg, rc.record, rc.ticket.issue.view.summary))
 
         task = asyncio.create_task(runner(), name=rc.run_id)
         self.sessions[rc.key] = Session(rc.key, rc, task)
         self.emit(
-            f"{'resumed' if resume else 'started'} {rc.record.stage.value} for {rc.key} (run {rc.run_id})"
+            console.session_started(
+                self.cfg, rc.record, rc.ticket.issue.view.summary, resumed=resume, adopted=rc.record.adopted
+            )
         )
 
     def _on_child(self, key: str, proc: asyncio.subprocess.Process | None) -> None:
@@ -404,7 +404,7 @@ class Supervisor:
                 action = f"recovery deferred: {exc}"
             actions.append(f"{rec.ticket_key}: {action}")
         for a in actions:
-            self.emit(f"reconcile {a}")
+            self.emit(console.line(f"reconcile {a}"))
         return actions
 
     async def _recover_run(self, journal: RunJournal, rec: RunRecord, force: bool = False) -> str:

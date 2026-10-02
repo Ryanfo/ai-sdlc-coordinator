@@ -22,7 +22,9 @@ Accessibility, performance, security, privacy, compatibility.
 Technical, data, policy and time constraints.
 
 ## Designs and attachments
-- `<filename>` (sha256 `<first 12>`): what it defines (screens, states, copy). Write "None" if there are none.
+- `<filename>` (sha256 `<first 12>`): what it defines (screens, states, copy).
+- Figma `<frame name>` (<url>, version `<version>`): what it defines.
+Write "None" if there are none.
 
 ## Dependencies
 Other tickets, services, designs or existing behaviour this relies on.

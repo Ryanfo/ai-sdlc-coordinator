@@ -60,6 +60,10 @@ def build_deps(cfg: Config) -> Any:
         author_email=email,
         reference=cfg.repository.checkout_path,
     )
+    from delivery.credentials import resolve_figma
+    from delivery.figma import FigmaClient
+
+    figma_token = resolve_figma(cfg) if cfg.figma.enabled else None
     return Deps(
         cfg,
         JiraClient(cfg),
@@ -69,6 +73,7 @@ def build_deps(cfg: Config) -> Any:
         JournalStore(cfg.runtime.state_dir, cfg.identity_key),
         load_plugin(cfg.claude.plugin_path),
         locks,
+        figma=FigmaClient(figma_token) if figma_token else None,
     )
 
 
@@ -194,11 +199,9 @@ async def _run(args: argparse.Namespace) -> int:
             )
             _print(data, args.json, text)
             return EXIT_OK
-        print(
-            f"delivery {__version__} supervising {cfg.jira.project_key} as {cfg.identity.worker_id}; "
-            "Ctrl-C stops and checkpoints every session.",
-            flush=True,
-        )
+        from delivery import console
+
+        print(console.supervisor_started(cfg, __version__), flush=True)
         await sup.run(once=args.once)
     finally:
         await sup.__aexit__(None, None, None)
@@ -486,55 +489,96 @@ async def _jira_whoami(cfg: Config, credentials: Any = None) -> str | None:
     return f"{me.display_name} ({me.account_id}) using the token from {jira.credential_source}"
 
 
+async def _figma_whoami(token: str) -> str | None:
+    from delivery.figma import FigmaClient
+    from delivery.ports import AuthError, IntegrationError
+
+    client = FigmaClient(token)
+    try:
+        me = await client.me()
+    except AuthError as exc:
+        print(
+            f"Figma refused the token ({exc.status}). It needs the scopes File content: read-only "
+            "(file_content:read) and Current user: read (current_user:read), and must not have expired.",
+            file=sys.stderr,
+        )
+        return None
+    except IntegrationError as exc:
+        print(f"Could not reach Figma: {exc}", file=sys.stderr)
+        return None
+    finally:
+        await client.close()
+    return f"{me.get('handle', '?')} ({me.get('email', '?')})"
+
+
 def cmd_credentials(args: argparse.Namespace) -> int:
     import getpass
 
     from delivery.credentials import (
+        FIGMA_TOKEN_SHAPE,
         SECURITY,
         TOKEN_SHAPE,
         JiraCredentials,
         keychain_available,
         keychain_write,
+        resolve_figma,
     )
 
     cfg = _load(args)
+    figma = args.target == "figma"
     if args.action == "check":
-        who = asyncio.run(_jira_whoami(cfg))
-        print(f"Jira accepts the stored token: authenticated as {who}." if who else "Not authenticated.")
+        if figma:
+            token = resolve_figma(cfg)
+            if not token:
+                print("No Figma token is stored. Run `delivery credentials set figma`.")
+                return EXIT_FAIL
+            who = asyncio.run(_figma_whoami(token))
+            print(f"Figma accepts the stored token: {who}." if who else "Not authenticated.")
+        else:
+            who = asyncio.run(_jira_whoami(cfg))
+            print(f"Jira accepts the stored token: authenticated as {who}." if who else "Not authenticated.")
         return EXIT_OK if who else EXIT_FAIL
     if not keychain_available():
         print("The macOS Keychain is not available here; export the environment variables instead.")
         return EXIT_CONFIG
-    target = _keychain_target(cfg)
-    if target is None:
-        return EXIT_CONFIG
-    service, email = target
+    if figma:
+        service, account = cfg.figma.token_keychain_service, cfg.figma.token_account
+    else:
+        target = _keychain_target(cfg)
+        if target is None:
+            return EXIT_CONFIG
+        service, account = target
     if args.action == "delete":
         r = subprocess.run(
-            [SECURITY, "delete-generic-password", "-s", service, "-a", email],
+            [SECURITY, "delete-generic-password", "-s", service, "-a", account],
             check=False,
             capture_output=True,
         )
         print("Removed the Keychain item." if r.returncode == 0 else "No Keychain item to remove.")
         return EXIT_OK
-    token = getpass.getpass(f"Paste the Jira API token for {email} (nothing is shown), then Enter: ").strip()
-    if not TOKEN_SHAPE.match(token):
+    label = "Figma personal access token" if figma else f"Jira API token for {account}"
+    token = getpass.getpass(f"Paste the {label} (nothing is shown), then Enter: ").strip()
+    shape = FIGMA_TOKEN_SHAPE if figma else TOKEN_SHAPE
+    if not shape.match(token):
         print(
-            f"That does not look like an API token ({len(token)} characters); nothing was stored.",
+            f"That does not look like a token ({len(token)} characters); nothing was stored.",
             file=sys.stderr,
         )
         return EXIT_FAIL
-    who = asyncio.run(_jira_whoami(cfg, JiraCredentials(email, token, "the value just pasted")))
+    if figma:
+        who = asyncio.run(_figma_whoami(token))
+    else:
+        who = asyncio.run(_jira_whoami(cfg, JiraCredentials(account, token, "the value just pasted")))
     if not who:
         print("Nothing was stored.", file=sys.stderr)
         return EXIT_FAIL
     try:
-        keychain_write(service, email, token)
+        keychain_write(service, account, token, shape)
     except (OSError, ValueError) as exc:
-        print(f"Jira accepted the token but storing it failed: {exc}", file=sys.stderr)
+        print(f"The token was accepted but storing it failed: {exc}", file=sys.stderr)
         return EXIT_FAIL
-    print(f"Jira accepted the token: authenticated as {who.split(' using ')[0]}.")
-    print(f"Stored in your login Keychain (service {service!r}, account {email}); read back intact.")
+    print(f"{'Figma' if figma else 'Jira'} accepted the token: authenticated as {who.split(' using ')[0]}.")
+    print(f"Stored in your login Keychain (service {service!r}, account {account}); read back intact.")
     return EXIT_OK
 
 
@@ -585,8 +629,11 @@ def parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--yes", action="store_true", help="confirm creating and transitioning test tickets")
     sp.set_defaults(afunc=_workflow_verify)
-    sp = with_config(sub.add_parser("credentials", help="store or check the Jira API token (macOS Keychain)"))
+    sp = with_config(
+        sub.add_parser("credentials", help="store or check the Jira or Figma token (macOS Keychain)")
+    )
     sp.add_argument("action", choices=["set", "check", "delete"])
+    sp.add_argument("target", nargs="?", choices=["jira", "figma"], default="jira")
     sp.set_defaults(func=cmd_credentials)
     sp = with_config(sub.add_parser("run", help="run the supervisor in the foreground"))
     sp.add_argument("--once", action="store_true", help="one cycle: dispatch all eligible tickets and wait")

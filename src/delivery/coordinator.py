@@ -13,6 +13,7 @@ from datetime import timedelta
 from delivery import comments
 from delivery.attachments import ATTACHMENT_STAGES, fetch_attachments
 from delivery.claude import ClaudeStatus
+from delivery.designs import fetch_designs, figma_links
 from delivery.git import BranchDiverged, GitError, WorktreeConflict
 from delivery.intake import Intake, IntakeKind, TicketContext, brief_text, load_context
 from delivery.journal import RunJournal, new_run_id
@@ -177,7 +178,10 @@ class StageExecutor:
         return rc.record
 
     async def _fetch_attachments(self, rc: RunContext) -> None:
-        if rc.record.stage not in ATTACHMENT_STAGES or not rc.ticket.issue.attachments:
+        if rc.record.stage not in ATTACHMENT_STAGES:
+            return
+        await self._fetch_designs(rc)
+        if not rc.ticket.issue.attachments:
             return
         rc.attachments, rc.attachments_skipped = await fetch_attachments(
             rc.cfg.jira.attachments,
@@ -192,6 +196,35 @@ class StageExecutor:
                 "skipped": [{"file": a.filename, "reason": a.reason} for a in rc.attachments_skipped],
             },
         )
+
+    async def _fetch_designs(self, rc: RunContext) -> None:
+        links = figma_links(rc.ticket.issue.description_text)
+        if not links:
+            return
+        refining = rc.record.stage is Stage.REFINEMENT
+        # Refinement writes the spec from the current design and pins its version; later
+        # stages build and check against that pinned version.
+        pinned = {} if refining else dict(rc.shared.design_versions)
+        got = await fetch_designs(rc.cfg.figma, self.deps.figma, links, rc.inputs_dir / "designs", pinned)
+        rc.designs, rc.designs_skipped = got.refs, got.skipped
+        if refining:
+            rc.shared = rc.shared.model_copy(update={"design_versions": got.versions})
+        rc.journal.events.append(
+            "designs",
+            {
+                "given": [
+                    {"frame": d.frame_name, "version": d.version, "changed": d.changed_in_figma_since}
+                    for d in got.refs
+                ],
+                "skipped": [{"url": d.url, "reason": d.reason} for d in got.skipped],
+            },
+        )
+        if got.changed:
+            await rc.publisher().comment(
+                rc.key,
+                f"design-drift-{rc.record.stage.value}",
+                comments.design_drift(rc.record.stage.value, [(d.frame_name, d.url) for d in got.changed]),
+            )
 
     async def _start(self, rc: RunContext, ready: Status, active: Status) -> None:
         """Start publication. Re-entrant: on resume, uncertain start operations are reconciled
