@@ -55,6 +55,17 @@ uv sync
 uv run delivery --help
 ```
 
+The rest of this guide writes plain `delivery …`. To run it like that from any folder, install
+the command once. `--editable` means it runs this repository's code directly, so pulling
+updates needs no reinstall:
+
+```bash
+uv tool install --editable .
+```
+
+Otherwise run every command from this folder with `uv run` in front, for example
+`uv run delivery doctor --config ~/delivery.local.toml`.
+
 Without uv:
 
 ```bash
@@ -196,6 +207,14 @@ on this machine is refused; on another machine it is unsupported and doctor warn
 
 `Ctrl-C` stops every running session cleanly and checkpoints it; they resume automatically
 next time you start the supervisor.
+
+| Part | Meaning |
+|---|---|
+| `run` | Start the supervisor in the foreground until `Ctrl-C` |
+| `--config <file>` | The one config file to use (required on every command) |
+| `--dry-run` | Discovery only: list what would start; no Claude, comments, pushes or transitions |
+| `--once` | Start every eligible ticket, wait for those sessions to finish, then exit |
+| `-v` (before `run`) | Detailed logging: `delivery -v run --config …` |
 
 ## 7. Submit a ticket
 
