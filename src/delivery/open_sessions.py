@@ -11,6 +11,14 @@ sessions in ``<state_dir>/open-sessions`` (so they survive a coordinator restart
   code and later approvals, comments on the ticket and moves it back to Ready for verification.
   It only does this while the ticket is in Ready for verification, Code review, Acceptance
   review or Changes requested and no run is working on it; otherwise the change waits;
+* publishes follow-up changes from specification, plan and release proposal sessions. When
+  Claude finishes a reply and the document in its output directory has changed, the
+  coordinator publishes it as the next revision for review, through the stage's own
+  publication: the new gate supersedes the one under review and the ticket stays in its review
+  status. It only does this while the ticket is in that review status with this session's
+  revision under review; otherwise the change waits;
+* runs the app from a development session's worktree once its run has ended, so the developer
+  can try the change in a browser (delivery.preview);
 * closes a session when it is ended in its window (``/exit``), after ``idle_close_hours`` with
   nothing happening, when a new run of the same stage starts for the ticket (a new development
   run needs the feature branch back), or when the ticket is done or cancelled. Closing keeps
@@ -20,8 +28,10 @@ sessions in ``<state_dir>/open-sessions`` (so they survive a coordinator restart
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
+import shutil
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,14 +40,25 @@ from typing import Any
 from pydantic import Field
 
 from delivery import comments, console
+from delivery.gates import current_gate, gate_token
 from delivery.git import BranchDiverged, GitError, commit_url
-from delivery.intake import load_context
+from delivery.intake import Intake, TicketContext, load_context
 from delivery.interactive import discard_transcript
 from delivery.journal import RunJournal, atomic_write_json, ensure_private_dir
-from delivery.models import GateKind, Model, RunState, utcnow
+from delivery.models import (
+    ACTIVE_RUN_STATES,
+    GateKind,
+    GateRecord,
+    GateState,
+    Model,
+    RunState,
+    digest,
+    utcnow,
+)
 from delivery.ports import IntegrationError
+from delivery.preview import Previews, PreviewState
 from delivery.publication import PublicationError, PublicationUncertain, Publisher, TicketMoved
-from delivery.runtime import Deps
+from delivery.runtime import Decision, Deps, RunContext
 from delivery.session_hook import read_events
 from delivery.tmux import for_config as tmux_for
 from delivery.transcript import write_transcript
@@ -52,6 +73,65 @@ from delivery.workflow import (
 
 log = logging.getLogger("delivery")
 REGISTRY = "open-sessions"
+
+
+@dataclasses.dataclass(frozen=True)
+class Document:
+    """A document a stage publishes for review. Edits to it in the stage's open session are
+    published as its next revision."""
+
+    procedure: str
+    title: str
+    filename: str  # in the procedure's output directory
+    gate: GateKind
+    review: Status
+    counter: str  # the shared record's field holding its latest revision number
+
+
+DOCUMENTS: dict[Stage, Document] = {
+    Stage.REFINEMENT: Document(
+        "refine-ticket",
+        "specification",
+        "specification.md",
+        GateKind.SPEC,
+        Status.SPECIFICATION_REVIEW,
+        "spec_revision",
+    ),
+    Stage.PLANNING: Document(
+        "plan-ticket", "plan", "plan.md", GateKind.PLAN, Status.PLAN_REVIEW, "plan_revision"
+    ),
+    Stage.RELEASE_PREPARATION: Document(
+        "prepare-release",
+        "release proposal",
+        "release.md",
+        GateKind.RELEASE,
+        Status.RELEASE_REVIEW,
+        "release_revision",
+    ),
+}
+
+
+def document_digest(out_dir: Path, stage: Stage) -> str:
+    """Fingerprint of the stage's document in an output directory ("" if there is none)."""
+    doc = DOCUMENTS.get(stage)
+    if doc is None:
+        return ""
+    try:
+        return digest((out_dir / doc.filename).read_bytes())
+    except OSError:
+        return ""
+
+
+@dataclasses.dataclass(frozen=True)
+class FollowUp:
+    """A document edited in its stage's open session, published as the next revision."""
+
+    prompts: list[str]
+    replaces: str  # the gate token of the revision it supersedes
+
+
+class FollowUpRefused(Exception):
+    """The edited document cannot be published as things stand (the reason says why)."""
 
 
 class OpenRecord(Model):
@@ -78,6 +158,13 @@ class OpenRecord(Model):
     candidate_number: int | None = None
     followups: list[dict[str, Any]] = Field(default_factory=list)
     held: str = ""
+    # Document stages: the procedure's output directory, the fingerprint of its document as last
+    # published, and the revision of it this session has under review.
+    out_dir: str = ""
+    document: str = ""
+    revision: int | None = None
+    # Development: the app running from this session's worktree (delivery.preview).
+    preview: PreviewState | None = None
 
 
 class SessionRegistry:
@@ -90,6 +177,12 @@ class SessionRegistry:
 
     def remove(self, name: str) -> None:
         (self.dir / f"{name}.json").unlink(missing_ok=True)
+
+    def load(self, name: str) -> OpenRecord | None:
+        try:
+            return OpenRecord.model_validate_json((self.dir / f"{name}.json").read_text())
+        except (OSError, ValueError):
+            return None
 
     def all(self) -> list[OpenRecord]:
         if not self.dir.is_dir():
@@ -108,11 +201,23 @@ class SessionRegistry:
     def held_worktrees(self, run_id: str) -> set[str]:
         return {w for r in self.all() if r.run_id == run_id for w in r.worktrees}
 
-    def published(self, run_id: str, sha: str, candidate_number: int) -> None:
-        """The run published its candidate: follow-ups in its open session start from it."""
+    def published(
+        self,
+        run_id: str,
+        *,
+        sha: str | None = None,
+        candidate_number: int | None = None,
+        revision: int | None = None,
+    ) -> None:
+        """The run published its candidate (development) or its document for review: follow-ups
+        in its open session start from it."""
         for r in self.all():
-            if r.run_id == run_id and r.stage is Stage.DEVELOPMENT:
+            if r.run_id != run_id:
+                continue
+            if r.stage is Stage.DEVELOPMENT and sha is not None:
                 self.save(r.model_copy(update={"base_sha": sha, "candidate_number": candidate_number}))
+            elif r.stage is not Stage.DEVELOPMENT and revision is not None:
+                self.save(r.model_copy(update={"revision": revision}))
 
 
 def save_conversation(rec: OpenRecord) -> Path | None:
@@ -149,6 +254,7 @@ class OpenSessions:
         self.busy = busy
         self.registry = SessionRegistry(self.cfg.runtime.state_dir)
         self.tmux = tmux_for(self.cfg.claude.interactive, self.cfg.runtime.state_dir)
+        self.previews = Previews(deps, emit)
         self._noted: set[str] = set()
         self._last_full: datetime | None = None
 
@@ -179,6 +285,11 @@ class OpenSessions:
                 self._note(rec, f"internal error: {exc}")
 
     async def _tick_one(self, rec: OpenRecord, full: bool) -> None:
+        # Read it again: a run publishing meanwhile may have recorded its candidate or revision.
+        fresh = self.registry.load(rec.name)
+        if fresh is None:
+            return
+        rec = fresh
         events = read_events(Path(rec.session_dir))
         new = events[rec.events_seen :]
         for ev in new:
@@ -209,12 +320,24 @@ class OpenSessions:
             if status in TERMINAL_STATUSES:
                 await self.close(rec, f"{rec.ticket_key} is {STATUS_NAMES[status]}")
                 return
+        if self.cfg.claude.interactive.follow_ups and (rec.unchecked_stops or (rec.held and full)):
+            if rec.stage is Stage.DEVELOPMENT:
+                await self.follow_up(rec)
+            elif rec.stage in DOCUMENTS:
+                await self.follow_up_document(rec)
         if (
             rec.stage is Stage.DEVELOPMENT
-            and self.cfg.claude.interactive.follow_ups
-            and (rec.unchecked_stops or (rec.held and full))
+            and self.cfg.preview.enabled
+            and await self.previews.tick(rec, lambda: self._run_ended(rec))
         ):
-            await self.follow_up(rec)
+            self.registry.save(rec)
+
+    def _run_ended(self, rec: OpenRecord) -> bool:
+        """The run that opened this session has finished (published, blocked or stopped)."""
+        for e in self.deps.store.runs_for_ticket(rec.ticket_key):
+            if e.run_id == rec.run_id:
+                return e.record is None or e.record.state not in ACTIVE_RUN_STATES
+        return True
 
     # ------------------------------------------------------------------ follow-ups
     async def follow_up(self, rec: OpenRecord) -> None:
@@ -345,6 +468,102 @@ class OpenSessions:
         )
         await self.tmux.message(rec.name, f"Pushed as c{n}; {key} is Ready for verification again")
 
+    # ------------------------------------------------------------------ document follow-ups
+    async def follow_up_document(self, rec: OpenRecord) -> None:
+        """Publish the session's edited specification, plan or release proposal for review."""
+        key = rec.ticket_key
+        if self.is_running(key) or key in self.busy:
+            return
+        doc = DOCUMENTS[rec.stage]
+        current = document_digest(Path(rec.out_dir), rec.stage)
+        if not current or current == rec.document:
+            rec.unchecked_stops, rec.pending_prompts, rec.held = 0, [], ""
+            self.registry.save(rec)
+            return
+        self.busy.add(key)
+        try:
+            if rec.revision is None:
+                self._note(
+                    rec,
+                    f"this session's run did not publish a {doc.title} for review, so there is no "
+                    "revision to follow up",
+                )
+                return
+            ctx = await load_context(self.deps.jira, self.cfg, key)
+            if ctx.status is not doc.review:
+                where = STATUS_NAMES[ctx.status] if ctx.status else "an unmapped status"
+                self._note(
+                    rec,
+                    f"{key} is in {where}; a changed {doc.title} is published only while the ticket is in "
+                    f"{STATUS_NAMES[doc.review]}",
+                )
+                return
+            if ctx.issue.view.assignee_account_id != self.cfg.identity.developer_jira_account_id:
+                self._note(rec, f"{key} is no longer assigned to you")
+                return
+            gate = current_gate(ctx.record.gates, doc.gate)
+            if gate is None or gate.revision != rec.revision or gate.state is not GateState.PENDING:
+                self._note(
+                    rec,
+                    f"{key}'s {doc.title} under review is no longer v{rec.revision:03d} from this session; "
+                    "close the session and request changes in Jira instead",
+                )
+                return
+            await self._publish_document(rec, ctx, gate)
+        except FollowUpRefused as exc:
+            self._note(rec, str(exc))
+        except BranchDiverged:
+            self._note(rec, f"delivery/{key} changed on GitHub; reconcile the branch by hand (no force push)")
+        except (TicketMoved, PublicationUncertain, PublicationError, IntegrationError, GitError) as exc:
+            self._note(rec, f"publishing failed, retried on the next poll ({exc})")
+        finally:
+            self.busy.discard(key)
+
+    async def _publish_document(self, rec: OpenRecord, ctx: TicketContext, gate: GateRecord) -> None:
+        """Publish through the stage's own publication, as a follow-up of the session's run.
+
+        The follow-up has its own journal (``followups/<ticket>/<stage>-v<rev>``) and run ID
+        (``<run>-followup-v<rev>``), a copy of the session's output directory, and a worktree of
+        its own on the delivery branch, removed afterwards. Until it is recorded in Jira the
+        revision number stays the same, so a retry after a failure repeats the same operations.
+        """
+        from delivery.stages import STRATEGIES
+
+        key, doc = rec.ticket_key, DOCUMENTS[rec.stage]
+        entry = next((e for e in self.deps.store.runs_for_ticket(key) if e.run_id == rec.run_id), None)
+        raw = entry.record.outputs.get("decision") if entry and entry.record else None
+        if entry is None or entry.record is None or not raw:
+            raise FollowUpRefused(f"the record of run {rec.run_id} is not available")
+        decision = Decision.model_validate(raw)
+        prompts = [" ".join(p.split())[:300] for p in rec.pending_prompts] or ["(no request recorded)"]
+        rev = max(int(getattr(ctx.record, doc.counter)), gate.revision) + 1
+        fid = f"{rec.run_id}-followup-v{rev}"
+        journal = RunJournal(self.cfg.runtime.state_dir / "followups" / key / f"{rec.stage.value}-v{rev:03d}")
+        ensure_private_dir(journal.dir)
+        out = journal.dir / "output" / doc.procedure
+        shutil.copytree(rec.out_dir, out, dirs_exist_ok=True)
+        current = document_digest(out, rec.stage)
+        record = entry.record.model_copy(update={"run_id": fid, "worktrees": {}, "outputs": {}})
+        intake = Intake.restore(entry.record.outputs.get("intake") or {"stage": rec.stage.value}, ctx)
+        rc = RunContext(self.deps, ctx, intake, record, journal, ctx.record)
+        strategy = STRATEGIES[rec.stage](rc)
+        strategy.follow_up = FollowUp(prompts, gate.token)
+        try:
+            await strategy.publish(await strategy.follow_up_decision(decision, rev))
+        finally:
+            await strategy.cleanup()
+        token = gate_token(key, doc.gate, rev)
+        rec.followups.append({"revision": rev, "token": token, "at": utcnow().isoformat()})
+        rec.revision, rec.document = rev, current
+        rec.pending_prompts, rec.unchecked_stops, rec.held = [], 0, ""
+        self.registry.save(rec)
+        self.emit(
+            console.document_follow_up_published(
+                self.cfg, key, rec.stage, doc.title, rev, token, gate.token, prompts
+            )
+        )
+        await self.tmux.message(rec.name, f"Published as {doc.title} v{rev:03d} ({token}) for review")
+
     # ------------------------------------------------------------------ closing
     async def close_for_run(self, key: str, stage: Stage) -> None:
         for rec in self.registry.for_ticket(key):
@@ -352,6 +571,7 @@ class OpenSessions:
                 await self.close(rec, f"a new {stage.value.replace('_', ' ')} run is starting")
 
     async def close(self, rec: OpenRecord, reason: str) -> None:
+        await self.previews.stop(rec)
         await self.tmux.kill(rec.name)
         try:
             save_conversation(rec)

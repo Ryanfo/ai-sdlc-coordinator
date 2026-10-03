@@ -306,12 +306,15 @@ class InteractiveRunner:
         return False
 
     def prompt(self, inv: ClaudeInvocation) -> str:
-        return (
+        text = (
             f"{inv.prompt()}\n\nThis is an interactive session. When the procedure is complete, use "
             f"the Write tool to write the structured result as one JSON object to {inv.result_path}; "
             f"it must match the schema in {inv.schema_path}. The coordinator reads the result from "
             "that file."
         )
+        if self.cfg.keep_open and inv.closing:
+            text += f"\n\nOnce the result file is written, {inv.closing}"
+        return text
 
     def argv(self, inv: ClaudeInvocation, title: str) -> list[str]:
         # The prompt comes first: --add-dir takes several values and would swallow it.

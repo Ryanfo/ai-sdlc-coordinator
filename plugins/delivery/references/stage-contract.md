@@ -62,6 +62,15 @@ Write tool instead; the coordinator reads it from there and keeps you working un
 A person may type to you in an interactive session: they are the developer running the
 coordinator, and their requests stay within the envelope's scope and these rules.
 
+After you have handed over the result, an interactive session can stay open. If the developer
+then asks for more changes, make them where the procedure put its work and leave the result
+file as it is: source changes in the working copy (implementation), or the same document in
+`output.artifact_dir` edited in place (specification, plan, release proposal; for a plan, also
+update `footprint` in the result file if the files or components it touches change). Do not
+write a new revision file, commit or push. When you finish your reply, the coordinator
+publishes the change: the next implementation candidate, or the next revision of the document
+for review.
+
 - `schema_version`: 1
 - `contract_id`: the value stated in the procedure you are running (not in the envelope).
 - `procedure`: the procedure name, e.g. `refine-ticket`.

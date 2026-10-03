@@ -268,13 +268,20 @@ def verification_failed(
 
 
 def release_gate(
-    release_token: str, url: str, revision: int, candidate: str, approvers: str, environment: str
+    release_token: str,
+    url: str,
+    revision: int,
+    candidate: str,
+    approvers: str,
+    environment: str,
+    note: str = "",
 ) -> str:
     return "\n".join(
         [
             f"## Release proposal v{revision:03d} ready: {release_token}",
             f"[Read release proposal]({url}) · accepted candidate `{candidate}`",
             "",
+            *([note, ""] if note else []),
             f"**To approve** ({approvers}): comment, then choose **Approve release**.",
             "```",
             approve_template(DecisionKind.APPROVE_RELEASE, release_token),
@@ -333,6 +340,18 @@ def follow_up(candidate_no: int, sha: str, url: str, requests: list[str], was_in
         else "Verification of the new candidate starts automatically."
     )
     return "\n".join(lines)
+
+
+def follow_up_revision(stage: str, replaces: str, requests: list[str]) -> str:
+    """The summary of a revision published from a session left open after its stage."""
+    return "\n".join(
+        [
+            f"**Follow-up revision.** It supersedes {replaces}: an approval of that revision does not "
+            "cover this one.",
+            f"Changed in the open {STAGE_TITLES.get(stage, stage).lower()} session, as the developer asked:",
+            *[f"- {r}" for r in requests],
+        ]
+    )
 
 
 def overlap_warning(f: OverlapFinding, assignees: dict[str, str | None], here: str) -> str:

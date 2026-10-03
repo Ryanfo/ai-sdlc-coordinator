@@ -53,7 +53,14 @@ from delivery.models import (
     result_json_schema,
     utcnow,
 )
-from delivery.open_sessions import OpenRecord, SessionRegistry
+from delivery.open_sessions import (
+    DOCUMENTS,
+    FollowUp,
+    FollowUpRefused,
+    OpenRecord,
+    SessionRegistry,
+    document_digest,
+)
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
 from delivery.permissions import PROCEDURE_ROLES, PROTECTED_WORKTREE_PATHS, build_profile
@@ -64,7 +71,7 @@ from delivery.runtime import Decision, RunContext
 from delivery.session_hook import read_events
 from delivery.tmux import for_config as tmux_for
 from delivery.transcript import write_transcript
-from delivery.workflow import Action, Stage, Status
+from delivery.workflow import Action, Requirement, Stage, Status
 
 MAX_OUTPUT_FILE_BYTES = 2_000_000
 
@@ -123,6 +130,18 @@ def is_protected(path: str) -> bool:
     )
 
 
+# Runs that make changes a human asked for at a review gate.
+CHANGE_REQUIREMENTS = frozenset(
+    {
+        Requirement.SPEC_CHANGES,
+        Requirement.PLAN_CHANGES,
+        Requirement.RELEASE_CHANGES,
+        Requirement.SCOPE_REVISION,
+        Requirement.IMPLEMENTATION_CHANGES,
+    }
+)
+
+
 def provenance_header(ctx: RunContext, kind: str, revision: str, extra: dict[str, Any]) -> str:
     lines = [
         "<!-- delivery provenance (written by the coordinator) -->",
@@ -161,6 +180,9 @@ class StageStrategy:
     def __init__(self, ctx: RunContext) -> None:
         self.ctx = ctx
         self.deps = ctx.deps
+        # Set when publishing a document edited in this stage's open session: the ticket stays
+        # in its review status and the new revision supersedes the one under review.
+        self.follow_up: FollowUp | None = None
 
     # ------------------------------------------------------------------ workspace
     async def delivery_worktree(self) -> Path:
@@ -349,6 +371,7 @@ class StageStrategy:
             session_dir=ctx.journal.dir / "sessions" / procedure,
             result_path=out_dir / RESULT_FILE,
             schema_path=schema_path,
+            closing=self.closing_note(procedure),
             expect={
                 "contract_id": ctx.deps.plugin.contracts[procedure],
                 "procedure": procedure,
@@ -460,10 +483,49 @@ class StageStrategy:
             )
             raise WorkerFailure(procedure, outcome, f"output rejected: {exc}{hint}") from None
         if outcome.open_session is not None:
-            self.keep_open(procedure, worktree, outcome.open_session)
+            self.keep_open(procedure, worktree, outcome.open_session, out_dir)
         return result
 
-    def keep_open(self, procedure: str, worktree: Path, session: OpenSession) -> None:
+    def closing_note(self, procedure: str) -> str:
+        """What Claude tells the developer after handing over its result, in a session that stays
+        open and whose further changes the coordinator publishes. Development always ends this
+        way (the app is about to run from the session's worktree); a document stage when it made
+        changes a human asked for at the review gate."""
+        cfg = self.ctx.cfg
+        if not cfg.claude.interactive.follow_ups:
+            return ""
+        changes = self.ctx.intake.requirement in CHANGE_REQUIREMENTS
+        addressed = " and how you addressed each requested change (F1, F2...)" if changes else ""
+        close = (
+            "Tell them that if not, they can close this window (or type /exit), and that anything else "
+            "they ask for here is picked up now: "
+        )
+        if procedure == "implement-ticket":
+            preview = (
+                "say that the coordinator is now starting the app from this working copy and will open "
+                "it in their browser so they can try it; "
+                if cfg.preview.enabled
+                else ""
+            )
+            return (
+                "end your turn with a short message to the developer watching this session: what you "
+                f"changed{addressed} (or the questions or blocker you reported); {preview}then ask "
+                "whether they would like anything changed. "
+                f"{close}you make the change in this working copy and the coordinator pushes it as the "
+                "next candidate."
+            )
+        doc = DOCUMENTS.get(self.stage)
+        if doc is None or doc.procedure != procedure or not changes:
+            return ""
+        out = Path(self.ctx.output_dir(procedure))
+        return (
+            "end your turn with a short message to the developer watching this session: how you "
+            "addressed each requested change (F1, F2...), then ask whether there is anything else they "
+            f"would like to change in the {doc.title}. {close}you edit {out / doc.filename} in place "
+            f"and the coordinator publishes it as the next revision of the {doc.title} for review."
+        )
+
+    def keep_open(self, procedure: str, worktree: Path, session: OpenSession, out_dir: Path) -> None:
         """Track a session left open after hand-off (delivery.open_sessions); keep its worktree."""
         ctx = self.ctx
         events = len(read_events(session.session_dir))
@@ -481,12 +543,25 @@ class StageStrategy:
                 transcript=session.transcript or "",
                 mirrored_lines=session.mirrored_lines,
                 events_seen=events,
+                out_dir=str(out_dir),
+                document=document_digest(out_dir, self.stage),
             )
         )
         ctx.journal.events.append(
             "session_kept_open",
             {"procedure": procedure, "tmux_session": session.name, "human_prompts": session.human_prompts},
         )
+
+    async def follow_up_decision(self, d: Decision, rev: int) -> Decision:
+        """The decision that publishes this stage's document, edited in its open session after
+        ``d`` was published, as revision ``rev`` (see delivery.open_sessions)."""
+        return d.model_copy(update={"outcome": "success", "extra": {**d.extra, "revision": rev}})
+
+    def gate_summary(self, summary: str) -> str:
+        """The summary in a gate comment: for a follow-up, what was asked for instead."""
+        if self.follow_up is None:
+            return summary
+        return comments.follow_up_revision(self.stage.value, self.follow_up.replaces, self.follow_up.prompts)
 
     def worker_decision(self, result: StageResult) -> Decision | None:
         """Map a non-completed worker outcome to a decision."""
@@ -698,21 +773,18 @@ class RefinementStage(StageStrategy):
         rev = int(d.extra["revision"])
         out = ctx.output_dir("refine-ticket")
         spec_rel = f"{ctx.doc_root}/specification/v{rev:03d}.md"
-        header = provenance_header(
-            ctx,
-            "specification",
-            f"v{rev:03d}",
-            {
-                "status": "draft with open questions" if d.outcome == "clarification" else "for review",
-                "selected_comments": ",".join(ctx.record.selected_comment_ids) or "none",
-            },
-        )
-        files = {
-            spec_rel: header + (out / "specification.md").read_text(),
-            f"{ctx.doc_root}/executions/{ctx.run_id}.json": self.execution_summary(
-                d, {"artefact": spec_rel, "questions": [q.id for q in result.questions]}
-            ),
+        extra = {
+            "status": "draft with open questions" if d.outcome == "clarification" else "for review",
+            "selected_comments": ",".join(ctx.record.selected_comment_ids) or "none",
         }
+        if self.follow_up:
+            extra["follow_up_of"] = self.follow_up.replaces
+        header = provenance_header(ctx, "specification", f"v{rev:03d}", extra)
+        files = {spec_rel: header + (out / "specification.md").read_text()}
+        if self.follow_up is None:
+            files[f"{ctx.doc_root}/executions/{ctx.run_id}.json"] = self.execution_summary(
+                d, {"artefact": spec_rel, "questions": [q.id for q in result.questions]}
+            )
         sha = await self.publish_files(files, "spec", f"v{rev}", f"{ctx.key}: specification v{rev:03d}")
         url = blob_url(ctx.cfg.repository.url, sha, spec_rel)
         pub = ctx.publisher()
@@ -775,11 +847,14 @@ class RefinementStage(StageStrategy):
         )
         await self.announce(
             "spec-gate",
-            comments.spec_gate(token, url, rev, result.summary, "authorised approvers"),
+            comments.spec_gate(token, url, rev, self.gate_summary(result.summary), "authorised approvers"),
             f"v{rev}",
             gate_tokens=(token,),
         )
         await pub.save_record(ctx.key, ctx.shared, "spec-gate")
+        if self.follow_up:
+            return
+        SessionRegistry(ctx.cfg.runtime.state_dir).published(ctx.run_id, revision=rev)
         await pub.set_resume_field(ctx.key, None, "clear")
         await pub.transition(ctx.key, Status.REFINING, Action.COMPLETE_REFINEMENT)
 
@@ -833,26 +908,48 @@ class PlanningStage(StageStrategy):
         outcome = "clarification" if result.outcome is Outcome.NEEDS_CLARIFICATION else "success"
         extra: dict[str, Any] = {"revision": nxt, "base": base}
         if result.footprint:
-            fp = Footprint(
-                ticket_key=ctx.key,
-                owner_account_id=ctx.cfg.identity.developer_jira_account_id,
-                stage=self.stage,
-                plan_revision=nxt,
-                source_commit=base or "",
-                published_at=utcnow(),
-                **result.footprint.model_dump(),
-            )
-            from delivery.coordination import Coordinator
-
-            findings = await Coordinator(self.deps).check(fp, ctx.shared, checkpoint="plan")
-            extra["footprint"] = fp.model_dump(mode="json")
-            extra["overlap"] = findings_json(findings)
+            extra.update(await self.footprint(result, nxt, base))
         return Decision(
             outcome=outcome,
             reason=result.summary,
             result=result.model_dump(mode="json"),
             extra=extra,
         )
+
+    async def footprint(self, result: StageResult, rev: int, base: str | None) -> dict[str, Any]:
+        """The plan's change footprint for revision ``rev`` and its overlap with other work."""
+        assert result.footprint is not None
+        fp = Footprint(
+            ticket_key=self.ctx.key,
+            owner_account_id=self.ctx.cfg.identity.developer_jira_account_id,
+            stage=self.stage,
+            plan_revision=rev,
+            source_commit=base or "",
+            published_at=utcnow(),
+            **result.footprint.model_dump(),
+        )
+        from delivery.coordination import Coordinator
+
+        findings = await Coordinator(self.deps).check(fp, self.ctx.shared, checkpoint="plan")
+        return {"footprint": fp.model_dump(mode="json"), "overlap": findings_json(findings)}
+
+    async def follow_up_decision(self, d: Decision, rev: int) -> Decision:
+        """The edited plan keeps its footprint unless the session rewrote the result file with a
+        new one; either way it is checked for overlap again as revision ``rev``."""
+        d = await super().follow_up_decision(d, rev)
+        result = StageResult.model_validate(d.result)
+        try:
+            rewritten = StageResult.model_validate_json(
+                (self.ctx.output_dir("plan-ticket") / RESULT_FILE).read_text()
+            )
+        except (OSError, ValueError):
+            rewritten = None
+        if rewritten is not None and rewritten.footprint is not None:
+            result = result.model_copy(update={"footprint": rewritten.footprint})
+        if result.footprint is None:
+            return d
+        extra = {**d.extra, **await self.footprint(result, rev, d.extra.get("base"))}
+        return d.model_copy(update={"result": result.model_dump(mode="json"), "extra": extra})
 
     async def related_work(self) -> list[OverlapContext]:
         from delivery.coordination import Coordinator
@@ -870,15 +967,13 @@ class PlanningStage(StageStrategy):
         plan_rel = f"{ctx.doc_root}/plan/v{rev:03d}.md"
         fp_rel = f"{ctx.doc_root}/plan/v{rev:03d}.footprint.json"
         spec_gate = current_gate(ctx.shared.gates, GateKind.SPEC)
-        header = provenance_header(
-            ctx,
-            "plan",
-            f"v{rev:03d}",
-            {
-                "approved_specification": spec_gate.token if spec_gate else "none",
-                "source_commit": d.extra.get("base"),
-            },
-        )
+        extra = {
+            "approved_specification": spec_gate.token if spec_gate else "none",
+            "source_commit": d.extra.get("base"),
+        }
+        if self.follow_up:
+            extra["follow_up_of"] = self.follow_up.replaces
+        header = provenance_header(ctx, "plan", f"v{rev:03d}", extra)
         files = {plan_rel: header + (out / "plan.md").read_text()}
         for i, adr in enumerate([a for a in result.artifacts if a.kind is ArtifactKind.ARCHITECTURE], 1):
             files[f"{ctx.doc_root}/architecture/adr-{rev:03d}-{i}.md"] = (
@@ -886,9 +981,10 @@ class PlanningStage(StageStrategy):
             )
         if d.extra.get("footprint"):
             files[fp_rel] = json.dumps(d.extra["footprint"], indent=2, sort_keys=True) + "\n"
-        files[f"{ctx.doc_root}/executions/{ctx.run_id}.json"] = self.execution_summary(
-            d, {"artefact": plan_rel, "overlap": d.extra.get("overlap", [])}
-        )
+        if self.follow_up is None:
+            files[f"{ctx.doc_root}/executions/{ctx.run_id}.json"] = self.execution_summary(
+                d, {"artefact": plan_rel, "overlap": d.extra.get("overlap", [])}
+            )
         sha = await self.publish_files(files, "plan", f"v{rev}", f"{ctx.key}: plan v{rev:03d}")
         url = blob_url(ctx.cfg.repository.url, sha, plan_rel)
         pub = ctx.publisher()
@@ -971,7 +1067,7 @@ class PlanningStage(StageStrategy):
                 url,
                 blob_url(ctx.cfg.repository.url, sha, fp_rel),
                 rev,
-                result.summary,
+                self.gate_summary(result.summary),
                 "authorised approvers",
                 overlap,
             ),
@@ -979,6 +1075,9 @@ class PlanningStage(StageStrategy):
             gate_tokens=(token,),
         )
         await pub.save_record(ctx.key, ctx.shared, "plan-gate")
+        if self.follow_up:
+            return
+        SessionRegistry(ctx.cfg.runtime.state_dir).published(ctx.run_id, revision=rev)
         await pub.set_resume_field(ctx.key, None, "clear")
         await pub.transition(ctx.key, Status.PLANNING, Action.COMPLETE_PLANNING)
 
@@ -1293,7 +1392,7 @@ class DevelopmentStage(StageStrategy):
             update={"candidate_sha": sha, "pr_number": pr.number, "pr_url": pr.url}
         )
         ctx.save("candidate_published", sha=sha, pr=pr.number)
-        SessionRegistry(ctx.cfg.runtime.state_dir).published(ctx.run_id, sha, n)
+        SessionRegistry(ctx.cfg.runtime.state_dir).published(ctx.run_id, sha=sha, candidate_number=n)
         changed = list(d.extra.get("changed", []))
         files = {
             f"{ctx.doc_root}/executions/{ctx.run_id}.json": self.execution_summary(
@@ -1880,11 +1979,15 @@ class ReleasePreparationStage(StageStrategy):
             return
         rev = int(d.extra["revision"])
         rel = f"{ctx.doc_root}/releases/v{rev:03d}.md"
-        header = provenance_header(ctx, "release", f"v{rev:03d}", {"candidate_sha": d.extra["candidate"]})
-        files = {
-            rel: header + (ctx.output_dir("prepare-release") / "release.md").read_text(),
-            f"{ctx.doc_root}/executions/{ctx.run_id}.json": self.execution_summary(d, {"artefact": rel}),
-        }
+        extra = {"candidate_sha": d.extra["candidate"]}
+        if self.follow_up:
+            extra["follow_up_of"] = self.follow_up.replaces
+        header = provenance_header(ctx, "release", f"v{rev:03d}", extra)
+        files = {rel: header + (ctx.output_dir("prepare-release") / "release.md").read_text()}
+        if self.follow_up is None:
+            files[f"{ctx.doc_root}/executions/{ctx.run_id}.json"] = self.execution_summary(
+                d, {"artefact": rel}
+            )
         sha = await self.publish_files(files, "release", f"v{rev}", f"{ctx.key}: release proposal v{rev:03d}")
         token = gate_token(ctx.key, GateKind.RELEASE, rev)
         gate = GateRecord(
@@ -1919,12 +2022,23 @@ class ReleasePreparationStage(StageStrategy):
                 d.extra["candidate"],
                 "authorised approvers",
                 ctx.cfg.release.environment,
+                note=self.gate_summary(""),
             ),
             f"v{rev}",
             gate_tokens=(token,),
         )
         await pub.save_record(ctx.key, ctx.shared, "release-gate")
+        if self.follow_up:
+            return
+        SessionRegistry(ctx.cfg.runtime.state_dir).published(ctx.run_id, revision=rev)
         await pub.transition(ctx.key, Status.PREPARING_RELEASE, Action.COMPLETE_RELEASE_PREPARATION)
+
+    async def follow_up_decision(self, d: Decision, rev: int) -> Decision:
+        if self.ctx.shared.candidate_sha != d.extra.get("candidate"):
+            raise FollowUpRefused(
+                "the accepted candidate has changed since this release proposal was written"
+            )
+        return await super().follow_up_decision(d, rev)
 
 
 # --------------------------------------------------------------------------- release verification

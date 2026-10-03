@@ -295,3 +295,111 @@ def test_coordinator_alone_starts_the_supervisor(argv: list[str], expected: list
 
     sub = next(a for a in parser()._actions if a.dest == "command")
     assert coordinator_args(argv, set(sub.choices)) == expected  # type: ignore[attr-defined]
+
+
+def test_preview_config(tmp_path: Path) -> None:
+    from conftest import base_sections, render_config
+    from delivery.config import ConfigError, load_config
+
+    sections = base_sections(tmp_path)
+    (tmp_path / "plugin").mkdir()
+    (tmp_path / "c.toml").write_text(render_config(sections, {"config_version": 1}))
+    pc = load_config(tmp_path / "c.toml").preview
+    assert not pc.enabled and pc.setup is None and pc.open_browser and pc.url == "http://localhost:{port}/"
+    sections["preview"] = {"command": ["npm", "run", "dev"], "url": "localhost:{port}"}
+    (tmp_path / "c.toml").write_text(render_config(sections, {"config_version": 1}))
+    with pytest.raises(ConfigError, match="http"):
+        load_config(tmp_path / "c.toml")
+    sections["preview"] = {"command": ["npm", ""]}
+    (tmp_path / "c.toml").write_text(render_config(sections, {"config_version": 1}))
+    with pytest.raises(ConfigError, match="non-empty"):
+        load_config(tmp_path / "c.toml")
+
+
+def test_preview_launcher_runs_setup_then_the_app_and_keeps_its_output(tmp_path: Path) -> None:
+    import subprocess
+
+    from delivery.preview import expand, launcher
+
+    wt = tmp_path / "work tree"
+    wt.mkdir()
+    log = tmp_path / "preview.log"
+    script = tmp_path / "preview.sh"
+    script.write_text(
+        launcher(["sh", "-c", "echo setup > done.txt"], expand(["echo", "app on {port}"], 4321), wt, log)
+    )
+    res = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, check=False)
+    assert res.returncode == 0 and "app on 4321" in res.stdout
+    assert (wt / "done.txt").read_text() == "setup\n" and "app on 4321" in log.read_text()
+    # A failing setup never starts the app.
+    script.write_text(launcher(["false"], ["echo", "app"], wt, log))
+    assert "app" not in subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True).stdout
+    # Arguments are quoted, never run through the shell.
+    assert "'$(rm -rf x)'" in launcher([], ["echo", "$(rm -rf x)"], wt, log)
+
+
+def test_answers_only_when_something_listens() -> None:
+    import socket
+
+    from delivery.preview import answers
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    assert not answers(f"http://127.0.0.1:{port}/", timeout=0.5)
+
+
+def test_closing_message_is_added_only_to_sessions_kept_open(tmp_path: Path) -> None:
+    from delivery.claude import ClaudeInvocation
+    from delivery.config import InteractiveConfig
+    from delivery.interactive import InteractiveRunner
+
+    inv = ClaudeInvocation(
+        run_id="r",
+        procedure="refine-ticket",
+        envelope_path=tmp_path / "envelope.json",
+        cwd=tmp_path,
+        plugin_dir=tmp_path,
+        schema={},
+        settings_path=tmp_path / "settings.json",
+        tools=("Read",),
+        add_dirs=(),
+        timeout=60,
+        stdout_path=tmp_path / "out.jsonl",
+        stderr_path=tmp_path / "err.log",
+        result_path=tmp_path / "result.json",
+        schema_path=tmp_path / "schema.json",
+        closing="ask whether there is anything else.",
+    )
+    kept = InteractiveRunner("claude", InteractiveConfig(enabled=True, window="none"), tmp_path, opener=None)
+    closed = InteractiveRunner(
+        "claude", InteractiveConfig(enabled=True, window="none", keep_open=False), tmp_path, opener=None
+    )
+    assert kept.prompt(inv).endswith("Once the result file is written, ask whether there is anything else.")
+    assert "anything else" not in closed.prompt(inv)
+
+
+def test_doctor_explains_the_app_preview(tmp_path: Path) -> None:
+    from conftest import base_sections, render_config
+    from delivery.config import load_config
+    from delivery.doctor import Report, check_preview
+
+    sections = base_sections(tmp_path)
+    (tmp_path / "plugin").mkdir()
+
+    def level(**sec: dict[str, Any]) -> tuple[str, str]:
+        (tmp_path / "c.toml").write_text(render_config({**sections, **sec}, {"config_version": 1}))
+        report = Report()
+        check_preview(load_config(tmp_path / "c.toml"), report)
+        (check,) = report.checks
+        return check.level, check.detail
+
+    assert level()[0] == "info"
+    app = {"command": ["sh", "-c", "serve"], "setup": []}
+    warn, detail = level(preview=app)
+    assert warn == "warn" and "not kept open" in detail
+    interactive = {"enabled": True, "window": "none"}
+    ok, detail = level(preview=app, **{"claude.interactive": interactive})
+    assert ok == "ok" and "sh -c serve in the session's worktree; opens http://localhost:<port>/" in detail
+    missing = {"command": ["no-such-dev-server"]}
+    assert level(preview=missing, **{"claude.interactive": interactive})[0] == "warn"

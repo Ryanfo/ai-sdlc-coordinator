@@ -260,6 +260,8 @@ class ClaudeInvocation:
     result_path: Path | None = None
     schema_path: Path | None = None
     expect: dict[str, Any] = field(default_factory=dict)
+    # What Claude tells the developer once its result is handed over (sessions kept open).
+    closing: str = ""
 
     def prompt(self) -> str:
         return (
