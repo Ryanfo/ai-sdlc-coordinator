@@ -284,17 +284,24 @@ _SCRIPTS = {
 }
 
 
-def detect_checks(checkout: Path) -> tuple[list[str], dict[str, list[str]]] | None:
-    """The setup command and check commands of a JavaScript project, from its package.json."""
+def _package(checkout: Path) -> tuple[str, list[str], dict[str, Any]] | None:
+    """(package manager, install command, scripts) of a JavaScript project."""
     try:
         scripts = json.loads((checkout / "package.json").read_text()).get("scripts") or {}
     except (OSError, ValueError, AttributeError):
         return None
-    tool, setup = "npm", ["npm", "install"]
-    for lockfile, name, command in _INSTALL:
+    for lockfile, tool, install in _INSTALL:
         if (checkout / lockfile).exists():
-            tool, setup = name, command
-            break
+            return tool, install, scripts
+    return "npm", ["npm", "install"], scripts
+
+
+def detect_checks(checkout: Path) -> tuple[list[str], dict[str, list[str]]] | None:
+    """The setup command and check commands of a JavaScript project, from its package.json."""
+    found = _package(checkout)
+    if not found:
+        return None
+    tool, setup, scripts = found
     checks: dict[str, list[str]] = {}
     for check, candidates in _SCRIPTS.items():
         # npm init's placeholder test script always fails.
@@ -304,6 +311,19 @@ def detect_checks(checkout: Path) -> tuple[list[str], dict[str, list[str]]] | No
         if script:
             checks[check] = [tool, "run", script]
     return setup, checks
+
+
+# Dev servers that listen on $PORT by themselves.
+_READS_PORT = ("PORT", "next", "nuxt", "react-scripts")
+
+
+def detect_preview(checkout: Path) -> tuple[list[str], bool] | None:
+    """The command that runs the app for a preview, and whether it listens on $PORT."""
+    found = _package(checkout)
+    script = next((s for s in ("dev", "start") if s in found[2]), None) if found else None
+    if not found or not script:
+        return None
+    return [found[0], "run", script], any(p in str(found[2][script]) for p in _READS_PORT)
 
 
 def origin_of(checkout: Path) -> str:
@@ -942,8 +962,27 @@ class Wizard:
             if not d.which("tmux"):
                 self.note("Install tmux for session windows: brew install tmux")
             self.set("claude.interactive", "enabled", True)
+            self.preview()
         elif watching:
             self.set("claude.interactive", "enabled", False)
+
+    def preview(self) -> None:
+        """Offer to run the app from each finished development session (needs the windows)."""
+        io = self.io
+        current = self.get("preview.command") or []
+        found = detect_preview(Path(str(self.get("repository.checkout_path"))).expanduser())
+        command = current or (found[0] if found else [])
+        if not command:
+            return
+        shown = " ".join(command)
+        if confirm(io, f"  When development finishes, run the app ({shown}) and open it in your browser?"):
+            self.set("preview", "command", command)
+            if found and command == found[0] and not found[1]:
+                io.say("  Each preview gets its own port in $PORT; make the app's dev script listen on it,")
+                io.say("  for example: vite --port ${PORT:-5173}")
+                self.note("Make the app's dev script listen on $PORT for previews")
+        elif current:
+            self.set("preview", "command", [])
 
     # ---- Figma
     def figma(self) -> None:

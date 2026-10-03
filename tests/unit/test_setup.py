@@ -20,6 +20,7 @@ from delivery.ports import AuthError, BranchProtection, JiraUser, NotFound, Repo
 from delivery.setup import (
     SetupDeps,
     detect_checks,
+    detect_preview,
     parse_repo,
     parse_site,
     run_setup,
@@ -236,7 +237,8 @@ def fake_clone(argv: list[str]) -> int:
     subprocess.run(
         ["git", "-C", str(path), "remote", "add", "origin", f"https://github.com/{argv[3]}.git"], check=True
     )
-    (path / "package.json").write_text(json.dumps({"scripts": {"lint": "eslint .", "test": "vitest"}}))
+    scripts = {"lint": "eslint .", "test": "vitest", "dev": "vite --port ${PORT:-5173}"}
+    (path / "package.json").write_text(json.dumps({"scripts": scripts}))
     (path / "package-lock.json").write_text("{}")
     return 0
 
@@ -327,6 +329,33 @@ def test_setup_writes_a_working_config(home: Path, jira: FakeJira) -> None:
     assert any("Install Claude Code" in n for n in result.notes)
     assert "GitHub does not let you approve" in io.output
     assert "There is no GitHub user ghost" in io.output
+
+
+def test_session_windows_offer_the_app_preview(home: Path, jira: FakeJira) -> None:
+    at = next(n for n, (q, _) in enumerate(FIRST_RUN) if q == "Open a window")
+    answers = [
+        *FIRST_RUN[:at],
+        ("Open a window", "y"),
+        ("run the app (npm run dev)", ""),
+        *FIRST_RUN[at + 1 :],
+    ]
+    io = Script(answers)
+    result = run_setup(home / "delivery.local.toml", deps(io, jira, {}, []))
+    assert result is not None, io.output
+    cfg = load_config(home / "delivery.local.toml")
+    assert cfg.claude.interactive.enabled
+    assert cfg.preview.command == ["npm", "run", "dev"]
+    assert "Install tmux" in " ".join(result.notes)  # no tmux in the stub tools
+    assert "listen on" not in io.output  # the dev script already uses $PORT
+
+
+def test_detect_preview(tmp_path: Path) -> None:
+    assert detect_preview(tmp_path) is None
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"start": "vite"}}))
+    assert detect_preview(tmp_path) == (["npm", "run", "start"], False)
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "next dev", "start": "x"}}))
+    (tmp_path / "yarn.lock").write_text("")
+    assert detect_preview(tmp_path) == (["yarn", "run", "dev"], True)
 
 
 def test_setup_again_keeps_answers_and_hand_edits(home: Path, jira: FakeJira) -> None:
