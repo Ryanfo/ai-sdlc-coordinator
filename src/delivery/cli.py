@@ -101,9 +101,11 @@ def cmd_init(args: argparse.Namespace) -> int:
     if path.exists() and not args.force:
         print(f"{path} already exists; refusing to overwrite (use --force)", file=sys.stderr)
         return EXIT_CONFIG
+    from delivery.setup import bundled_plugin_path
+
     text = template_text()
-    plugin = Path(__file__).resolve().parents[2] / "plugins" / "delivery"
-    if (plugin / ".claude-plugin" / "plugin.json").exists():
+    plugin = bundled_plugin_path()
+    if plugin:
         text = text.replace("/absolute/path/to/delivery-platform/plugins/delivery", str(plugin))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
@@ -112,6 +114,33 @@ def cmd_init(args: argparse.Namespace) -> int:
         f"Wrote {path}. Fill in the values, then run `delivery workflow inspect --config {path}` and "
         f"`delivery doctor --config {path}`."
     )
+    return EXIT_OK
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    from delivery.setup import SetupDeps, TerminalPrompter, run_setup, tilde
+
+    if not sys.stdin.isatty():
+        print("`delivery setup` asks questions: run it in a terminal.", file=sys.stderr)
+        return EXIT_CONFIG
+    result = run_setup(Path(args.config), SetupDeps(TerminalPrompter()))
+    if result is None:
+        return EXIT_FAIL
+    print("\nChecking everything with `delivery doctor`...\n")
+    doctor = argparse.Namespace(config=str(result.path), claude_probe=False, json=False)
+    ready = asyncio.run(_doctor(doctor)) == EXIT_OK
+    default = Path(os.environ.get("DELIVERY_CONFIG") or Path.home() / "delivery.local.toml").expanduser()
+    flag = "" if result.path == default.absolute() else f" --config {tilde(result.path)}"
+    steps = [f"  - {n}" for n in result.notes]
+    if not ready:
+        steps.append(f"  - Fix the FAIL items above, then check again: delivery doctor{flag}")
+    steps += [
+        f"  - Once, prove Claude's sandbox on this laptop (uses a little of your plan): "
+        f"delivery doctor --claude-probe{flag}",
+        f"  - Start the coordinator: coordinator{flag}",
+        f"  - Change an answer later: delivery setup{flag}",
+    ]
+    print("\nNext\n" + "\n".join(steps))
     return EXIT_OK
 
 
@@ -796,6 +825,13 @@ def parser() -> argparse.ArgumentParser:
         sp.add_argument("--json", action="store_true", help="machine-readable output")
         return sp
 
+    sp = sub.add_parser("setup", help="answer a few questions to write or update your config")
+    sp.add_argument(
+        "--config",
+        default=default_config,
+        help="config file to write (default: $DELIVERY_CONFIG or ~/delivery.local.toml)",
+    )
+    sp.set_defaults(func=cmd_setup)
     sp = sub.add_parser("init", help="write a commented config template (never overwrites)")
     sp.add_argument("--config", required=True)
     sp.add_argument("--force", action="store_true")

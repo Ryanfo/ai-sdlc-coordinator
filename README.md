@@ -43,6 +43,34 @@ Tools (macOS or Linux; Windows via WSL2):
 
 On Linux the Claude sandbox also needs `bubblewrap` and `socat`.
 
+## Quick install
+
+With the GitHub CLI signed in (`brew install gh`, then `gh auth login`), run this in a terminal:
+
+```bash
+bash <(gh api repos/Ryanfo/ai-sdlc-coordinator/contents/install.sh -H "Accept: application/vnd.github.raw")
+```
+
+It checks for Git, uv and Claude Code and offers to install any that are missing, puts the code
+in `~/.delivery-platform` and the `delivery` and `coordinator` commands on your PATH, then runs
+`delivery setup`. Setup asks a few questions and writes `~/delivery.local.toml` for you:
+
+| It asks | It looks up for you |
+|---|---|
+| Your Jira site (or paste any link from it) and Atlassian email | Your Jira account ID, from the token |
+| A Jira API token, once (stored in your Keychain, never in the file) | The issue types that carry the delivery workflow |
+| The project key, and the approvers by name | Every workflow status ID and the resume stage field |
+| The application's GitHub repository, and your clone of it (it offers to clone) | The base branch and the CI checks it requires |
+| Who may approve PRs | The check commands, from the application's `package.json` |
+| Claude model, session windows, and an optional Figma token | Whether you are signed in to GitHub and Claude (it offers to sign you in) |
+
+Press Enter to accept each suggested answer. It finishes by running `delivery doctor` and listing
+anything left to do; then start with `coordinator` (step 6). Run `delivery setup` again at any
+time to change an answer: it keeps your other settings and comments, and saves the previous
+file as `delivery.local.toml.bak`. Run the install command again to update.
+
+Steps 1 to 5 below are the same thing done by hand.
+
 ## 1. Install
 
 From your clone of the delivery-platform repository:
@@ -98,6 +126,9 @@ subscription limit is reached, affected tickets pause with a clear message and r
 when you choose **Resume**.
 
 ## 3. Create your one config file
+
+`delivery setup` asks for the values below and writes the file (see [Quick install](#quick-install)).
+To write it by hand instead, start from the template:
 
 ```bash
 delivery init --config ~/delivery.local.toml
@@ -504,6 +535,7 @@ delivery dispatch pause --reason "machine busy" --config ~/delivery.local.toml
 | GitHub checks | CI results for exact commits, plus integration provenance |
 | `runtime.state_dir` | Your local recovery journal, logs, envelopes and locks (private; never in Git). Each run's `inputs/` holds what Claude was given, including attachment and Figma snapshots; `logs/` holds each Claude session transcript |
 | macOS Keychain | The Jira token (`delivery-jira`) and Figma token (`delivery-figma`) |
+| `~/.delivery-platform` | The coordinator's code, when installed with the quick install |
 
 ## Troubleshooting
 

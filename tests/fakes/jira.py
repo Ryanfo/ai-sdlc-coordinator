@@ -87,6 +87,7 @@ class FakeJira:
         self.type_statuses: dict[str, set[str]] = {
             t: set(status_ids.values()) for t in ("Story", "Task", "Bug")
         }
+        self.people: list[JiraUser] = []  # found by find_users
 
     # ------------------------------------------------------------------ test helpers
     @property
@@ -339,6 +340,12 @@ class FakeJira:
 
     async def user(self, account_id: str) -> JiraUser | None:
         return JiraUser(account_id, f"user:{account_id}")
+
+    async def find_users(self, query: str) -> list[JiraUser]:
+        return [u for u in self.people if query.lower() in u.display_name.lower()]
+
+    async def projects(self) -> list[tuple[str, str]]:
+        return [(self.project, f"{self.project} project")]
 
     async def close(self) -> None:
         return None

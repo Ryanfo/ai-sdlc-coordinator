@@ -221,6 +221,24 @@ class JiraClient:
             d["accountId"], d.get("displayName", ""), d.get("active", True), d.get("accountType", "atlassian")
         )
 
+    async def find_users(self, query: str) -> list[JiraUser]:
+        """Active people whose name or email matches (apps and bots are left out)."""
+        d = (
+            await self._read("GET", "/rest/api/3/user/search", params={"query": query, "maxResults": 10})
+        ).json()
+        return [
+            JiraUser(u["accountId"], u.get("displayName", ""), True, "atlassian")
+            for u in d
+            if u.get("accountType", "atlassian") == "atlassian" and u.get("active", True)
+        ]
+
+    async def projects(self) -> list[tuple[str, str]]:
+        """(key, name) of the first 50 projects this account can browse, for a picker."""
+        d = (
+            await self._read("GET", "/rest/api/3/project/search", params={"maxResults": 50, "orderBy": "key"})
+        ).json()
+        return [(p["key"], p.get("name", "")) for p in d.get("values", [])]
+
     async def search(self, jql: str) -> list[JiraIssue]:
         out: list[JiraIssue] = []
         token: str | None = None

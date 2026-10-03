@@ -1,6 +1,7 @@
 # delivery local configuration (the only file a developer edits)
 #
-# Copy with `delivery init --config ./delivery.local.toml`, then fill in the values.
+# `delivery setup` asks a few questions and fills this in; or copy it with
+# `delivery init --config ./delivery.local.toml` and fill in the values yourself.
 # Keep this file out of version control. It must never contain passwords or tokens:
 # secrets are referenced by environment variable name only.
 #
@@ -150,11 +151,9 @@ allow_neutral = []
 allow_skipped = []
 
 [workflow.statuses]
-# Actual Jira status IDs. Generate this block with:
+# Actual Jira status IDs, filled in by `delivery setup` or generated with
 #   delivery workflow inspect --config <this file>
-# backlog = "10000"
-# ready_refinement = "10001"
-# ... every status in the setup instructions is required before `delivery run`.
+# Every status in the setup instructions is required before `delivery run`.
 
 [workflow.actions]
 # Transition names. Defaults match the setup instructions; override only if your
