@@ -1593,8 +1593,8 @@ class VerificationStage(StageStrategy):
         return Decision(
             outcome=outcome,
             reason="; ".join(reasons) or "verification passed",
-            action=f"In Jira: Submit implementation changes to fix, or Revise scope. "
-            f"`delivery inspect {ctx.key}` shows why."
+            action="In Jira: Submit implementation changes to fix (moves into Ready for development), "
+            f"or Revise scope. `delivery inspect {ctx.key}` shows why."
             if reasons
             else "",
             result=verify.model_dump(mode="json"),

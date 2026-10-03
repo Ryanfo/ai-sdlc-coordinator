@@ -505,18 +505,22 @@ class StageExecutor:
 
 
 def _next_action(outcome: str, stage: Stage) -> str:
+    ready = STATUS_NAMES[STAGES[stage].ready]
     return {
         "success": {
-            Stage.REFINEMENT: "Review the specification; approve or request changes in Jira.",
-            Stage.PLANNING: "Review the plan; approve or request changes in Jira.",
-            Stage.DEVELOPMENT: "Verification starts automatically.",
-            Stage.VERIFICATION: "Independent human GitHub review, then Approve code in Jira.",
-            Stage.RELEASE_PREPARATION: "Review the release proposal; approve or request changes.",
+            Stage.REFINEMENT: "Review the specification in Jira; approving moves it into Ready for planning.",
+            Stage.PLANNING: "Review the plan in Jira; approving moves it into Ready for development.",
+            Stage.DEVELOPMENT: "Nothing yet: it moves into Ready for verification and verification starts.",
+            Stage.VERIFICATION: "Independent GitHub review, then Approve code in Jira "
+            "(moves into Acceptance review).",
+            Stage.RELEASE_PREPARATION: "Review the release proposal; approving moves it into "
+            "Ready for release.",
             Stage.RELEASE_VERIFICATION: "Done.",
         }[stage],
-        "clarification": "Answer the questions in Jira, then Submit answers.",
-        "verification_failed": "Review findings; Submit implementation changes or Revise scope.",
-        "blocked": "Resolve the blocker, then Resume in Jira.",
+        "clarification": f"Answer the questions in Jira, then Submit answers (moves into {ready}).",
+        "verification_failed": "Submit implementation changes to fix (moves into Ready for development), "
+        "or Revise scope.",
+        "blocked": f"Resolve the blocker, then Resume in Jira (moves into {ready}).",
     }.get(outcome, "")
 
 

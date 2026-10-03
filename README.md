@@ -258,6 +258,10 @@ What you will see in Jira:
 3. Independent review and verification reports, real check results, then **Code review**.
 4. Release proposal, then your merge and release record, then **Done**.
 
+Every comment that waits for you starts with the status the ticket is ready to move into, for
+example **Ready to move into Ready for planning once the specification is approved**, and each
+action it offers says which status it moves the ticket into.
+
 Specifications, plans, footprints, reviews and release documents are versioned on the
 `delivery/<KEY>` branch of the application repository. The Jira comments link to exact
 commits.

@@ -1,7 +1,9 @@
 """Jira comment bodies (markdown subset converted to ADF on publication).
 
 Every comment names the exact artefact revision via an immutable commit link, the token
-the human must use, a copyable template and the next human action.
+the human must use, a copyable template and the next human action. Every comment that waits
+for a human starts with the status the ticket is ready to move into, and each action it
+offers says which status it moves the ticket into (taken from the workflow definition).
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from delivery.feedback import (
 from delivery.models import CheckResult, Finding, Question, Severity
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
+from delivery.workflow import STAGES, STATUS_NAMES, Action, Stage, StageDef, Status, route_for_action
 
 STAGE_TITLES = {
     "refinement": "Refinement",
@@ -34,6 +37,26 @@ NOTE_HINT = (
     "To guide the next Claude session, first add a comment that starts with `FOR CLAUDE` "
     "(or `FOR CLAUDE development` for one stage) followed by what it should know or do."
 )
+
+
+def _into(source: Status, action: Action) -> str:
+    """The status a Jira action moves the ticket into, by its display name."""
+    route = route_for_action(source, action)
+    if route is None:
+        raise ValueError(f"the workflow has no {action.value} from {source.value}")
+    return STATUS_NAMES[route.target]
+
+
+def _moves(source: Status, action: Action) -> str:
+    return f"(moves into **{_into(source, action)}**)"
+
+
+def _ready_to_move(source: Status, action: Action, when: str) -> str:
+    return f"**Ready to move into {_into(source, action)}** {when}."
+
+
+def _stage_def(stage: str) -> StageDef:
+    return STAGES[Stage(stage)]
 
 
 def _session_line(run_id: str, worker_id: str) -> str:
@@ -84,16 +107,23 @@ def spec_gate(token: str, url: str, revision: int, summary: str, approvers: str)
     return "\n".join(
         [
             f"## Specification v{revision:03d} ready for review: {token}",
+            _ready_to_move(
+                Status.SPECIFICATION_REVIEW,
+                Action.APPROVE_SPECIFICATION,
+                "once the specification is approved",
+            ),
             f"[Read specification v{revision:03d}]({url}) (pinned to the exact commit).",
             "",
             summary,
             "",
-            f"**To approve** ({approvers}): add this comment, then choose **Approve specification**.",
+            f"**To approve** ({approvers}): add this comment, then choose **Approve specification** "
+            f"{_moves(Status.SPECIFICATION_REVIEW, Action.APPROVE_SPECIFICATION)}.",
             "```",
             approve_template(DecisionKind.APPROVE_SPEC, token),
             "```",
             "**To request changes**: add this comment with numbered items, then choose "
-            "**Request specification changes**.",
+            "**Request specification changes** "
+            f"{_moves(Status.SPECIFICATION_REVIEW, Action.REQUEST_SPECIFICATION_CHANGES)}.",
             "```",
             change_template(DecisionKind.CHANGE_SPEC, token),
             "```",
@@ -112,6 +142,7 @@ def plan_gate(
 ) -> str:
     lines = [
         f"## Plan v{revision:03d} ready for review: {token}",
+        _ready_to_move(Status.PLAN_REVIEW, Action.APPROVE_PLAN, "once the plan is approved"),
         f"[Read plan v{revision:03d}]({url}) · [change footprint]({footprint_url})",
         "",
         summary,
@@ -123,11 +154,13 @@ def plan_gate(
         ]
     lines += [
         "",
-        f"**To approve** ({approvers}): add this comment, then choose **Approve plan**.",
+        f"**To approve** ({approvers}): add this comment, then choose **Approve plan** "
+        f"{_moves(Status.PLAN_REVIEW, Action.APPROVE_PLAN)}.",
         "```",
         approve_template(DecisionKind.APPROVE_PLAN, token),
         "```",
-        "**To request changes**: comment, then choose **Request plan changes**.",
+        "**To request changes**: comment, then choose **Request plan changes** "
+        f"{_moves(Status.PLAN_REVIEW, Action.REQUEST_PLAN_CHANGES)}.",
         "```",
         change_template(DecisionKind.CHANGE_PLAN, token),
         "```",
@@ -136,8 +169,10 @@ def plan_gate(
 
 
 def questions(round_token: str, draft_url: str, qs: list[Question], who: str, stage: str) -> str:
+    answers = _stage_def(stage).answers_action
     lines = [
         f"## Questions: {round_token}",
+        _ready_to_move(Status.NEEDS_CLARIFICATION, answers, "once these questions are answered"),
         f"{STAGE_TITLES.get(stage, stage)} needs answers before it can continue. "
         f"[Current draft]({draft_url}).",
         "",
@@ -147,7 +182,8 @@ def questions(round_token: str, draft_url: str, qs: list[Question], who: str, st
     lines += [
         "",
         f"**Who answers**: {who}. Copy the template below into one or more comments, answer each "
-        f"question, then choose **Submit {STAGE_TITLES.get(stage, stage).lower()} answers**.",
+        f"question, then choose **Submit {STAGE_TITLES.get(stage, stage).lower()} answers** "
+        f"{_moves(Status.NEEDS_CLARIFICATION, answers)}.",
         "```",
         answer_template(round_token, [q.id for q in qs]),
         "```",
@@ -157,14 +193,16 @@ def questions(round_token: str, draft_url: str, qs: list[Question], who: str, st
 
 
 def blocked(stage: str, reason: str, action: str, resume_stage: str) -> str:
+    resume = _stage_def(resume_stage).resume_action
     return "\n".join(
         [
             f"## Blocked during {STAGE_TITLES.get(stage, stage).lower()}",
+            _ready_to_move(Status.BLOCKED, resume, "once the blocker below is resolved"),
             f"**Reason**: {reason}",
             "",
             f"**Next action**: {action}",
             f"When resolved, choose **Resume {STAGE_TITLES.get(resume_stage, resume_stage).lower()}** "
-            "(only after any previous worker has stopped).",
+            f"{_moves(Status.BLOCKED, resume)} (only after any previous worker has stopped).",
             NOTE_HINT,
         ]
     )
@@ -174,6 +212,9 @@ def waiting(stage: str, reason: str, action: str) -> str:
     return "\n".join(
         [
             f"## Waiting before {STAGE_TITLES.get(stage, stage).lower()}",
+            f"**Stays in {STATUS_NAMES[_stage_def(stage).ready]}**: "
+            f"{STAGE_TITLES.get(stage, stage).lower()} starts by itself within a minute once the "
+            "action below is done. Do not move the ticket.",
             f"**Not started**: {reason}",
             f"**Next action**: {action}",
         ]
@@ -208,6 +249,9 @@ def code_gate(
 ) -> str:
     lines = [
         f"## Candidate ready for code review: {code_token}",
+        _ready_to_move(Status.CODE_REVIEW, Action.APPROVE_CODE, "once the code is approved")
+        + f" After that, **Accept delivery** moves it into "
+        f"**{_into(Status.ACCEPTANCE_REVIEW, Action.ACCEPT_DELIVERY)}**.",
         f"PR: {pr_url} · candidate `{candidate}`",
         f"[Independent review]({review_url}) · [Verification report]({verification_url})",
         "",
@@ -229,20 +273,24 @@ def code_gate(
     lines += [
         "",
         f"**Code review** ({reviewers}): an independent human must approve the PR on GitHub at the "
-        "current head, with required CI passing. Then add this comment and choose **Approve code**.",
+        "current head, with required CI passing. Then add this comment and choose **Approve code** "
+        f"{_moves(Status.CODE_REVIEW, Action.APPROVE_CODE)}.",
         "```",
         approve_template(DecisionKind.APPROVE_CODE, code_token),
         "```",
-        "To request changes: comment, then choose **Request code changes**.",
+        "To request changes: comment, then choose **Request code changes** "
+        f"{_moves(Status.CODE_REVIEW, Action.REQUEST_CODE_CHANGES)}.",
         "```",
         change_template(DecisionKind.CHANGE_CODE, code_token),
         "```",
         "**After code approval, acceptance** (product decision against the original brief): add "
-        "this comment, then choose **Accept delivery**.",
+        "this comment, then choose **Accept delivery** "
+        f"{_moves(Status.ACCEPTANCE_REVIEW, Action.ACCEPT_DELIVERY)}.",
         "```",
         approve_template(DecisionKind.ACCEPT_DELIVERY, accept_token),
         "```",
-        "To request behavioural changes: comment, then choose **Request acceptance changes**.",
+        "To request behavioural changes: comment, then choose **Request acceptance changes** "
+        f"{_moves(Status.ACCEPTANCE_REVIEW, Action.REQUEST_ACCEPTANCE_CHANGES)}.",
         "```",
         change_template(DecisionKind.CHANGE_ACCEPTANCE, accept_token),
         "```",
@@ -331,6 +379,10 @@ def verification_failed(
         checks_line = "All coordinator and CI checks passed." if checks else ""
     lines = [
         f"## Verification failed for candidate c{candidate_no} `{candidate[:12]}`",
+        _ready_to_move(
+            Status.CHANGES_REQUESTED, Action.SUBMIT_IMPLEMENTATION_CHANGES, "to fix it (the usual next step)"
+        )
+        + " The other options are below.",
         f"PR: {pr_url} · [Independent review]({review_url}) · [Verification report]({verification_url})",
         "",
         "**Why it failed**:",
@@ -338,7 +390,8 @@ def verification_failed(
         *([checks_line] if checks_line else []),
         "",
         "**What to do next** (pick one):",
-        f"- **Fix it in this ticket**: choose **Submit implementation changes**. Development gets "
+        "- **Fix it in this ticket**: choose **Submit implementation changes** "
+        f"{_moves(Status.CHANGES_REQUESTED, Action.SUBMIT_IMPLEMENTATION_CHANGES)}. Development gets "
         f"every R- and F-item below and publishes candidate c{candidate_no + 1}, which is reviewed "
         "and verified again.",
     ]
@@ -352,8 +405,10 @@ def verification_failed(
             "```",
         ]
     lines += [
-        "- **Change what is being built**: choose **Revise scope** (back to refinement).",
-        "- **Verify the same candidate again**: choose **Submit follow-up changes**. The code does "
+        "- **Change what is being built**: choose **Revise scope** "
+        f"{_moves(Status.CHANGES_REQUESTED, Action.REVISE_SCOPE)}.",
+        "- **Verify the same candidate again**: choose **Submit follow-up changes** "
+        f"{_moves(Status.CHANGES_REQUESTED, Action.SUBMIT_FOLLOW_UP)}. The code does "
         "not change, so this only helps when the cause was outside this candidate (a flaky check, "
         f"or {base} or another ticket changed since).",
         NOTE_HINT,
@@ -380,18 +435,23 @@ def release_gate(
     return "\n".join(
         [
             f"## Release proposal v{revision:03d} ready: {release_token}",
+            _ready_to_move(Status.RELEASE_REVIEW, Action.APPROVE_RELEASE, "once the proposal is approved")
+            + " After the merge and release, **Record release** moves it into "
+            f"**{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**.",
             f"[Read release proposal]({url}) · accepted candidate `{candidate}`",
             "",
-            f"**To approve** ({approvers}): comment, then choose **Approve release**.",
+            f"**To approve** ({approvers}): comment, then choose **Approve release** "
+            f"{_moves(Status.RELEASE_REVIEW, Action.APPROVE_RELEASE)}.",
             "```",
             approve_template(DecisionKind.APPROVE_RELEASE, release_token),
             "```",
-            "To request changes: comment, then choose **Request release changes**.",
+            "To request changes: comment, then choose **Request release changes** "
+            f"{_moves(Status.RELEASE_REVIEW, Action.REQUEST_RELEASE_CHANGES)}.",
             "```",
             change_template(DecisionKind.CHANGE_RELEASE, release_token),
             "```",
             "**After approval, a human merges the PR and performs the release.** Then record it and "
-            "choose **Record release**:",
+            f"choose **Record release** {_moves(Status.READY_RELEASE, Action.RECORD_RELEASE)}:",
             "```",
             record_release_template(release_token, environment),
             "```",
@@ -404,6 +464,7 @@ def done(release_commit: str, environment: str, url: str, provenance: str) -> st
     return "\n".join(
         [
             "## Release verified: Done",
+            "Nothing more to do on this ticket.",
             f"Released commit `{release_commit}` in `{environment}`. [Release verification]({url}).",
             f"Provenance: {provenance}",
         ]
@@ -421,6 +482,8 @@ def candidate_ready(
 ) -> str:
     lines = [
         f"## Implementation candidate c{candidate_no} ready for verification",
+        f"**Moving into {_into(Status.DEVELOPING, Action.COMPLETE_DEVELOPMENT)}**: independent review "
+        "and verification start by themselves. Nothing to do yet.",
         f"PR: {pr_url} · commit `{sha}`",
         "",
         summary,
@@ -432,7 +495,6 @@ def candidate_ready(
             f"{', '.join(p for c in merge_conflicts for p in c['paths'])}. Resolve that when "
             "merging the pull request.",
         ]
-    lines += ["", "Fresh independent review and verification start automatically."]
     return "\n".join(lines)
 
 
@@ -480,7 +542,14 @@ def overlap_warning(f: OverlapFinding, assignees: dict[str, str | None], here: s
 
 
 def handover(stage: str, state: str, artefacts: dict[str, str], next_action: str) -> str:
-    lines = [f"## Handover checkpoint ({STAGE_TITLES.get(stage, stage)})", f"State: {state}", ""]
+    lines = [f"## Handover checkpoint ({STAGE_TITLES.get(stage, stage)})"]
+    if stage in STAGE_TITLES and state.startswith("blocked"):
+        resume = _stage_def(stage).resume_action
+        lines.append(
+            _ready_to_move(Status.BLOCKED, resume, "once reassigned")
+            + f" The new owner chooses **Resume {STAGE_TITLES[stage].lower()}**."
+        )
+    lines += [f"State: {state}", ""]
     lines += [f"- {k}: {v}" for k, v in sorted(artefacts.items())]
     lines += ["", f"**Next action**: {next_action}"]
     return "\n".join(lines)
