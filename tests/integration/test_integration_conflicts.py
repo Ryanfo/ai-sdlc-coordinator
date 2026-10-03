@@ -25,7 +25,10 @@ async def _to_development(w: World, sup: Supervisor, *keys: str) -> None:
 
 
 def _run_file(w: World, key: str, stage: str, name: str) -> list[Path]:
-    return sorted(Path(w.cfg.runtime.state_dir).rglob(f"runs/{key}/*{stage}*/inputs/{name}"))
+    """The file from each run of ``stage``, oldest run first. Run IDs only resolve to the second
+    (then a random suffix), so two runs started in the same second do not sort by name."""
+    found = Path(w.cfg.runtime.state_dir).rglob(f"runs/{key}/*{stage}*/inputs/{name}")
+    return sorted(found, key=lambda p: p.stat().st_mtime_ns)
 
 
 async def test_conflicting_tickets_both_reach_code_review_with_the_conflict_flagged(tmp_path: Path) -> None:
