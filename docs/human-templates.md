@@ -21,12 +21,13 @@ posts each template with the **current** token in Jira; copy it from there. Rule
 | Request code changes | `CHANGE CODE PILOT-123-CODE-c2 + F1:` | Request code changes |
 | Accept delivery | `ACCEPT DELIVERY PILOT-123-ACCEPT-c2` | Accept delivery |
 | Request behavioural changes | `CHANGE ACCEPTANCE PILOT-123-ACCEPT-c2 + F1:` | Request acceptance changes |
-| Select which findings to fix (optional) | `SUBMIT CHANGES PILOT-123-CODE-c2 + F1:, F3:` | Submit implementation changes |
+| Select which findings to fix (optional; R-items are always fixed) | `SUBMIT CHANGES PILOT-123-CODE-c2 + F1:, F3:` | Submit implementation changes |
+| Re-verify the same candidate (no code change) | none | Submit follow-up changes (from Changes requested) |
+| Tell Claude something for its next session | `FOR CLAUDE` or `FOR CLAUDE development` + your note | Resume, Submit … as usual |
 | Change scope after review | `REVISE SCOPE PILOT-123-SPEC-v3 + F1:` | Revise scope |
 | Approve release proposal | `APPROVE RELEASE PILOT-123-RELEASE-v1` | Approve release |
 | Change release proposal | `CHANGE RELEASE PILOT-123-RELEASE-v1 + F1:` | Request release changes |
 | Record the release (after the human merge) | `RECORD RELEASE PILOT-123-RELEASE-v1 + commit:, environment:` | Record release |
-| Decide an overlap | `OVERLAP OVL-0123456789 PROCEED / WAIT PILOT-9 / RESCOPE` | Resume <stage> |
 
 ## Examples
 
@@ -61,10 +62,14 @@ environment: local-pilot
 merged-pr: <PR number>
 ```
 
-Overlap decision (the warning ID is in the coordinator's overlap comment):
+Guidance for Claude. Not a decision and needs no token: every following Claude session of
+that stage (or of every stage, without a stage name) gets the note as input, oldest first, from
+the assignee or an approver. It never starts work by itself; choose the Jira action as usual.
+Stage names: `refinement`, `planning`, `development`, `verification`, `release`.
 
 ```text
-OVERLAP OVL-0123456789 PROCEED
+FOR CLAUDE development
+The e2e failure is the date picker's timezone; use the fixed clock in tests/clock.ts.
 ```
 
 ## What is never accepted

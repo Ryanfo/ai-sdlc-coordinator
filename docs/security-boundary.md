@@ -64,11 +64,19 @@ tmux -L delivery new-session -d -s <ticket>-<procedure> -c <worktree> --
 | A person can type to Claude, and use Claude Code's mode switch | They are the developer the coordinator works for. `--restricted` still refuses bypassPermissions, the sandbox still applies to every shell command, and the deny rules are unchanged |
 | Claude Code saves the transcript under `~/.claude/projects` | It is mirrored into the run's logs as it is written, and that copy of the transcript is deleted when the session ends |
 | Sessions can stay open after hand-off and their changes are pushed | The coordinator pushes, never Claude (no credentials, push denied). Only from the feature worktree, fast-forward only, never protected paths, only while the ticket is in a review status or Ready for verification with no run working on it. Each push is a new candidate that supersedes code, acceptance and release approvals and goes back through verification |
+| Specification, plan and release proposal sessions stay open and their edits are published | The coordinator publishes, never Claude: the edited document is copied from the output directory (the only place the session can write) and published through the stage's own publication to the delivery branch, as a new revision whose gate supersedes the one under review. Only while the ticket is in that review status with the session's own revision under review |
 
 On 2 Oct 2026 (Claude Code 2.1.287, macOS) `--claude-probe` ran the same probe through an
 interactive session in tmux, with the folder-trust question answered by the coordinator: every
 row of the table below passed, the plugin proof came from the transcript, the result from the
 hook-checked file, and no transcript was left under `~/.claude/projects`.
+
+**App preview (`[preview]`).** After a development run, the coordinator runs the configured
+setup and app command in that session's worktree, which holds code Claude wrote. Like the
+coordinator's checks (`npm ci`, tests), it runs **outside** Claude's sandbox, as you, with the
+minimal child environment (`PATH`, `HOME`, locale, `PORT`; no tokens, SSH agent or Git
+credentials), in its own tmux session, until the development session closes. Review what you
+are about to run the same way you would before running checks on the branch.
 
 ## Verified on this machine (1 Oct 2026, Claude Code 2.1.278, macOS)
 

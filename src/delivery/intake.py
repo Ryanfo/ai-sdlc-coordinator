@@ -39,6 +39,7 @@ from delivery.gates import (
     evaluate_human_gate,
     evaluate_reviews,
 )
+from delivery.gates import gate_token as make_gate_token
 from delivery.models import (
     PROPERTY_KEY,
     GateKind,
@@ -50,6 +51,7 @@ from delivery.models import (
 )
 from delivery.ports import GitHubPort, JiraComment, JiraIssue, JiraPort, StatusChange
 from delivery.workflow import (
+    FOLLOW_UP_SOURCES,
     PAUSED_STATUSES,
     ROUTES,
     STAGES,
@@ -821,8 +823,9 @@ class IntakeEvaluator:
         if origin is Status.VERIFYING:
             for f in rec.pending_feedback:
                 items[str(f.get("id"))] = str(f.get("description"))
-            code_gate = current_gate(rec.gates, GateKind.CODE)
-            token = code_gate.token if code_gate else None
+            # The failure comment names the candidate's code token even before any code gate
+            # exists (a first candidate that failed verification).
+            token = make_gate_token(ctx.key, GateKind.CODE, rec.candidate_number)
         elif origin in (Status.CODE_REVIEW, Status.ACCEPTANCE_REVIEW):
             kind = GateKind.CODE if origin is Status.CODE_REVIEW else GateKind.ACCEPT
             gate = current_gate(rec.gates, kind)
@@ -862,7 +865,9 @@ class IntakeEvaluator:
             if sub:
                 chosen = set(sub[-1].decision.items)
                 if chosen:
-                    items = {k: v for k, v in items.items() if k.split("@")[0] in chosen}
+                    # R-items are problems the coordinator found (failed checks, conflicts with
+                    # the base branch): the next candidate cannot pass without them.
+                    items = {k: v for k, v in items.items() if k.split("@")[0] in chosen or k.startswith("R")}
                 selected.append(sub[-1].comment)
         if not items:
             return self._wait(
@@ -892,7 +897,15 @@ class IntakeEvaluator:
                 "Return the ticket to development.",
                 entry=e,
             )
-        return Intake(IntakeKind.READY, stage, reason=f"candidate {rec.candidate_sha[:12]}", record=rec)
+        reason = f"candidate {rec.candidate_sha[:12]}"
+        if src in FOLLOW_UP_SOURCES and rec.current_stage is Stage.VERIFICATION:
+            # Moved back by hand with no follow-up pushed: the same code is verified again.
+            reason = (
+                f"candidate c{rec.candidate_number} {rec.candidate_sha[:12]} again, unchanged since its "
+                "last verification (Submit follow-up changes re-verifies the same code; to change "
+                "the code use Submit implementation changes)"
+            )
+        return Intake(IntakeKind.READY, stage, reason=reason, record=rec)
 
     async def _code_evidence(self, rec: SharedExecutionRecord) -> tuple[bool, str]:
         if self.github is None or rec.pr_number is None or not rec.candidate_sha:

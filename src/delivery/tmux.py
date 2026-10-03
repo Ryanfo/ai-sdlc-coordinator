@@ -159,6 +159,14 @@ class Tmux:
             return []
         return [s for s in res.stdout.splitlines() if s] if res.returncode == 0 else []
 
+    async def has_clients(self, name: str) -> bool:
+        """Whether a terminal is attached to the session."""
+        try:
+            res = await self._run("list-clients", "-t", f"={name}", "-F", "#{client_name}", check=False)
+        except TmuxError:
+            return False
+        return res.returncode == 0 and bool(res.stdout.strip())
+
     async def message(self, name: str, text: str) -> None:
         """Show a short status-line message to anyone attached (ignored if nobody is)."""
         with contextlib.suppress(TmuxError):

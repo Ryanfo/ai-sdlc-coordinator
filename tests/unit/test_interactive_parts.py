@@ -295,3 +295,136 @@ def test_coordinator_alone_starts_the_supervisor(argv: list[str], expected: list
 
     sub = next(a for a in parser()._actions if a.dest == "command")
     assert coordinator_args(argv, set(sub.choices)) == expected  # type: ignore[attr-defined]
+
+
+def test_preview_config(tmp_path: Path) -> None:
+    from conftest import base_sections, render_config
+    from delivery.config import ConfigError, load_config
+
+    sections = base_sections(tmp_path)
+    (tmp_path / "plugin").mkdir()
+    (tmp_path / "c.toml").write_text(render_config(sections, {"config_version": 1}))
+    pc = load_config(tmp_path / "c.toml").preview
+    assert not pc.enabled and pc.setup is None and pc.open_browser and pc.url == "http://localhost:{port}/"
+    sections["preview"] = {"command": ["npm", "run", "dev"], "url": "localhost:{port}"}
+    (tmp_path / "c.toml").write_text(render_config(sections, {"config_version": 1}))
+    with pytest.raises(ConfigError, match="http"):
+        load_config(tmp_path / "c.toml")
+    sections["preview"] = {"command": ["npm", ""]}
+    (tmp_path / "c.toml").write_text(render_config(sections, {"config_version": 1}))
+    with pytest.raises(ConfigError, match="non-empty"):
+        load_config(tmp_path / "c.toml")
+
+
+def test_preview_launcher_runs_setup_then_the_app_and_keeps_its_output(tmp_path: Path) -> None:
+    import subprocess
+
+    from delivery.preview import expand, launcher
+
+    wt = tmp_path / "work tree"
+    wt.mkdir()
+    log = tmp_path / "preview.log"
+    script = tmp_path / "preview.sh"
+    script.write_text(
+        launcher(["sh", "-c", "echo setup > done.txt"], expand(["echo", "app on {port}"], 4321), wt, log)
+    )
+    res = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, check=False)
+    assert res.returncode == 0 and "app on 4321" in res.stdout
+    assert (wt / "done.txt").read_text() == "setup\n" and "app on 4321" in log.read_text()
+    # A failing setup never starts the app.
+    script.write_text(launcher(["false"], ["echo", "app"], wt, log))
+    assert "app" not in subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True).stdout
+    # Arguments are quoted, never run through the shell.
+    assert "'$(rm -rf x)'" in launcher([], ["echo", "$(rm -rf x)"], wt, log)
+
+
+def test_answers_only_when_something_listens() -> None:
+    import socket
+
+    from delivery.preview import answers
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    assert not answers(f"http://127.0.0.1:{port}/", timeout=0.5)
+
+
+def test_the_closing_message_ends_an_interactive_prompt(tmp_path: Path) -> None:
+    import dataclasses
+
+    from delivery.claude import ClaudeInvocation
+    from delivery.config import InteractiveConfig
+    from delivery.interactive import InteractiveRunner
+
+    inv = ClaudeInvocation(
+        run_id="r",
+        procedure="refine-ticket",
+        envelope_path=tmp_path / "envelope.json",
+        cwd=tmp_path,
+        plugin_dir=tmp_path,
+        schema={},
+        settings_path=tmp_path / "settings.json",
+        tools=("Read",),
+        add_dirs=(),
+        timeout=60,
+        stdout_path=tmp_path / "out.jsonl",
+        stderr_path=tmp_path / "err.log",
+        result_path=tmp_path / "result.json",
+        schema_path=tmp_path / "schema.json",
+        closing="ask whether there is anything else.",
+    )
+    runner = InteractiveRunner(
+        "claude", InteractiveConfig(enabled=True, window="none"), tmp_path, opener=None
+    )
+    assert runner.prompt(inv).endswith("that file.\n\nask whether there is anything else.")
+    assert runner.prompt(dataclasses.replace(inv, closing="")).endswith("that file.")
+
+
+def test_doctor_explains_the_app_preview(tmp_path: Path) -> None:
+    from conftest import base_sections, render_config
+    from delivery.config import load_config
+    from delivery.doctor import Report, check_preview
+
+    sections = base_sections(tmp_path)
+    (tmp_path / "plugin").mkdir()
+
+    def level(**sec: dict[str, Any]) -> tuple[str, str]:
+        (tmp_path / "c.toml").write_text(render_config({**sections, **sec}, {"config_version": 1}))
+        report = Report()
+        check_preview(load_config(tmp_path / "c.toml"), report)
+        (check,) = report.checks
+        return check.level, check.detail
+
+    assert level()[0] == "info"
+    app = {"command": ["sh", "-c", "serve"], "setup": []}
+    warn, detail = level(preview=app)
+    assert warn == "warn" and "not kept open" in detail
+    interactive = {"enabled": True, "window": "none"}
+    ok, detail = level(preview=app, **{"claude.interactive": interactive})
+    assert ok == "ok" and "sh -c serve in the session's worktree; opens http://localhost:<port>/" in detail
+    missing = {"command": ["no-such-dev-server"]}
+    assert level(preview=missing, **{"claude.interactive": interactive})[0] == "warn"
+
+
+def test_change_requests_and_development_get_a_closing_message() -> None:
+    from delivery.stages import change_ids, closing_note
+
+    assert change_ids({"Q1": "answer", "F10": "x", "F2": "y", "F2@123": "z", "R1": "check"}) == [
+        "F2",
+        "F10",
+        "R1",
+    ]
+    note = closing_note("implement-ticket", ["F1", "R1"])
+    assert "change requests from Jira: F1, R1" in note
+    assert "The changes requested in Jira have been actioned" in note
+    assert "pushes them as the next candidate" in note and "close this window" in note
+    spec = closing_note("refine-ticket", ["F1"], document=Path("/out/specification.md"))
+    assert "The changes requested in Jira have been actioned" in spec
+    assert "edit /out/specification.md in place" in spec and "next revision of the specification" in spec
+    assert closing_note("verify-ticket", ["F1"]) == ""
+    assert closing_note("refine-ticket", []) == "", "a first draft is not a change request"
+    # Development always asks, so further changes go to the session that made the candidate.
+    first = closing_note("implement-ticket", [])
+    assert "actioned" not in first and "Are there any further changes you'd like to make?" in first
+    assert "starting the app" not in first
+    assert "starting the app" in closing_note("implement-ticket", [], preview=True)

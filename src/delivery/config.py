@@ -256,6 +256,42 @@ class InteractiveConfig(StrictModel):
         return self.enabled and self.keep_open
 
 
+class PreviewConfig(StrictModel):
+    """Run the app from a finished development session's worktree so you can try the change.
+
+    Needs [claude.interactive] with keep_open: the worktree stays while that session is open,
+    and changes you ask for there show up in the running app (see delivery.preview).
+    """
+
+    # Argument list, never a shell string. "{port}" is replaced by the preview's own port,
+    # which is also exported as PORT. Empty: no preview.
+    command: list[str] = Field(default_factory=list)
+    # Run first in the worktree. None: checks.setup; [] for nothing.
+    setup: list[str] | None = None
+    url: str = "http://localhost:{port}/"
+    open_browser: bool = True
+    # Mention it in the terminal if the app has not answered by then (it keeps waiting).
+    ready_timeout_seconds: int = Field(default=180, ge=10, le=3600)
+
+    @field_validator("command", "setup")
+    @classmethod
+    def _argv(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None and not all(isinstance(a, str) and a for a in v):
+            raise ValueError("must be a list of non-empty arguments")
+        return v
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str) -> str:
+        if not re.match(r"^https?://", v):
+            raise ValueError("must start with http:// or https://")
+        return v
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.command)
+
+
 class ClaudeConfig(StrictModel):
     executable: str = "claude"
     plugin_path: Path
@@ -467,6 +503,7 @@ class Config(StrictModel):
     workflow: WorkflowConfig = WorkflowConfig()
     overlap: OverlapConfig = OverlapConfig()
     figma: FigmaConfig = FigmaConfig()
+    preview: PreviewConfig = PreviewConfig()
 
     # Set by load_config; not part of the file.
     source_path: Path | None = Field(default=None, exclude=True)

@@ -26,8 +26,14 @@ class OverlapKind(StrEnum):
 
 
 class Severity(StrEnum):
+    """How prominently an overlap is flagged. Overlaps never pause work."""
+
     WARN = "warn"
-    BLOCK = "block"
+    HIGH = "high"  # a shared interface, schema or migration, or a declared dependency
+
+    @classmethod
+    def _missing_(cls, value: object) -> Severity | None:
+        return cls.HIGH if value == "block" else None  # records written when HIGH paused work
 
 
 @dataclass(frozen=True)
@@ -129,7 +135,7 @@ def compare(
     if other.ticket_key in mine.ticket_dependencies and not other_done:
         add(
             OverlapKind.DECLARED_DEPENDENCY,
-            Severity.BLOCK,
+            Severity.HIGH,
             [f"{mine.ticket_key} depends on {other.ticket_key}"],
         )
 
@@ -163,10 +169,5 @@ def compare(
         ca, cb = _ci(a), _ci(b)
         contracts.extend(f"{label}: {ca[k]}" for k in sorted(set(ca) & set(cb)))
     if contracts:
-        add(OverlapKind.SHARED_CONTRACT, Severity.BLOCK, contracts)
+        add(OverlapKind.SHARED_CONTRACT, Severity.HIGH, contracts)
     return findings
-
-
-def decision_allows(finding: OverlapFinding, decisions: dict[str, str]) -> bool:
-    """A human PROCEED decision on this warning lets a blocking finding continue."""
-    return decisions.get(finding.warning_id, "").upper() == "PROCEED"

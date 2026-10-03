@@ -107,6 +107,50 @@ def follow_up_published(
     )
 
 
+def document_follow_up_published(
+    cfg: Config, key: str, stage: Stage, title: str, rev: int, token: str, replaces: str, asked: list[str]
+) -> str:
+    return block(
+        f"FOLLOW-UP  {_stage_title(stage)}  {key}  -  {title} v{rev:03d}",
+        [
+            ("Asked", "; ".join(asked)[:300]),
+            ("Published", f"{title} v{rev:03d} for review ({token}); it supersedes {replaces}"),
+            ("Jira", ticket_url(cfg, key)),
+            ("Session", f"still open: delivery attach {key}"),
+        ],
+    )
+
+
+def preview_ready(cfg: Config, key: str, url: str, worktree: str, log: str) -> str:
+    opened = " (opened in your browser)" if cfg.preview.open_browser else ""
+    return block(
+        f"TRY IT  Development  {key}",
+        [
+            ("App", f"{url}{opened}"),
+            ("From", worktree),
+            (
+                "Changes",
+                f"ask in the open development session (delivery attach {key}); the app shows them as "
+                "they are made, and each one is pushed as a new candidate",
+            ),
+            ("Reopen", f"delivery preview {key}"),
+            ("Output", f"delivery attach {key} --procedure preview, or {log}"),
+        ],
+    )
+
+
+def preview_trouble(cfg: Config, key: str, what: str, log: str, tail: list[str]) -> str:
+    return block(
+        f"APP  Development  {key}",
+        [
+            ("Problem", what),
+            ("Output", log),
+            ("Next", f"`delivery preview {key}` starts it again; the development session stays open"),
+        ],
+        tail or None,
+    )
+
+
 def open_session_closed(rec: Any, reason: str, kept: str) -> str:
     text = f"{rec.ticket_key}: closed the open {rec.procedure} session ({reason})"
     return line(text + (f"; {kept}" if kept else ""))
@@ -148,6 +192,12 @@ def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path
     still_open = [
         r.procedure for r in SessionRegistry(cfg.runtime.state_dir).all() if r.run_id == record.run_id
     ]
+    picked_up = ""
+    if cfg.claude.interactive.follow_ups:
+        if record.stage is Stage.DEVELOPMENT:
+            picked_up = " (changes you ask for are pushed as a new candidate)"
+        elif record.stage in (Stage.REFINEMENT, Stage.PLANNING, Stage.RELEASE_PREPARATION):
+            picked_up = " (changes you ask for are published as the next revision for review)"
     return block(
         f"FINISHED  {_stage_title(record.stage)}  {record.ticket_key}  -  {outcome}",
         [
@@ -162,11 +212,7 @@ def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path
             (
                 "Claude",
                 f"{', '.join(still_open)} still open for questions: delivery attach {record.ticket_key}"
-                + (
-                    " (changes you ask for are pushed as a new candidate)"
-                    if record.stage is Stage.DEVELOPMENT and cfg.claude.interactive.follow_ups
-                    else ""
-                )
+                + picked_up
                 if still_open
                 else "",
             ),

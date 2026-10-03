@@ -23,7 +23,6 @@ _ROUND_CODES = "|".join(d.round_code for d in STAGES.values())
 GATE_TOKEN = re.compile(rf"^(?P<key>{_KEY})-(?P<kind>SPEC|PLAN|RELEASE)-v(?P<rev>\d{{1,4}})$")
 CANDIDATE_TOKEN = re.compile(rf"^(?P<key>{_KEY})-(?P<kind>CODE|ACCEPT)-c(?P<rev>\d{{1,4}})$")
 ROUND_TOKEN = re.compile(rf"^(?P<key>{_KEY})-(?P<code>{_ROUND_CODES})-R(?P<n>\d{{1,3}})$")
-WARNING_ID = re.compile(r"^OVL-[0-9a-f]{10}$")
 
 
 class DecisionKind(StrEnum):
@@ -41,7 +40,6 @@ class DecisionKind(StrEnum):
     REVISE_SCOPE = "REVISE SCOPE"
     SUBMIT_CHANGES = "SUBMIT CHANGES"
     ANSWERS = "ANSWERS"
-    OVERLAP = "OVERLAP"
 
 
 _TOKEN_KIND: dict[DecisionKind, str] = {
@@ -66,9 +64,6 @@ _HEADER = re.compile(
     r"(?P<token>\S+)\s*$"
 )
 _ANSWERS = re.compile(r"^ANSWERS\s+(?P<token>\S+)\s*$")
-_OVERLAP = re.compile(
-    r"^OVERLAP\s+(?P<token>OVL-[0-9a-f]{10})\s+(?P<choice>PROCEED|RESCOPE|WAIT\s+" + _KEY + r")\s*$"
-)
 _ITEM = re.compile(r"^(?P<id>[QF]\d{1,3})\s*[:.)-]\s*(?P<text>.*)$")
 _FIELD = re.compile(r"^(?P<name>commit|environment|merged-pr|pr)\s*:\s*(?P<value>\S+)\s*$", re.I)
 
@@ -79,7 +74,6 @@ class Decision:
     token: str
     items: dict[str, str] = field(default_factory=dict)
     fields: dict[str, str] = field(default_factory=dict)
-    choice: str = ""
     problems: tuple[str, ...] = ()
 
 
@@ -90,8 +84,6 @@ def is_coordinator_comment(comment: JiraComment) -> bool:
 def token_matches_kind(kind: DecisionKind, token: str) -> bool:
     if kind is DecisionKind.ANSWERS:
         return bool(ROUND_TOKEN.match(token))
-    if kind is DecisionKind.OVERLAP:
-        return bool(WARNING_ID.match(token))
     expected = _TOKEN_KIND[kind]
     m = GATE_TOKEN.match(token) or CANDIDATE_TOKEN.match(token)
     return bool(m and m.group("kind") == expected)
@@ -106,7 +98,6 @@ def parse_decision(text: str) -> Decision | None:
     head, body = lines[0], lines[1:]
     kind: DecisionKind | None = None
     token = ""
-    choice = ""
     if m := _HEADER.match(head):
         try:
             kind = DecisionKind(f"{m.group('verb')} {m.group('subject')}")
@@ -115,9 +106,6 @@ def parse_decision(text: str) -> Decision | None:
         token = m.group("token")
     elif m := _ANSWERS.match(head):
         kind, token = DecisionKind.ANSWERS, m.group("token")
-    elif m := _OVERLAP.match(head):
-        kind, token = DecisionKind.OVERLAP, m.group("token")
-        choice = " ".join(m.group("choice").split())
     if kind is None:
         return None
     problems: list[str] = []
@@ -139,7 +127,7 @@ def parse_decision(text: str) -> Decision | None:
             current = None
         elif current is not None:
             items[current] = (items[current] + "\n" + ln).strip()
-    return Decision(kind, token, items, fields, choice, tuple(problems))
+    return Decision(kind, token, items, fields, tuple(problems))
 
 
 @dataclass(frozen=True)
@@ -302,3 +290,44 @@ def record_release_template(token: str, environment: str) -> str:
         f"environment: {environment}\n"
         "merged-pr: <PR number>"
     )
+
+
+_NOTE = re.compile(
+    r"^FOR\s+CLAUDE"
+    r"(?:\s+(?P<stage>refinement|planning|development|verification|"
+    r"release(?:[ _](?:preparation|verification))?))?"
+    r"\s*[:\-]?\s*(?P<text>.*)$",
+    re.I,
+)
+
+
+def note_text(comment: JiraComment, stage: str) -> str | None:
+    """The guidance in a ``FOR CLAUDE [stage]`` comment for this stage, or None.
+
+    The first line is ``FOR CLAUDE`` (every stage) or ``FOR CLAUDE development`` (one stage;
+    ``release`` covers release preparation and verification); the note follows on that line
+    after a colon or on the next lines.
+    """
+    if is_coordinator_comment(comment):
+        return None
+    first, _, rest = comment.body_text.strip().partition("\n")
+    m = _NOTE.match(first.strip())
+    if not m:
+        return None
+    scope = (m.group("stage") or "").lower().replace(" ", "_")
+    if scope and scope != stage and not (scope == "release" and stage.startswith("release")):
+        return None
+    text = "\n".join(t for t in (m.group("text").strip(), rest.strip()) if t)
+    return text or None
+
+
+def claude_notes(
+    comments: list[JiraComment], *, stage: str, allowed_authors: set[str], limit: int = 10
+) -> list[tuple[JiraComment, str]]:
+    """Notes for Claude for this stage from the assignee or approvers, oldest first."""
+    notes = [
+        (c, text)
+        for c in comments
+        if c.author_account_id in allowed_authors and (text := note_text(c, stage)) is not None
+    ]
+    return notes[-limit:]

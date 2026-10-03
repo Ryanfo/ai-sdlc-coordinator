@@ -258,6 +258,20 @@ class Publisher:
         self.journal.confirm(oid, {"sha": sha})
         return sha
 
+    async def push_head(self, worktree: Path, branch: str, op_type: str, revision: str = "") -> str:
+        """Fast-forward push of commits already in the worktree (a merge of the base branch)."""
+        assert self.repo is not None
+        head = await self.repo.worktree_head(worktree)
+        if await self.repo.ls_remote(branch) == head:
+            return head
+        oid = op_id(self.run_id, f"git:{op_type}", revision)
+        if self._state(oid) is OpStatus.CONFIRMED:
+            return str(self._result(oid).get("sha") or head)
+        self.journal.intend(oid, "git_push", {"branch": branch, "op_type": op_type})
+        await self._push(worktree, branch, oid)
+        self.journal.confirm(oid, {"sha": head})
+        return head
+
     async def _push(self, worktree: Path, branch: str, oid: str) -> None:
         assert self.repo is not None
         try:

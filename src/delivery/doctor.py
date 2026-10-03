@@ -347,13 +347,59 @@ def check_interactive(cfg: Config, report: Report) -> None:
             "info",
             "changes made in an open development session are pushed as a new candidate; the ticket "
             "needs Submit follow-up changes transitions from Code review, Acceptance review and "
-            "Changes requested to Ready for verification (checked with the workflow)",
+            "Changes requested to Ready for verification (checked with the workflow). Changes made "
+            "in an open specification, plan or release proposal session are published as its next "
+            "revision for review (no transition needed)",
         )
+
+
+def check_preview(cfg: Config, report: Report) -> None:
+    pc = cfg.preview
+    if not pc.enabled:
+        report.add(
+            "claude",
+            "app preview",
+            "info",
+            "off; set [preview] command (for example npm run dev) to run the app from each finished "
+            "development session and open it in your browser",
+        )
+        return
+    if not cfg.claude.interactive.follow_ups:
+        report.add(
+            "claude",
+            "app preview",
+            "warn",
+            "[preview] is set but development sessions are not kept open, so there is no worktree to "
+            "run the app from",
+            "Set [claude.interactive] enabled = true (with keep_open = true).",
+        )
+        return
+    if shutil.which(pc.command[0]) is None and not Path(pc.command[0]).exists():
+        report.add(
+            "claude",
+            "app preview",
+            "warn",
+            f"{pc.command[0]!r} (preview.command) is not on PATH",
+            "Install it or correct [preview] command.",
+        )
+        return
+    setup = cfg.checks.setup if pc.setup is None else pc.setup
+    report.add(
+        "claude",
+        "app preview",
+        "ok",
+        "after development, "
+        + (f"{' '.join(setup)} then " if setup else "")
+        + f"{' '.join(pc.command)} in the session's worktree; "
+        + ("opens " if pc.open_browser else "serves ")
+        + pc.url.replace("{port}", "<port>"),
+    )
 
 
 async def check_claude(cfg: Config, report: Report) -> None:
     check_models(cfg, report)
     check_interactive(cfg, report)
+    check_preview(cfg, report)
     exe = cfg.claude.executable
     if not shutil.which(exe) and not Path(exe).exists():
         report.add("claude", "cli", "fail", f"{exe!r} not found", "Install Claude Code and sign in.")

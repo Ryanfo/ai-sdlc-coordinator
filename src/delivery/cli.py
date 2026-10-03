@@ -345,6 +345,7 @@ async def _status(args: argparse.Namespace) -> int:
 
 
 async def _inspect(args: argparse.Namespace) -> int:
+    from delivery.explain import jira_actions, latest_outcome
     from delivery.intake import IntakeEvaluator, load_context
     from delivery.jira import JiraClient
     from delivery.ownership import evaluate_eligibility
@@ -359,9 +360,11 @@ async def _inspect(args: argparse.Namespace) -> int:
             from delivery.github import GhClient
 
             intake = await IntakeEvaluator(cfg, GhClient(cfg.repository.slug)).evaluate(ctx, elig.stage)
+        transitions = [(t.name, t.to_status_name) for t in await jira.transitions(args.ticket)]
     finally:
         await jira.close()
     store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
+    entries = store.runs_for_ticket(args.ticket)
     runs = [
         {
             "run_id": e.run_id,
@@ -369,8 +372,9 @@ async def _inspect(args: argparse.Namespace) -> int:
             "stage": e.record.stage.value if e.record else None,
             "reason": e.record.reason if e.record else (e.error.detail if e.error else ""),
             "pending_ops": [o.op_type for o in e.journal.pending_ops()] if e.record else [],
+            "dir": str(e.journal.dir),
         }
-        for e in store.runs_for_ticket(args.ticket)
+        for e in entries
     ]
     rec = ctx.record
     data = {
@@ -389,6 +393,8 @@ async def _inspect(args: argparse.Namespace) -> int:
         "overlap_warnings": rec.overlap_warnings,
         "overlap_decisions": rec.overlap_decisions,
         "release": rec.release,
+        "pending_feedback": rec.pending_feedback,
+        "jira_actions": [{"name": n, "to": t} for n, t in transitions],
         "local_runs": runs,
     }
     lines = [
@@ -409,14 +415,18 @@ async def _inspect(args: argparse.Namespace) -> int:
             f"{rec.pause.round_token or rec.pause.reason}"
         )
     lines.append(f"candidate: {rec.candidate_sha or '-'} PR #{rec.pr_number or '-'}")
-    lines.append(
-        f"overlap warnings: {rec.overlap_warnings or 'none'} decisions: {rec.overlap_decisions or 'none'}"
-    )
-    lines += [
-        f"run {r['run_id']}: {r['state']} {r['reason']}"
-        + (f" pending {r['pending_ops']}" if r["pending_ops"] else "")
-        for r in runs
-    ]
+    lines.append(f"overlap warnings: {', '.join(rec.overlap_warnings) or 'none'}")
+    if entries:
+        lines += ["", *latest_outcome(cfg, entries[-1])]
+    actions = jira_actions(cfg, transitions)
+    if actions:
+        lines += ["", *actions]
+    if runs:
+        lines += ["", "Runs on this machine (oldest first):"]
+        lines += [
+            f"  {r['run_id']}  {r['state']}" + (f"  pending {r['pending_ops']}" if r["pending_ops"] else "")
+            for r in runs
+        ]
     _print(data, args.json, "\n".join(lines))
     return EXIT_OK
 
@@ -705,11 +715,14 @@ def _tmux(cfg: Config) -> Any:
 
 
 def _ticket_sessions(cfg: Config, ticket: str, procedure: str | None) -> list[str]:
+    """The ticket's tmux sessions: Claude's, or with ``procedure`` "preview" its running app."""
+    from delivery.preview import PROCEDURE as PREVIEW
     from delivery.tmux import session_name
 
     names = asyncio.run(_tmux(cfg).sessions())
     prefix = session_name(ticket, procedure) if procedure else session_name(ticket, "")
-    return [n for n in names if n.startswith(prefix)]
+    found = [n for n in names if n.startswith(prefix)]
+    return found if procedure == PREVIEW else [n for n in found if n != session_name(ticket, PREVIEW)]
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
@@ -740,15 +753,35 @@ def cmd_attach(args: argparse.Namespace) -> int:
 
 
 def cmd_sessions(args: argparse.Namespace) -> int:
-    """Claude sessions in tmux: working now, or left open for questions."""
+    """Claude sessions in tmux: working now, or left open for questions; and running apps."""
     from delivery.open_sessions import SessionRegistry
 
     cfg = _load(args)
     names = asyncio.run(_tmux(cfg).sessions())
-    kept = {r.name: r for r in SessionRegistry(cfg.runtime.state_dir).all()}
+    registry = SessionRegistry(cfg.runtime.state_dir).all()
+    kept = {r.name: r for r in registry}
+    apps = {r.preview.name: (r.ticket_key, r.preview) for r in registry if r.preview}
     rows = []
     for n in names:
+        if n in apps:
+            ticket, app = apps[n]
+            rows.append(
+                {
+                    "tmux_session": n,
+                    "state": f"app {app.state} at {app.url}",
+                    "ticket": ticket,
+                    "procedure": "preview",
+                    "since": app.started_at.isoformat(),
+                    "follow_ups": [],
+                    "waiting": "",
+                }
+            )
+            continue
         r = kept.get(n)
+        follow_ups = [
+            f"c{f['candidate']}" if "candidate" in f else f"v{f['revision']:03d}"
+            for f in (r.followups if r else [])
+        ]
         rows.append(
             {
                 "tmux_session": n,
@@ -756,7 +789,7 @@ def cmd_sessions(args: argparse.Namespace) -> int:
                 "ticket": r.ticket_key if r else n.rsplit("-", 2)[0],
                 "procedure": r.procedure if r else "",
                 "since": r.opened_at.isoformat() if r else "",
-                "follow_ups": [f"c{f['candidate']}" for f in r.followups] if r else [],
+                "follow_ups": follow_ups,
                 "waiting": r.held if r else "",
             }
         )
@@ -770,6 +803,50 @@ def cmd_sessions(args: argparse.Namespace) -> int:
         for row in rows
     ]
     _print(rows, args.json, "\n".join(["Claude sessions (delivery attach <ticket>):", *lines]))
+    return EXIT_OK
+
+
+def cmd_preview(args: argparse.Namespace) -> int:
+    """Open the app running from a ticket's development session, or ask for it to start again."""
+    from delivery.open_sessions import SessionRegistry
+    from delivery.preview import RESTART, answers, open_url
+    from delivery.workflow import Stage
+
+    cfg = _load(args)
+    if not cfg.preview.enabled:
+        print("No app preview is configured: add [preview] command = [...] to your config.", file=sys.stderr)
+        return EXIT_FAIL
+    found = [
+        r
+        for r in SessionRegistry(cfg.runtime.state_dir).for_ticket(args.ticket)
+        if r.stage is Stage.DEVELOPMENT
+    ]
+    if not found:
+        print(
+            f"{args.ticket} has no development session open; the app runs from one while it is open.",
+            file=sys.stderr,
+        )
+        return EXIT_FAIL
+    rec = found[-1]
+    p = rec.preview
+    if p and p.state == "ready" and answers(p.url):
+        problem = asyncio.run(open_url(p.url))
+        print(
+            f"{args.ticket}: the app is running at {p.url}"
+            + (f" (could not open it: {problem})" if problem else "")
+        )
+        return EXIT_OK
+    if p and p.state == "starting" and asyncio.run(_tmux(cfg).alive(p.name)):
+        print(
+            f"{args.ticket}: the app is still starting at {p.url}; your browser opens when it answers. "
+            f"Its output: delivery attach {args.ticket} --procedure preview"
+        )
+        return EXIT_OK
+    (Path(rec.session_dir) / RESTART).touch()
+    print(
+        f"{args.ticket}: asked the coordinator to start the app again; your browser opens when it "
+        f"answers. Its output: delivery attach {args.ticket} --procedure preview"
+    )
     return EXIT_OK
 
 
@@ -889,12 +966,20 @@ def parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_logs)
     sp = with_config(sub.add_parser("attach", help="open a ticket's Claude session in this terminal"))
     sp.add_argument("ticket")
-    sp.add_argument("--procedure", help="which session, if the ticket has several (e.g. implement-ticket)")
+    sp.add_argument(
+        "--procedure",
+        help="which session, if the ticket has several (e.g. implement-ticket); preview: the running app",
+    )
     sp.set_defaults(func=cmd_attach)
     sp = with_config(
         sub.add_parser("sessions", help="Claude sessions in tmux: working or open for questions")
     )
     sp.set_defaults(func=cmd_sessions)
+    sp = with_config(
+        sub.add_parser("preview", help="open the app running from a ticket's development session")
+    )
+    sp.add_argument("ticket")
+    sp.set_defaults(func=cmd_preview)
     sp = with_config(sub.add_parser("close", help="end a ticket's Claude session left open for questions"))
     sp.add_argument("ticket")
     sp.add_argument("--procedure")
