@@ -25,6 +25,7 @@ from delivery import comments as comment_text
 from delivery.claude import ChildHandle
 from delivery.control import ControlServer, socket_path
 from delivery.coordinator import StageExecutor
+from delivery.git import GitError
 from delivery.intake import (
     Intake,
     IntakeEvaluator,
@@ -47,7 +48,7 @@ from delivery.ownership import (
     supervisor_lock,
 )
 from delivery.ports import IntegrationError
-from delivery.proc import pid_alive, process_start_marker, signal_group
+from delivery.proc import ProcessStartError, pid_alive, process_start_marker, signal_group
 from delivery.publication import Publisher
 from delivery.runtime import Deps, RunContext
 from delivery.stages import change_ids
@@ -97,6 +98,7 @@ class Supervisor:
         self._noted: set[str] = set()
         self.backoff_until: float = 0.0
         self.backoff_seconds: float = 0.0
+        self.waiting_for_repo = False
         # Tickets being started or having a follow-up published: never both at once.
         self.busy: set[str] = set()
         self.open: OpenSessions | None = (
@@ -178,7 +180,10 @@ class Supervisor:
 
     async def run(self, once: bool = False) -> None:
         if not self.dry_run:
-            await self.deps.repo.ensure()
+            if once:
+                await self.deps.repo.ensure()
+            elif not await self._wait_for_repo():
+                return
         await self.reconcile()
         if self.open and not self.dry_run and not once:
             self._open_task = asyncio.create_task(self._watch_open(), name="open-sessions")
@@ -195,6 +200,43 @@ class Supervisor:
             delay = max(delay, self.backoff_until - asyncio.get_running_loop().time())
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.stop_event.wait(), timeout=delay)
+
+    async def _wait_for_repo(self) -> bool:
+        """Clone or fetch the application repository, retrying with the poll backoff until it works.
+
+        Until then nothing is reconciled, dispatched or watched; the control socket still answers.
+        False if the supervisor was asked to stop first.
+        """
+        self.waiting_for_repo = True
+        delay = 0.0
+        while not self.stop_event.is_set():
+            ensure = asyncio.create_task(self.deps.repo.ensure(), name="repository")
+            stopping = asyncio.create_task(self.stop_event.wait())
+            try:
+                await asyncio.wait({ensure, stopping}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stopping.cancel()
+                if not ensure.done():  # stopping mid-clone or mid-fetch ends its git process group
+                    ensure.cancel()
+                    await asyncio.wait({ensure})
+            if ensure.cancelled():
+                break
+            try:
+                ensure.result()
+            except (GitError, IntegrationError, ProcessStartError, OSError) as exc:
+                delay = _backoff(delay)
+                reason = " ".join(str(exc).split())
+                self.emit(
+                    console.line(
+                        f"could not reach the application repository ({reason}); retrying in {delay:.0f}s"
+                    )
+                )
+            else:
+                self.waiting_for_repo = False
+                return True
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.stop_event.wait(), timeout=delay)
+        return False
 
     async def _watch_open(self) -> None:
         """Sessions left open after hand-off: follow-up changes, closing (delivery.open_sessions)."""
@@ -218,7 +260,7 @@ class Supervisor:
             working = await self.deps.jira.search(active_jql(self.cfg))
         except IntegrationError as exc:
             # Back off the Jira request stream only; running sessions are unaffected.
-            self.backoff_seconds = min(max(self.backoff_seconds * 2, 15.0), 600.0)
+            self.backoff_seconds = _backoff(self.backoff_seconds)
             self.backoff_until = loop.time() + self.backoff_seconds
             report.error = str(exc)
             self.record = self.record.model_copy(update={"last_poll_error": str(exc)[:500]})
@@ -686,6 +728,8 @@ class Supervisor:
             )
             self.deps.store.save_supervisor(self.record, f"dispatch_{cmd}")
             return {"ok": True, "dispatch_paused": paused, "running_sessions": len(self.sessions)}
+        if cmd in ("poll", "recover") and self.waiting_for_repo:
+            return {"ok": False, "error": "waiting for the application repository; nothing starts until then"}
         key = str(req.get("ticket", ""))
         if cmd == "stop":
             return await self.stop_ticket(key, "operator stop", hold=True)
@@ -699,7 +743,14 @@ class Supervisor:
         return {"ok": False, "error": f"unknown command {cmd!r}"}
 
 
+def _backoff(seconds: float) -> float:
+    """The wait after another failed Jira poll or repository fetch: 15s, doubling to 10 minutes."""
+    return min(max(seconds * 2, BACKOFF_MIN_SECONDS), BACKOFF_MAX_SECONDS)
+
+
 TERMINAL = frozenset({RunState.AWAITING_HUMAN, RunState.COMPLETED, RunState.FAILED, RunState.BLOCKED})
 OPEN_SESSION_TICK_SECONDS = 3.0
+BACKOFF_MIN_SECONDS = 15.0
+BACKOFF_MAX_SECONDS = 600.0
 
 __all__ = ["JournalCorrupt", "LockHeld", "PollReport", "Supervisor"]
