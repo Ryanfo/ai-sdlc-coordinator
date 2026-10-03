@@ -16,7 +16,8 @@ KEY = "PILOT-1"
 
 def _envelopes(w) -> list[dict]:  # type: ignore[no-untyped-def]
     out = []
-    for inv in w.invocations():
+    # Invocation files are named by a random ID; order them by when each session started.
+    for inv in sorted(w.invocations(), key=lambda i: i["started"]):
         if "/delivery:implement-ticket" in " ".join(inv["argv"]):
             prompt = inv["argv"][inv["argv"].index("-p") + 1]
             out.append(json.loads(Path(prompt.split(" ", 1)[1].split("\n", 1)[0]).read_text()))

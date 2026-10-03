@@ -76,9 +76,10 @@ def session_started(
     interactive = cfg.claude.interactive
     if interactive.enabled:
         window = "a window opens on it; " if interactive.window != "none" else ""
-        watch = f"{window}`delivery attach {record.ticket_key}` to watch or type to Claude"
+        watch = f"{window}`coordinator attach {record.ticket_key}` to watch or type to Claude"
     else:
-        watch = f"delivery logs {record.ticket_key} --follow"
+        watch = f"coordinator logs {record.ticket_key} --follow"
+    folder = cfg.runtime.state_dir / "runs" / record.ticket_key / record.run_id
     return block(
         f"{verb}  {_stage_title(record.stage)}  {record.ticket_key}",
         [
@@ -88,6 +89,7 @@ def session_started(
             ("Run", record.run_id),
             ("Jira", ticket_url(cfg, record.ticket_key)),
             ("Watch", watch),
+            ("Log", f"coordinator open {record.ticket_key}  (run folder {folder.as_uri()})"),
         ],
     )
 
@@ -181,6 +183,8 @@ def log_tail(log_dir: Path | None, lines: int = 12) -> list[str]:
 
 def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path | None = None) -> str:
     outcome = OUTCOMES.get(record.state, record.state.value.upper())
+    if record.state is RunState.INTERRUPTED and record.outputs.get("waiting_for_claude"):
+        outcome = "WAITING FOR CLAUDE"
     took = ""
     if record.started_at:
         secs = int((utcnow() - record.started_at).total_seconds())
@@ -207,7 +211,7 @@ def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path
             ("Took", took),
             ("Run", record.run_id),
             ("Jira", ticket_url(cfg, record.ticket_key)),
-            ("Logs", f"delivery logs {record.ticket_key}"),
+            ("Logs", f"coordinator logs {record.ticket_key}  or  coordinator open {record.ticket_key}"),
             ("Log file", log_file.as_uri() if log_file else ""),
             (
                 "Claude",
@@ -221,7 +225,49 @@ def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path
     )
 
 
-def supervisor_started(cfg: Config, version: str) -> str:
+def claude_unavailable(cfg: Config, kind: str, detail: str, key: str, check_seconds: int) -> str:
+    if kind == "auth":
+        title, fix = "login missing or expired", "run `claude auth login` in a terminal"
+    else:
+        title, fix = "usage limit reached", "nothing: it continues once the limit resets"
+    return block(
+        f"WAITING FOR CLAUDE  {title}",
+        [
+            ("Ticket", f"{key} waits; its work so far is kept and it continues by itself"),
+            ("New work", "not started until Claude works again (no ticket is blocked for this)"),
+            (
+                "Checking",
+                f"every few minutes with a one-word Claude request (first in {check_seconds // 60} min)",
+            ),
+            ("To fix", fix),
+            ("Detail", detail[:200]),
+        ],
+    )
+
+
+def claude_back(keys: list[str]) -> str:
+    return block(
+        "CLAUDE WORKS AGAIN",
+        [
+            ("Resuming", ", ".join(keys) if keys else "nothing was waiting"),
+            ("New work", "starts again from the next poll"),
+        ],
+    )
+
+
+def code_changed() -> str:
+    return block(
+        "CODE CHANGED SINCE THIS COORDINATOR STARTED",
+        [
+            ("Running", "the code from when it started; later edits are not used yet"),
+            ("To use it", "`coordinator restart` (running sessions are saved and continue)"),
+        ],
+    )
+
+
+def supervisor_started(
+    cfg: Config, version: str, log_file: Path | None = None, background: bool = False
+) -> str:
     models = {
         p: cfg.claude.model_for(p) or "Claude Code default" for s in STAGES.values() for p in s.procedures
     }
@@ -243,6 +289,16 @@ def supervisor_started(cfg: Config, version: str) -> str:
                 if cfg.claude.interactive.enabled
                 else "",
             ),
-            ("Stop", "Ctrl-C (running sessions are saved and resume on restart)"),
+            ("Log", log_file.as_uri() if log_file else ""),
+            (
+                "Leave",
+                "Ctrl-b d leaves it running in the background; `coordinator attach` comes back"
+                if background
+                else "",
+            ),
+            (
+                "Stop",
+                "Ctrl-C or `coordinator stop` (running sessions are saved and resume on restart)",
+            ),
         ],
     )

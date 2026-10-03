@@ -1,7 +1,9 @@
 # delivery local configuration (the only file a developer edits)
 #
-# `delivery setup` asks a few questions and fills this in; or copy it with
-# `delivery init --config ./delivery.local.toml` and fill in the values yourself.
+# `coordinator setup` (the same as `delivery setup`) asks a few questions and fills this in; or
+# copy it with `delivery init --config ./delivery.local.toml` and fill in the values yourself.
+# A team can share everything except identity, email and local folders in a project file: see
+# `project` below.
 # Keep this file out of version control. It must never contain passwords or tokens:
 # secrets are referenced by environment variable name only.
 #
@@ -10,6 +12,10 @@
 # every eligible ticket assigned to you, each in its own isolated session.
 
 config_version = 1
+# A shared project file from your team (`delivery project export` writes one). Its settings
+# apply first and this file's values win. Then this file only needs [identity], jira.email,
+# [repository] checkout_path and worktree_root, and [runtime] state_dir.
+# project = "~/delivery-platform/projects/PILOT.toml"
 
 [identity]
 # Your stable Jira account ID (not your display name or email).
@@ -73,7 +79,8 @@ heartbeat_seconds = 30
 
 [claude]
 executable = "claude"
-plugin_path = "/absolute/path/to/delivery-platform/plugins/delivery"
+# The delivery plugin. Default: plugins/delivery in this installation (leave it unset).
+# plugin_path = "/path/to/delivery-platform/plugins/delivery"
 # Only the local Claude Code subscription login is supported. No API billing.
 auth_profile = "subscription"
 max_turns = 150

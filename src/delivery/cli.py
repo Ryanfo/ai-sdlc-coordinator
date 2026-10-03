@@ -14,13 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from delivery import __version__
-from delivery.config import Config, ConfigError, load_config, template_text
+from delivery.config import Config, ConfigError, default_config_path, load_config, template_text
 from delivery.control import send, socket_path
 from delivery.journal import JournalStore
 from delivery.models import ACTIVE_RUN_STATES, RunState
 from delivery.workflow import Stage
 
 EXIT_OK, EXIT_FAIL, EXIT_CONFIG, EXIT_BUSY = 0, 1, 2, 3
+log = logging.getLogger("delivery")
 
 
 def _print(data: Any, as_json: bool, text: str) -> None:
@@ -57,25 +58,30 @@ def _claude_runner(cfg: Config) -> Any:
     return ClaudeRunner(cfg.claude.executable)
 
 
-def build_deps(cfg: Config) -> Any:
+def build_repo(cfg: Config) -> Any:
     from delivery.git import ManagedRepo
-    from delivery.github import GhClient
-    from delivery.jira import JiraClient
     from delivery.ownership import RepoLocks
-    from delivery.plugin import load_plugin
-    from delivery.runtime import Deps
 
-    locks = RepoLocks(cfg.runtime.state_dir / "locks")
     name, email = _git_identity(cfg.repository.checkout_path)
-    repo = ManagedRepo(
+    return ManagedRepo(
         cfg.repository.url,
         cfg.repository.base_branch,
         cfg.repository.worktree_root,
-        locks,
+        RepoLocks(cfg.runtime.state_dir / "locks"),
         author_name=name,
         author_email=email,
         reference=cfg.repository.checkout_path,
     )
+
+
+def build_deps(cfg: Config) -> Any:
+    from delivery.github import GhClient
+    from delivery.jira import JiraClient
+    from delivery.plugin import load_plugin
+    from delivery.runtime import Deps
+
+    repo = build_repo(cfg)
+    locks = repo.locks
     from delivery.credentials import resolve_figma
     from delivery.figma import FigmaClient
 
@@ -97,22 +103,26 @@ def build_deps(cfg: Config) -> Any:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    from delivery.setup import PERSONAL_TEMPLATE, toml_value
+
     path = Path(args.config).expanduser()
     if path.exists() and not args.force:
         print(f"{path} already exists; refusing to overwrite (use --force)", file=sys.stderr)
         return EXIT_CONFIG
-    from delivery.setup import bundled_plugin_path
-
-    text = template_text()
-    plugin = bundled_plugin_path()
-    if plugin:
-        text = text.replace("/absolute/path/to/delivery-platform/plugins/delivery", str(plugin))
+    if args.project:
+        project = Path(args.project).expanduser().resolve()
+        if not project.is_file():
+            print(f"{project} not found", file=sys.stderr)
+            return EXIT_CONFIG
+        text = PERSONAL_TEMPLATE.format(project=toml_value(str(project)))
+    else:
+        text = template_text()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
     path.chmod(0o600)
     print(
-        f"Wrote {path}. Fill in the values, then run `delivery workflow inspect --config {path}` and "
-        f"`delivery doctor --config {path}`."
+        f"Wrote {path}. `coordinator setup` fills it in step by step; or edit it yourself, then run "
+        "`delivery workflow inspect` and `delivery doctor`."
     )
     return EXIT_OK
 
@@ -123,13 +133,17 @@ def cmd_setup(args: argparse.Namespace) -> int:
     if not sys.stdin.isatty():
         print("`delivery setup` asks questions: run it in a terminal.", file=sys.stderr)
         return EXIT_CONFIG
-    result = run_setup(Path(args.config), SetupDeps(TerminalPrompter()))
+    project = Path(args.project).expanduser().absolute() if args.project else None
+    if project and not project.is_file():
+        print(f"{project} not found", file=sys.stderr)
+        return EXIT_CONFIG
+    result = run_setup(Path(args.config), SetupDeps(TerminalPrompter()), project)
     if result is None:
         return EXIT_FAIL
     print("\nChecking everything with `delivery doctor`...\n")
     doctor = argparse.Namespace(config=str(result.path), claude_probe=False, json=False)
     ready = asyncio.run(_doctor(doctor)) == EXIT_OK
-    default = Path(os.environ.get("DELIVERY_CONFIG") or Path.home() / "delivery.local.toml").expanduser()
+    default = default_config_path().expanduser()
     flag = "" if result.path == default.absolute() else f" --config {tilde(result.path)}"
     steps = [f"  - {n}" for n in result.notes]
     if not ready:
@@ -199,27 +213,53 @@ async def _workflow_inspect(args: argparse.Namespace) -> int:
     return EXIT_OK if not (wf.missing or wf.ambiguous or wf.problems) else EXIT_FAIL
 
 
+def _error(text: str) -> None:
+    """A problem the person must see: on stderr and in the coordinator log."""
+    print(text, file=sys.stderr)
+    log.error(text, extra={"file_only": True})
+
+
 async def _run(args: argparse.Namespace) -> int:
+    from delivery import logfile
+    from delivery.jira import JiraCredentialsMissing
+
+    cfg = _load(args)
+    path = logfile.log_path(cfg.runtime.state_dir, cfg.identity_key)
+    handler = None if args.dry_run else logfile.attach(path, args.verbose)
+    try:
+        return await _supervise(args, cfg, path)
+    except JiraCredentialsMissing as exc:
+        log.error("Jira credentials: %s", exc, extra={"file_only": True})
+        raise
+    except Exception:
+        log.exception("the coordinator stopped because of an internal error", extra={"file_only": True})
+        raise
+    finally:
+        if handler is not None:
+            logfile.detach(handler)
+
+
+async def _supervise(args: argparse.Namespace, cfg: Config, log_file: Path) -> int:
+    from delivery import logfile
     from delivery.ownership import LockHeld
     from delivery.supervisor import Supervisor
 
-    cfg = _load(args)
     missing = cfg.workflow.missing_statuses()
     if missing:
-        print(
-            f"{len(missing)} workflow statuses are unmapped; run `delivery workflow inspect` first.",
-            file=sys.stderr,
+        _error(
+            f"{len(missing)} workflow statuses are unmapped; "
+            "run `coordinator setup` (or `delivery workflow inspect`)."
         )
         return EXIT_CONFIG
     deps = build_deps(cfg)
-    sup = Supervisor(deps, dry_run=args.dry_run, emit=lambda s: print(s, flush=True))
+    emit = (lambda s: print(s, flush=True)) if args.dry_run else logfile.emitter()
+    sup = Supervisor(deps, dry_run=args.dry_run, emit=emit)
     try:
         await sup.__aenter__()
     except LockHeld as exc:
-        print(
-            f"Another supervisor already runs for this identity: {exc.holder}. "
-            "Use `delivery status`; never start a second one.",
-            file=sys.stderr,
+        _error(
+            f"Another coordinator already runs for this identity: {exc.holder}. "
+            "`coordinator status` shows it; `coordinator stop` stops it. Never start a second one."
         )
         return EXIT_BUSY
     sup.install_signal_handlers()
@@ -246,7 +286,8 @@ async def _run(args: argparse.Namespace) -> int:
             return EXIT_OK
         from delivery import console
 
-        print(console.supervisor_started(cfg, __version__), flush=True)
+        background = os.environ.get("DELIVERY_BACKGROUND") == "1"
+        emit(console.supervisor_started(cfg, __version__, log_file, background))
         await sup.run(once=args.once)
     finally:
         await sup.__aexit__(None, None, None)
@@ -312,14 +353,36 @@ def _local_rows(cfg: Config) -> list[dict[str, Any]]:
 
 
 async def _status(args: argparse.Namespace) -> int:
+    from delivery import background
+
     cfg = _load(args)
     live = await _control(cfg, {"cmd": "status"})
     rows = _local_rows(cfg)
-    data = {"supervisor_running": live is not None, "live": live, "runs": rows}
+    st = background.state(cfg)
+    changed = background.code_changed_since(cfg, st)
+    waiting = (live or {}).get("claude_unavailable")
+    data = {
+        "supervisor_running": live is not None,
+        "in_background": st.in_background,
+        "code_changed_at": changed.isoformat() if changed else None,
+        "live": live,
+        "runs": rows,
+    }
     lines = [
-        f"Supervisor: {'running' if live else 'not running'}"
-        + (f", dispatch {'PAUSED' if live['dispatch_paused'] else 'active'}" if live else "")
+        f"Coordinator: {background.describe(cfg, st)}"
+        + (f"; new work {'PAUSED' if live['dispatch_paused'] else 'active'}" if live else "")
     ]
+    if changed:
+        lines.append(
+            f"  Its code changed at {changed:%H:%M} after it started: "
+            "`coordinator restart` to use the new code."
+        )
+    if waiting:
+        lines.append(
+            f"  Waiting for Claude ({'login' if waiting.get('kind') == 'auth' else 'usage limit'}) since "
+            f"{waiting.get('since', '?')[:16]}; next check {waiting.get('next_check', '?')[11:16]} UTC. "
+            "New work waits; waiting runs continue by themselves."
+        )
     if live:
         lines.append(f"Active sessions ({len(live['sessions'])}):")
         lines += [
@@ -574,20 +637,15 @@ async def _figma_whoami(token: str) -> str | None:
 
 
 def cmd_credentials(args: argparse.Namespace) -> int:
-    import getpass
-
-    from delivery.credentials import (
-        FIGMA_TOKEN_SHAPE,
-        SECURITY,
-        TOKEN_SHAPE,
-        JiraCredentials,
-        keychain_available,
-        keychain_write,
-        resolve_figma,
-    )
+    from delivery.credentials import SECURITY, keychain_available, resolve_figma
 
     cfg = _load(args)
     figma = args.target == "figma"
+    if args.action == "set":
+        if not keychain_available():
+            print("The macOS Keychain is not available here; export the environment variables instead.")
+            return EXIT_CONFIG
+        return EXIT_OK if store_token(cfg, figma) else EXIT_FAIL
     if args.action == "check":
         if figma:
             token = resolve_figma(cfg)
@@ -610,46 +668,90 @@ def cmd_credentials(args: argparse.Namespace) -> int:
         if target is None:
             return EXIT_CONFIG
         service, account = target
-    if args.action == "delete":
-        r = subprocess.run(
-            [SECURITY, "delete-generic-password", "-s", service, "-a", account],
-            check=False,
-            capture_output=True,
-        )
-        print("Removed the Keychain item." if r.returncode == 0 else "No Keychain item to remove.")
-        return EXIT_OK
+    r = subprocess.run(
+        [SECURITY, "delete-generic-password", "-s", service, "-a", account],
+        check=False,
+        capture_output=True,
+    )
+    print("Removed the Keychain item." if r.returncode == 0 else "No Keychain item to remove.")
+    return EXIT_OK
+
+
+def store_token(
+    cfg: Config,
+    figma: bool,
+    secret: Any = None,
+    out: Any = None,
+) -> bool:
+    """Ask for a token at a hidden prompt, check it with Jira or Figma, then keep it in the Keychain."""
+    import getpass
+
+    from delivery.credentials import FIGMA_TOKEN_SHAPE, TOKEN_SHAPE, JiraCredentials, keychain_write
+
+    ask = secret or getpass.getpass
+    say = out or (lambda text: print(text, file=sys.stderr))
+    if figma:
+        service, account = cfg.figma.token_keychain_service, cfg.figma.token_account
+    else:
+        target = _keychain_target(cfg)
+        if target is None:
+            return False
+        service, account = target
     label = "Figma personal access token" if figma else f"Jira API token for {account}"
-    token = getpass.getpass(f"Paste the {label} (nothing is shown), then Enter: ").strip()
+    token = ask(f"Paste the {label} (nothing is shown), then Enter: ").strip()
     shape = FIGMA_TOKEN_SHAPE if figma else TOKEN_SHAPE
     if not shape.match(token):
-        print(
-            f"That does not look like a token ({len(token)} characters); nothing was stored.",
-            file=sys.stderr,
-        )
-        return EXIT_FAIL
+        say(f"That does not look like a token ({len(token)} characters); nothing was stored.")
+        return False
     if figma:
         who = asyncio.run(_figma_whoami(token))
     else:
         who = asyncio.run(_jira_whoami(cfg, JiraCredentials(account, token, "the value just pasted")))
     if not who:
-        print("Nothing was stored.", file=sys.stderr)
-        return EXIT_FAIL
+        say("Nothing was stored.")
+        return False
     try:
         keychain_write(service, account, token, shape)
     except (OSError, ValueError) as exc:
-        print(f"The token was accepted but storing it failed: {exc}", file=sys.stderr)
-        return EXIT_FAIL
+        say(f"The token was accepted but storing it failed: {exc}")
+        return False
     print(f"{'Figma' if figma else 'Jira'} accepted the token: authenticated as {who.split(' using ')[0]}.")
     print(f"Stored in your login Keychain (service {service!r}, account {account}); read back intact.")
+    return True
+
+
+def _coordinator_log(cfg: Config, args: argparse.Namespace) -> int:
+    """The coordinator's own log: what its terminal showed, warnings and errors."""
+    from delivery import logfile
+
+    path = logfile.log_path(cfg.runtime.state_dir, cfg.identity_key)
+    if args.raw:
+        print(path)
+        return EXIT_OK
+    if not path.exists():
+        print(f"No coordinator log yet ({path}); it starts with the coordinator.")
+        return EXIT_OK if args.follow else EXIT_FAIL
+    for line in logfile.tail(path, args.lines):
+        print(line)
+    if args.follow:
+        try:
+            for line in logfile.follow(path):
+                print(line, flush=True)
+        except KeyboardInterrupt:
+            return EXIT_OK
+    else:
+        print(f"\n(last {args.lines} lines of {path}; --follow to keep watching)")
     return EXIT_OK
 
 
 def cmd_logs(args: argparse.Namespace) -> int:
-    """Readable Claude session transcripts for a ticket's runs."""
+    """Readable Claude session transcripts for a ticket's runs, or the coordinator's own log."""
     from delivery.models import ACTIVE_RUN_STATES
     from delivery.transcript import follow, render_file
 
     cfg = _load(args)
+    if not args.ticket:
+        return _coordinator_log(cfg, args)
     store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
     runs = store.runs_for_ticket(args.ticket)
     if not runs:
@@ -726,10 +828,21 @@ def _ticket_sessions(cfg: Config, ticket: str, procedure: str | None) -> list[st
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
-    """Open a ticket's Claude session in this terminal (Ctrl-b d leaves it running)."""
+    """Open a ticket's Claude session, or the coordinator itself, in this terminal (Ctrl-b d
+    leaves it running)."""
+    from delivery import background
     from delivery.open_sessions import SessionRegistry
 
     cfg = _load(args)
+    if not args.ticket:
+        st = background.state(cfg)
+        if not st.in_background:
+            print(f"The coordinator is {background.describe(cfg, st)}.")
+            print("`coordinator` starts it in the background and shows it here.")
+            return EXIT_FAIL
+        _warn_code_changed(cfg, st)
+        background.exec_attach(background.attach_argv(cfg))
+        return EXIT_OK  # not reached
     tmux = _tmux(cfg)
     if not tmux.available():
         print(f"{cfg.claude.interactive.tmux!r} is not installed (brew install tmux).", file=sys.stderr)
@@ -747,8 +860,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
     if len(found) > 1:
         print(f"{args.ticket} has {len(found)} sessions ({', '.join(found)}); opening {found[0]}.")
         print("Use --procedure to choose another.")
-    argv = tmux.attach_argv(found[0])
-    os.execvp(argv[0], argv)  # noqa: S606 (argument array, no shell: become the tmux client)
+    background.exec_attach(tmux.attach_argv(found[0]))
     return EXIT_OK  # not reached
 
 
@@ -869,6 +981,209 @@ def cmd_close(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# --------------------------------------------------------------------------- the coordinator itself
+
+
+def _interactive_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _warn_code_changed(cfg: Config, st: Any) -> None:
+    from delivery import background
+
+    changed = background.code_changed_since(cfg, st)
+    if changed:
+        print(
+            f"Note: the coordinator's code changed at {changed:%H:%M}, after this coordinator started. "
+            "`coordinator restart` uses the new code (running sessions are saved and continue)."
+        )
+
+
+def _foreground(args: argparse.Namespace) -> int:
+    run_args = argparse.Namespace(**{**vars(args), "dry_run": False, "once": False, "json": False})
+    return int(asyncio.run(_run(run_args)))
+
+
+def _start(args: argparse.Namespace, attach: bool) -> int:
+    from delivery import background
+
+    cfg = _load(args)
+    if cfg.workflow.missing_statuses():
+        print("The Jira workflow is not mapped yet: run `coordinator setup` first.", file=sys.stderr)
+        return EXIT_CONFIG
+    if not background.server(cfg).available():
+        print(
+            f"{cfg.claude.interactive.tmux} is not installed, so the coordinator runs in this terminal and "
+            "stops when it closes (`brew install tmux` lets it run in the background)."
+        )
+        return _foreground(args)
+    st = background.state(cfg)
+    if st.running and not st.in_background:
+        print(f"The coordinator is {background.describe(cfg, st)}.")
+        print("Use that terminal, or `coordinator stop` and then `coordinator` to run it in the background.")
+        return EXIT_OK
+    if st.running:
+        _warn_code_changed(cfg, st)
+    else:
+        if st.stopped_unexpectedly:
+            print(
+                "Last time the coordinator stopped unexpectedly (`coordinator logs` shows its last messages)."
+            )
+        print("Starting the coordinator in the background...")
+        if not background.start(cfg, verbose=args.verbose):
+            return EXIT_FAIL
+    if attach and _interactive_terminal():
+        background.exec_attach(background.attach_argv(cfg))
+    print(
+        "The coordinator is running in the background. `coordinator attach` shows it, "
+        "`coordinator status` summarises it and `coordinator stop` stops it."
+    )
+    return EXIT_OK
+
+
+def cmd_up(args: argparse.Namespace) -> int:
+    """`coordinator` alone: start the coordinator in the background if needed and show it here."""
+    if args.foreground:
+        return _foreground(args)
+    return _start(args, attach=True)
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    return _start(args, attach=False)
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    """Stop one ticket's session, or with no ticket the coordinator itself."""
+    from delivery import background
+
+    if args.ticket:
+        return int(asyncio.run(_ticket_command(args, "stop")))
+    return EXIT_OK if background.stop(_load(args)) else EXIT_FAIL
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    from delivery import background
+
+    cfg = _load(args)
+    if not background.stop(cfg):
+        return EXIT_FAIL
+    return _start(args, attach=True)
+
+
+def cmd_open(args: argparse.Namespace) -> int:
+    """Open a ticket's latest readable Claude log (or its run folder, or the Jira ticket)."""
+    from delivery import console, logfile
+    from delivery.transcript import write_transcript
+
+    cfg = _load(args)
+    target: str
+    if args.jira:
+        if not args.ticket:
+            print("--jira needs a ticket, for example `coordinator open SDLC-12 --jira`.", file=sys.stderr)
+            return EXIT_FAIL
+        target = console.ticket_url(cfg, args.ticket)
+    elif not args.ticket:
+        path = logfile.log_path(cfg.runtime.state_dir, cfg.identity_key)
+        target = str(path if path.exists() and not args.folder else path.parent)
+    else:
+        store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
+        runs = store.runs_for_ticket(args.ticket)
+        if args.stage:
+            runs = [e for e in runs if e.record and e.record.stage.value == args.stage]
+        if not runs:
+            print(f"No runs of {args.ticket} are recorded on this machine.", file=sys.stderr)
+            return EXIT_FAIL
+        entry = runs[-1]
+        target = str(entry.journal.dir)
+        logs = sorted((entry.journal.dir / "logs").glob("claude-*.jsonl"), key=lambda p: p.stat().st_mtime)
+        if logs and not args.folder:
+            # Refresh the readable copy: a session that is still working writes it only at the end.
+            readable = write_transcript(logs[-1])
+            target = str(readable or logs[-1])
+    opener = "open" if sys.platform == "darwin" else shutil.which("xdg-open")
+    if opener:
+        subprocess.run([opener, target], check=False)
+        print(f"Opened {target}")
+    else:
+        print(target)
+    return EXIT_OK
+
+
+def cmd_clean(args: argparse.Namespace) -> int:
+    """Remove what finished runs left behind (worktrees, empty folders, optionally old logs)."""
+    from delivery import background, cleanup
+    from delivery.tmux import for_config
+
+    cfg = _load(args)
+    tmux = for_config(cfg.claude.interactive, cfg.runtime.state_dir)
+    live = set(asyncio.run(tmux.sessions()))
+    st = background.state(cfg)
+    p = cleanup.plan(cfg, live, args.older_than)
+    say = print
+    for item in p.kept:
+        say(f"  keep    {item.path}  ({cleanup.human_size(item.size)}): {item.why}")
+    for item in p.worktrees:
+        say(f"  remove  {item.path}  ({cleanup.human_size(item.size)}): {item.why}")
+    for path in p.empty:
+        say(f"  remove  {path}: empty folder")
+    for item in p.logs:
+        say(f"  remove  {item.path}  ({cleanup.human_size(item.size)}): local logs; {item.why}")
+    for rec in p.dead_sessions:
+        how = "the running coordinator tidies it" if st.running else "tidied now"
+        say(f"  close   {rec.ticket_key} {rec.procedure} session: its tmux session has ended; {how}")
+    if p.empty_plan:
+        say("Nothing to clean.")
+        return EXIT_OK
+    say(f"Frees about {cleanup.human_size(p.size)}.")
+    if not args.yes:
+        if not _interactive_terminal():
+            say("Nothing removed; run `coordinator clean --yes` to remove these.")
+            return EXIT_OK
+        if input("Remove these? [y/N] ").strip().lower() not in ("y", "yes"):
+            say("Nothing removed.")
+            return EXIT_OK
+    repo = build_repo(cfg)
+    if p.dead_sessions and not st.running:
+        asyncio.run(_close_dead_sessions(cfg, repo, p.dead_sessions))
+    asyncio.run(cleanup.apply(cfg, repo, p, say))
+    say("Done.")
+    return EXIT_OK
+
+
+async def _close_dead_sessions(cfg: Config, repo: Any, records: list[Any]) -> None:
+    """What the coordinator does when an open session ends: keep the conversation and any
+    changes, then remove its worktrees. Needs no Jira or GitHub access."""
+    from types import SimpleNamespace
+
+    from delivery.open_sessions import OpenSessions
+
+    store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
+    deps: Any = SimpleNamespace(cfg=cfg, repo=repo, store=store)
+    sessions = OpenSessions(deps, print, is_running=lambda _: False, busy=set())
+    for rec in records:
+        await sessions.close(rec, "its tmux session had ended (coordinator clean)")
+
+
+def cmd_project(args: argparse.Namespace) -> int:
+    """Write the team settings of your working config as a shared project file."""
+    from delivery.setup import export_project
+
+    _load(args)  # only a valid config is worth sharing
+    out = Path(args.out).expanduser()
+    try:
+        export_project(Path(args.config).expanduser(), out, force=args.force)
+    except FileExistsError:
+        print(f"{out} already exists; use --force to replace it.", file=sys.stderr)
+        return EXIT_CONFIG
+    print(f"Wrote {out}: the team settings, without anything personal or secret.")
+    print(
+        f"A colleague runs `delivery setup --project {out}`, or keep it in this repository under "
+        "projects/ (setup offers what it finds there)."
+    )
+    print(f'Your own config can use it too: add `project = "{out}"` and remove the settings it now holds.')
+    return EXIT_OK
+
+
 def cmd_schemas(args: argparse.Namespace) -> int:
     from delivery.models import InputEnvelope, result_json_schema
 
@@ -885,13 +1200,13 @@ def cmd_schemas(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- parser
 
 
-def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="delivery", description="Local Jira-driven AI SDLC supervisor.")
+def parser(prog: str = "delivery") -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog=prog, description="Local Jira-driven AI SDLC supervisor.")
     p.add_argument("--version", action="version", version=f"delivery {__version__}")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command", required=True)
 
-    default_config = os.environ.get("DELIVERY_CONFIG") or str(Path.home() / "delivery.local.toml")
+    default_config = str(default_config_path())
 
     def with_config(sp: argparse.ArgumentParser) -> argparse.ArgumentParser:
         sp.add_argument(
@@ -908,9 +1223,14 @@ def parser() -> argparse.ArgumentParser:
         default=default_config,
         help="config file to write (default: $DELIVERY_CONFIG or ~/delivery.local.toml)",
     )
+    sp.add_argument(
+        "--project",
+        help="your team's shared project file (setup then asks only for your personal settings)",
+    )
     sp.set_defaults(func=cmd_setup)
     sp = sub.add_parser("init", help="write a commented config template (never overwrites)")
-    sp.add_argument("--config", required=True)
+    sp.add_argument("--config", default=default_config)
+    sp.add_argument("--project", help="write a short personal config that uses this shared project file")
     sp.add_argument("--force", action="store_true")
     sp.set_defaults(func=cmd_init)
     sp = with_config(sub.add_parser("doctor", help="read-only integration, workflow and safety checks"))
@@ -935,17 +1255,30 @@ def parser() -> argparse.ArgumentParser:
     sp.add_argument("action", choices=["set", "check", "delete"])
     sp.add_argument("target", nargs="?", choices=["jira", "figma"], default="jira")
     sp.set_defaults(func=cmd_credentials)
+    sp = with_config(
+        sub.add_parser("up", help="start the coordinator in the background if needed, then show it here")
+    )
+    sp.add_argument("--foreground", action="store_true", help="run it in this terminal instead")
+    sp.set_defaults(func=cmd_up)
+    sp = with_config(sub.add_parser("start", help="start the coordinator in the background"))
+    sp.set_defaults(func=cmd_start)
+    sp = with_config(sub.add_parser("restart", help="stop the coordinator and start it again (new code)"))
+    sp.set_defaults(func=cmd_restart)
     sp = with_config(sub.add_parser("run", help="run the supervisor in the foreground"))
     sp.add_argument("--once", action="store_true", help="one cycle: dispatch all eligible tickets and wait")
     sp.add_argument("--dry-run", action="store_true", help="discovery only: no Claude, writes or transitions")
     sp.set_defaults(afunc=_run)
     sp = with_config(sub.add_parser("status", help="sessions, states and next human actions"))
     sp.set_defaults(afunc=_status)
+    sp = with_config(
+        sub.add_parser("stop", help="stop the coordinator, or with a ticket only that ticket's session")
+    )
+    sp.add_argument("ticket", nargs="?")
+    sp.set_defaults(func=cmd_stop)
     for name, helptext in (
         ("inspect", "explain one ticket without changing anything"),
         ("recover", "reconcile one ticket; --resume continues held work"),
         ("handover", "stop and checkpoint one ticket for reassignment"),
-        ("stop", "stop one ticket's session, leaving others running"),
     ):
         sp = with_config(sub.add_parser(name, help=helptext))
         sp.add_argument("ticket")
@@ -955,8 +1288,11 @@ def parser() -> argparse.ArgumentParser:
             sp.set_defaults(afunc=_inspect)
         else:
             sp.set_defaults(afunc=lambda a, n=name: _ticket_command(a, n))
-    sp = with_config(sub.add_parser("logs", help="readable Claude session transcripts for a ticket"))
-    sp.add_argument("ticket")
+    sp = with_config(
+        sub.add_parser("logs", help="a ticket's readable Claude session log, or the coordinator's own log")
+    )
+    sp.add_argument("ticket", nargs="?", help="without one: the coordinator's log")
+    sp.add_argument("--lines", "-n", type=int, default=60, help="coordinator log: lines to show")
     sp.add_argument("--list", action="store_true", help="list the ticket's runs")
     sp.add_argument("--stage", choices=[st.value for st in Stage], help="latest run of this stage")
     sp.add_argument("--run", help="a specific run ID (see --list)")
@@ -964,8 +1300,10 @@ def parser() -> argparse.ArgumentParser:
     sp.add_argument("--results", dest="verbose_results", action="store_true", help="also show tool output")
     sp.add_argument("--raw", action="store_true", help="print the raw log file paths (for jq)")
     sp.set_defaults(func=cmd_logs)
-    sp = with_config(sub.add_parser("attach", help="open a ticket's Claude session in this terminal"))
-    sp.add_argument("ticket")
+    sp = with_config(
+        sub.add_parser("attach", help="show a ticket's Claude session, or the coordinator, in this terminal")
+    )
+    sp.add_argument("ticket", nargs="?", help="without one: the coordinator itself")
     sp.add_argument(
         "--procedure",
         help="which session, if the ticket has several (e.g. implement-ticket); preview: the running app",
@@ -984,6 +1322,30 @@ def parser() -> argparse.ArgumentParser:
     sp.add_argument("ticket")
     sp.add_argument("--procedure")
     sp.set_defaults(func=cmd_close)
+    sp = with_config(
+        sub.add_parser("open", help="open a ticket's latest Claude log (or the coordinator's log)")
+    )
+    sp.add_argument("ticket", nargs="?")
+    sp.add_argument("--folder", action="store_true", help="open the run folder instead")
+    sp.add_argument("--jira", action="store_true", help="open the ticket in Jira")
+    sp.add_argument("--stage", choices=[st.value for st in Stage], help="that stage's latest run")
+    sp.set_defaults(func=cmd_open)
+    sp = with_config(sub.add_parser("clean", help="remove worktrees and folders finished runs left behind"))
+    sp.add_argument("--yes", action="store_true", help="remove without asking")
+    sp.add_argument(
+        "--older-than",
+        type=int,
+        metavar="DAYS",
+        help="also remove local logs of tickets whose runs all finished more than DAYS ago",
+    )
+    sp.set_defaults(func=cmd_clean)
+    proj = sub.add_parser("project", help="the team's shared project file").add_subparsers(
+        dest="proj", required=True
+    )
+    sp = with_config(proj.add_parser("export", help="write your config's team settings as a project file"))
+    sp.add_argument("out")
+    sp.add_argument("--force", action="store_true")
+    sp.set_defaults(func=cmd_project)
     sp = with_config(sub.add_parser("dispatch", help="pause or resume new launches"))
     sp.add_argument("action", choices=["pause", "resume"])
     sp.add_argument("--reason")
@@ -994,12 +1356,16 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+def main(argv: list[str] | None = None, prog: str = "delivery") -> int:
+    args = parser(prog).parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+    for h in logging.getLogger().handlers:
+        # The terminal shows warnings (and debug with -v); the coordinator log keeps the rest.
+        h.setLevel(logging.DEBUG if args.verbose else logging.WARNING)
+        h.addFilter(lambda r: not getattr(r, "file_only", False))
     try:
         if getattr(args, "func", None):
             return int(args.func(args))
@@ -1021,15 +1387,19 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def coordinator_args(argv: list[str], commands: set[str]) -> list[str]:
-    """``coordinator`` alone starts the supervisor; ``coordinator <command>`` is ``delivery <command>``.
+    """``coordinator`` alone starts the coordinator in the background (if it is not running) and
+    shows it; ``coordinator <command>`` is ``delivery <command>``.
 
-    Options without a command go to ``run`` (``coordinator --dry-run``), except ``-v`` which is
-    the global verbose flag, and ``--help``/``--version`` which describe everything.
+    Options without a command go to ``up`` (``coordinator --foreground``), except ``--dry-run``
+    and ``--once``, which belong to ``run``, ``-v``, the global verbose flag, and
+    ``--help``/``--version``, which describe everything.
     """
     if any(a in commands for a in argv) or any(a in ("-h", "--help", "--version") for a in argv):
         return argv
     verbose = [a for a in argv if a in ("-v", "--verbose")]
-    return [*verbose, "run", *[a for a in argv if a not in ("-v", "--verbose")]]
+    rest = [a for a in argv if a not in ("-v", "--verbose")]
+    command = "run" if any(a in ("--dry-run", "--once") for a in rest) else "up"
+    return [*verbose, command, *rest]
 
 
 def coordinator_main(argv: list[str] | None = None) -> int:
@@ -1037,7 +1407,7 @@ def coordinator_main(argv: list[str] | None = None) -> int:
     p = parser()
     sub = next(a for a in p._actions if isinstance(a, argparse._SubParsersAction))
     args = coordinator_args(sys.argv[1:] if argv is None else argv, set(sub.choices))
-    return main(args)
+    return main(args, prog="coordinator")
 
 
 if __name__ == "__main__":

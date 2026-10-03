@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from conftest import APPROVER, DEV, STATUS_IDS
-from delivery import cli
+from delivery import cli, setup
 from delivery.config import load_config, template_text
 from delivery.credentials import JiraCredentials
 from delivery.doctor import Report, check_config
@@ -21,6 +21,7 @@ from delivery.setup import (
     SetupDeps,
     detect_checks,
     detect_preview,
+    export_project,
     parse_repo,
     parse_site,
     run_setup,
@@ -439,3 +440,72 @@ async def test_jira_finds_people_and_projects(make_config: Any) -> None:
     assert [u.display_name for u in await client.find_users("priya")] == ["Priya Patel"]
     assert await client.projects() == [("SDLC", "Delivery")]
     await client.close()
+
+
+# --------------------------------------------------------------------------- a team's project file
+
+
+COLLEAGUE: list[tuple[str, str | BaseException]] = [
+    ("email", "sam@example.com"),
+    ("Paste the token", TOKEN),
+    ("clone of it", ""),  # ~/src/shop, already there
+    ("Open a window", "n"),
+    ("Figma", "n"),
+    ("Save to", ""),
+]
+
+
+def _lead(home: Path, jira: FakeJira) -> Path:
+    """The first developer sets up in full, then shares the team settings."""
+    io = Script(FIRST_RUN)
+    assert run_setup(home / "lead.toml", deps(io, jira, {}, [])) is not None, io.output
+    return export_project(home / "lead.toml", home / "team" / "PILOT.toml")
+
+
+def test_a_colleague_answers_only_personal_questions(home: Path, jira: FakeJira) -> None:
+    project = _lead(home, jira)
+    shared = tomllib.loads(project.read_text())
+    assert "identity" not in shared and "email" not in shared["jira"]
+    assert "checkout_path" not in shared["repository"] and shared["checks"]["commands"]
+
+    io, keychain = Script(COLLEAGUE), {}
+    mine = home / "sam.toml"
+    assert run_setup(mine, deps(io, jira, keychain, []), project) is not None, io.output
+    assert not io.answers
+    assert "only yours are asked" in io.output and "Project PILOT" in io.output
+    cfg, lead = load_config(mine), load_config(home / "lead.toml")
+    assert cfg.project_path == project
+    assert cfg.jira.email == "sam@example.com" and keychain == {("delivery-jira", "sam@example.com"): TOKEN}
+    for part in ("approvals", "checks", "workflow", "repository.url", "jira.project_key"):
+        here, there = cfg, lead
+        for attr in part.split("."):
+            here, there = getattr(here, attr), getattr(there, attr)
+        assert here == there, part
+    text = mine.read_text()
+    assert "[checks" not in text and "[approvals]" not in text and "[workflow" not in text
+    assert "project = " in text
+
+    # Running setup again keeps using the project file named in the config.
+    again = Script(
+        [("email", ""), ("clone of it", ""), ("Open a window", "n"), ("Figma", "n"), ("Save to", "")]
+    )
+    assert run_setup(mine, deps(again, jira, keychain, [])) is not None, again.output
+    assert load_config(mine).project_path == project
+
+
+def test_a_new_config_offers_the_projects_kept_in_this_installation(
+    home: Path, jira: FakeJira, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = _lead(home, jira)
+    monkeypatch.setattr(setup, "PROJECTS_DIR", project.parent)
+    io = Script([("Use them", ""), *COLLEAGUE])
+    assert run_setup(home / "sam.toml", deps(io, jira, {}, [])) is not None, io.output
+    assert load_config(home / "sam.toml").project_path == project
+
+
+def test_a_project_file_with_personal_settings_is_refused(home: Path, jira: FakeJira) -> None:
+    project = home / "bad.toml"
+    project.write_text('[identity]\nworker_id = "x"\n')
+    io = Script([])
+    assert run_setup(home / "sam.toml", deps(io, jira, {}, []), project) is None
+    assert "holds personal settings (identity)" in io.output

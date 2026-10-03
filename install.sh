@@ -81,6 +81,10 @@ if ! have claude && yes_no "Claude Code is not installed. Install it with Anthro
 fi
 have claude || say "Claude Code is not installed yet; setup will remind you."
 
+# tmux keeps the coordinator running in the background (and hosts the session windows).
+brew_install tmux tmux
+have tmux || say "tmux is not installed, so \`coordinator\` runs in your terminal instead of the background (install tmux to change that)."
+
 if [ "$os" = linux ] && { ! have bwrap || ! have socat; }; then
   say "Claude's sandbox on Linux also needs bubblewrap and socat (for example: sudo apt install bubblewrap socat)."
 fi
@@ -114,7 +118,7 @@ step "Your config"
 if [ -f "$config" ]; then
   say "$config already exists, so it is left as it is."
   say "To change your answers: delivery setup"
-  say "To start the coordinator: coordinator"
+  say "To start the coordinator (in the background) and watch it: coordinator"
 else
   "$bin/delivery" setup --config "$config" <"$tty"
 fi

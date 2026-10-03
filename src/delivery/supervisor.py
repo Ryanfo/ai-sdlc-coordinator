@@ -4,6 +4,10 @@ Each poll discovers every eligible ticket and dispatches each one as its own tas
 slow, blocked, failed or human-gated ticket never holds up another. There is no
 session-count limit; claims and dedup are per ticket and per attempt. Dispatch can be
 paused manually while existing sessions continue.
+
+When Claude cannot be used (login expired, usage limit), no ticket is blocked for it: the
+runs that hit it wait, no new work starts, and a tiny Claude request every few minutes
+finds when it works again; then the waiting runs continue where they stopped.
 """
 
 from __future__ import annotations
@@ -15,16 +19,19 @@ import os
 import random
 import signal
 import socket
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from delivery import __version__, console
 from delivery import comments as comment_text
-from delivery.claude import ChildHandle
+from delivery.claude import ChildHandle, claude_works
+from delivery.codestamp import code_mtime
 from delivery.control import ControlServer, socket_path
-from delivery.coordinator import StageExecutor
+from delivery.coordinator import WAITING_FOR_CLAUDE, StageExecutor
 from delivery.intake import (
     Intake,
     IntakeEvaluator,
@@ -105,6 +112,10 @@ class Supervisor:
             else None
         )
         self._open_task: asyncio.Task[None] | None = None
+        self._code_noted = False
+        # Claude unavailable: seconds between probes (doubling) and when the next one is due.
+        self._claude_wait = 0.0
+        self._claude_check_at = 0.0
 
     # ------------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Supervisor:
@@ -128,6 +139,9 @@ class Supervisor:
                 "heartbeat_at": utcnow(),
                 "stopped_at": None,
                 "version": __version__,
+                "code_mtime": code_mtime(),
+                # Re-checked by the runs themselves: anything waiting resumes on start.
+                "claude_unavailable": None,
             }
         )
         if not self.dry_run:
@@ -143,7 +157,8 @@ class Supervisor:
 
     def install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
+        # SIGHUP: the terminal window was closed. Stop as cleanly as Ctrl-C.
+        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             with contextlib.suppress(NotImplementedError):
                 loop.add_signal_handler(sig, self.stop_event.set)
 
@@ -183,7 +198,10 @@ class Supervisor:
         if self.open and not self.dry_run and not once:
             self._open_task = asyncio.create_task(self._watch_open(), name="open-sessions")
         while not self.stop_event.is_set():
-            if not self.record.dispatch_paused:
+            self._check_code()
+            if self.record.claude_unavailable is not None:
+                await self._check_claude()
+            elif not self.record.dispatch_paused:
                 await self.poll_once()
             elif not once:
                 self.emit(console.line("dispatch paused; existing sessions continue"))
@@ -386,9 +404,18 @@ class Supervisor:
                         "reason": f"internal error: {exc}",
                         "held": True,
                         "hold_reason": "internal error",
+                        "next_action": f"`coordinator recover {rc.key} --resume` continues it; "
+                        "`coordinator logs` shows the error.",
                     }
                 )
-                rc.save("internal_error", error=str(exc))
+                rc.save("internal_error", error=str(exc), traceback=traceback.format_exc()[-6000:])
+                await self.executor.notice(
+                    rc,
+                    "internal-error",
+                    comment_text.internal_error(
+                        rc.record.stage.value, rc.run_id, self.cfg.identity.worker_id, str(exc), rc.key
+                    ),
+                )
                 return rc.record
             finally:
                 self.claims.release(rc.key, rc.run_id)
@@ -400,6 +427,7 @@ class Supervisor:
                 )
 
         task = asyncio.create_task(runner(), name=rc.run_id)
+        task.add_done_callback(self._after_run)
         self.sessions[rc.key] = Session(rc.key, rc, task)
         self.emit(
             console.session_started(
@@ -429,6 +457,84 @@ class Supervisor:
                 )
         except Exception as exc:  # a window must never fail a finished run
             log.warning("could not bring up the session of %s: %s", rc.run_id, exc)
+
+    def _after_run(self, task: asyncio.Task[RunRecord]) -> None:
+        if task.cancelled() or task.exception() is not None:
+            return
+        rec = task.result()
+        waiting = rec.outputs.get(WAITING_FOR_CLAUDE)
+        if rec.state is RunState.INTERRUPTED and not rec.held and waiting:
+            self._claude_down(rec.ticket_key, str(waiting.get("kind")), str(waiting.get("detail")))
+
+    # ------------------------------------------------------------------ Claude unavailable
+    def _claude_down(self, key: str, kind: str, detail: str) -> None:
+        first = self.record.claude_unavailable is None
+        if first:
+            self._claude_wait = 60.0 if kind == "auth" else 300.0
+            loop = asyncio.get_running_loop()
+            self._claude_check_at = loop.time() + self._claude_wait
+            self.record = self.record.model_copy(
+                update={
+                    "claude_unavailable": {
+                        "kind": kind,
+                        "detail": detail[:300],
+                        "since": utcnow().isoformat(),
+                        "next_check": (utcnow() + timedelta(seconds=self._claude_wait)).isoformat(),
+                    }
+                }
+            )
+            self.deps.store.save_supervisor(self.record, "claude_unavailable", kind=kind, ticket=key)
+            self.emit(console.claude_unavailable(self.cfg, kind, detail, key, int(self._claude_wait)))
+        else:
+            self.emit(console.line(f"{key} also waits for Claude; it continues when Claude works again"))
+
+    def waiting_for_claude(self) -> list[tuple[RunJournal, RunRecord]]:
+        out = []
+        for e in self.deps.store.unfinished():
+            r = e.record
+            if r and r.state is RunState.INTERRUPTED and not r.held and r.outputs.get(WAITING_FOR_CLAUDE):
+                out.append((e.journal, r))
+        return out
+
+    async def _check_claude(self) -> None:
+        loop = asyncio.get_running_loop()
+        if loop.time() < self._claude_check_at:
+            return
+        ok, detail = await claude_works(self.cfg.claude.executable, self.cfg.claude.model)
+        if not ok:
+            self._claude_wait = min(self._claude_wait * 2 or 60.0, 900.0)
+            self._claude_check_at = loop.time() + self._claude_wait
+            info = dict(self.record.claude_unavailable or {})
+            info["next_check"] = (utcnow() + timedelta(seconds=self._claude_wait)).isoformat()
+            self.record = self.record.model_copy(update={"claude_unavailable": info})
+            self.deps.store.save_supervisor(self.record)
+            self.emit(
+                console.line(
+                    f"Claude still unavailable ({detail[:120]}); "
+                    f"next check in {int(self._claude_wait // 60)} min"
+                )
+            )
+            return
+        waiting = self.waiting_for_claude()
+        self.record = self.record.model_copy(update={"claude_unavailable": None})
+        self.deps.store.save_supervisor(self.record, "claude_available", resuming=len(waiting))
+        self.emit(console.claude_back([r.ticket_key for _, r in waiting]))
+        for journal, rec in waiting:
+            if rec.ticket_key in self.sessions:
+                continue
+            try:
+                action = await self._recover_run(journal, rec)
+            except Exception as exc:
+                action = f"could not resume yet: {exc}"
+            self.emit(console.line(f"{rec.ticket_key}: {action}"))
+
+    def _check_code(self) -> None:
+        """Say once when the code on disk is newer than the code this supervisor runs."""
+        started = self.record.code_mtime
+        if self._code_noted or started is None or code_mtime() <= started + 1:
+            return
+        self._code_noted = True
+        self.emit(console.code_changed())
 
     def _on_child(self, key: str, proc: ChildHandle | None) -> None:
         if key in self.sessions:
@@ -516,6 +622,7 @@ class Supervisor:
             return "restarting prepared attempt"
         if ctx.status is sd.active and rec.state in (*ACTIVE_RUN_STATES, RunState.INTERRUPTED):
             rc.record = rec.model_copy(update={"state": RunState.RUNNING, "held": False, "hold_reason": ""})
+            rc.record.outputs.pop(WAITING_FOR_CLAUDE, None)
             rc.save("resumed")
             if self.open:
                 await self.open.close_for_run(rec.ticket_key, rec.stage)
@@ -676,9 +783,14 @@ class Supervisor:
                     for r in (self.open.registry.all() if self.open else [])
                 ],
                 "dispatch_paused": self.record.dispatch_paused,
+                "claude_unavailable": self.record.claude_unavailable,
                 "corrupt": self.corrupt,
                 "worker_id": self.cfg.identity.worker_id,
             }
+        if cmd == "shutdown":
+            self.emit(console.line("stopping (asked by `coordinator stop`)"))
+            self.stop_event.set()
+            return {"ok": True, "running_sessions": len(self.sessions)}
         if cmd in ("pause", "resume"):
             paused = cmd == "pause"
             self.record = self.record.model_copy(

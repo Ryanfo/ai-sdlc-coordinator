@@ -1209,7 +1209,10 @@ class DevelopmentStage(StageStrategy):
             ctx.record.outputs["feedback_items"] = feedback
         ports = ctx.record.ports or self.deps.ports.allocate(ctx.run_id)
         ctx.record = ctx.record.model_copy(update={"ports": ports})
-        prior = await self._continue_unfinished(wt, start_sha, spec, plan) if fresh else None
+        if fresh:
+            prior = await self._continue_unfinished(wt, start_sha, spec, plan)
+        else:
+            prior = await self._resumed_in_place(wt, start_sha)
         out = ctx.output_dir("implement-ticket")
         env = self.envelope(
             "implement-ticket",
@@ -1347,19 +1350,34 @@ class DevelopmentStage(StageStrategy):
                     "wip_not_applied", {"from": e.run_id, "error": applied.stderr[:300]}
                 )
                 return None
-            tail_path = None
-            logs = sorted((e.journal.dir / "logs").glob("claude-implement-ticket.jsonl"))
-            if logs:
-                from delivery.transcript import render_file
-
-                tail = [ln for ln in render_file(logs[-1]) if ln.strip()][-40:]
-                tail_file = ctx.inputs_dir / "prior-session-tail.txt"
-                tail_file.write_text("\n".join(tail) + "\n")
-                tail_path = str(tail_file)
+            tail_path = self._session_tail(e.journal.dir)
             ctx.record.outputs["continued_from"] = e.run_id
             ctx.save("wip_applied", source=e.run_id, files=len(meta.get("files", [])))
             return PriorWork(run_id=e.run_id, files=list(meta.get("files", [])), session_tail_path=tail_path)
         return None
+
+    async def _resumed_in_place(self, wt: Path, start_sha: str) -> PriorWork | None:
+        """This run resumes in the worktree it already had (after a restart, or after waiting
+        for Claude): tell the new session about the changes the last one left there."""
+        ctx = self.ctx
+        files = await self.deps.repo.changed_paths(wt, start_sha)
+        if not files:
+            return None
+        tail_path = self._session_tail(ctx.journal.dir)
+        ctx.save("resumed_in_place", files=len(files))
+        return PriorWork(run_id=ctx.run_id, files=files, session_tail_path=tail_path)
+
+    def _session_tail(self, journal_dir: Path) -> str | None:
+        """The last steps of an implementation session, for the session that continues it."""
+        log = journal_dir / "logs" / "claude-implement-ticket.jsonl"
+        if not log.exists():
+            return None
+        from delivery.transcript import render_file
+
+        tail = [ln for ln in render_file(log) if ln.strip()][-40:]
+        tail_file = self.ctx.inputs_dir / "prior-session-tail.txt"
+        tail_file.write_text("\n".join(tail) + "\n")
+        return str(tail_file)
 
     async def publish(self, d: Decision) -> None:
         ctx = self.ctx

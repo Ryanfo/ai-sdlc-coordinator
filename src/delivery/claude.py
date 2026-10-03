@@ -186,17 +186,20 @@ async def auth_report(executable: str, cwd: Path) -> AuthReport:
     return AuthReport(not problems, tuple(problems), method, provider, str(data.get("subscriptionType", "")))
 
 
-async def model_check(executable: str, model: str, cwd: Path) -> tuple[bool, str]:
+PROBE_PROMPT = "Reply with the single word OK."
+
+
+async def model_check(executable: str, model: str | None, cwd: Path) -> tuple[bool, str]:
     """One tiny tool-less turn on ``model`` with the worker's environment and subscription.
 
     Returns (usable, detail). The detail names the concrete model Claude Code resolved.
+    ``model`` None uses Claude Code's own default.
     """
     argv = [
         executable,
         "-p",
-        "Reply with the single word OK.",
-        "--model",
-        model,
+        PROBE_PROMPT,
+        *(["--model", model] if model else []),
         "--output-format",
         "json",
         "--no-session-persistence",
@@ -220,6 +223,18 @@ async def model_check(executable: str, model: str, cwd: Path) -> tuple[bool, str
         return False, str(data.get("result", "error"))[:200]
     used = sorted((data.get("modelUsage") or {}).keys())
     return True, f"runs as {', '.join(used) or 'unknown'}"
+
+
+async def claude_works(executable: str, model: str | None) -> tuple[bool, str]:
+    """Whether Claude can be used again after a login or usage-limit failure (a one-word reply)."""
+    ok, detail = await model_check(executable, model, Path.home())
+    if ok:
+        return True, detail
+    if _AUTH_HINTS.search(detail):
+        return False, "login missing or expired"
+    if _USAGE_HINTS.search(detail):
+        return False, "usage limit"
+    return False, detail
 
 
 def worker_env(extra: dict[str, str]) -> dict[str, str]:

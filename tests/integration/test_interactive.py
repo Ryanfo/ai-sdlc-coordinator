@@ -204,24 +204,27 @@ async def test_a_session_that_never_hands_over_a_result_blocks_the_stage(world: 
     assert _tmux(w, "list-sessions").stdout.strip() == "", "a failed session is not left running"
 
 
-@pytest.mark.parametrize(
-    ("behaviour", "expected"),
-    [
-        ({"usage_limit": True}, "usage limit"),
-        ({"no_plugin": True}, "delivery plugin did not load"),
-    ],
-)
-async def test_provider_and_plugin_failures_are_recognised(
-    world: World, behaviour: dict[str, bool], expected: str
-) -> None:
+async def test_a_missing_plugin_is_recognised(world: World) -> None:
     w = world
-    w.scenario({"refine-ticket": [behaviour]})
+    w.scenario({"refine-ticket": [{"no_plugin": True}]})
     w.new_ticket(KEY)
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
         await step(sup)
     assert w.jira.status_of(KEY) is Status.BLOCKED
-    assert expected in w.last_comment(KEY)
+    assert "delivery plugin did not load" in w.last_comment(KEY)
+
+
+async def test_a_usage_limit_is_recognised_and_waits_for_claude(world: World) -> None:
+    w = world
+    w.scenario({"refine-ticket": [{"usage_limit": True}]})
+    w.new_ticket(KEY)
+    w.submit(KEY)
+    async with Supervisor(w.deps) as sup:
+        await step(sup)
+        assert sup.record.claude_unavailable is not None
+    assert w.jira.status_of(KEY) is Status.REFINING
+    assert "waiting for Claude" in w.last_comment(KEY) and "usage limit" in w.last_comment(KEY)
 
 
 async def test_a_new_development_run_closes_the_open_session_and_keeps_its_changes(world: World) -> None:

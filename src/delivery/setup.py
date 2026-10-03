@@ -9,6 +9,11 @@ commands are read from the application's package.json.
 Nothing here blocks: a missing status, tool or sign-in is reported with what to do about it, and
 the config is still written so `delivery doctor` can take over.
 
+With a team's shared project file (``--project``, or one found in this installation's
+``projects/`` folder) the team's settings come from that file and only your own are asked: your
+email and token, your clone, session windows and this laptop. `delivery project export` writes
+such a file from a working config.
+
 The wizard is synchronous, with its own event loop for the Jira and GitHub calls, so Ctrl-C at
 a question stops it at once (``asyncio.run`` would only cancel the task at the next await).
 """
@@ -34,7 +39,16 @@ from urllib.parse import urlparse
 
 from pydantic import ValidationError
 
-from delivery.config import ACCOUNT_ID, MODEL_NAME, Config, _format_error, template_text
+from delivery.config import (
+    ACCOUNT_ID,
+    MODEL_NAME,
+    Config,
+    _format_error,
+    merge_tables,
+    personal_keys_in,
+    split_personal,
+    template_text,
+)
 from delivery.credentials import (
     FIGMA_TOKEN_SHAPE,
     TOKEN_SHAPE,
@@ -72,6 +86,46 @@ PLACEHOLDERS = (
     "human-reviewer",
     "my-laptop",
 )
+
+
+INSTALL = Path(__file__).resolve().parents[2]
+PROJECTS_DIR = INSTALL / "projects"
+
+PERSONAL_TEMPLATE = """\
+# delivery personal configuration
+#
+# The team's shared settings (Jira site and workflow, repository, approvers, checks, models)
+# come from the project file below; this file holds only what is personal to you and this
+# laptop. A value set here wins over the project file. Keep this file out of version control:
+# it never contains tokens (setup stores those in your Keychain).
+
+config_version = 1
+project = {project}
+
+[identity]
+# Your Jira account ID; `delivery setup` fills it in from your Jira login.
+developer_jira_account_id = "YOUR_ACCOUNT_ID"
+# Names this laptop. Only one coordinator per Jira identity may run.
+worker_id = "my-laptop"
+
+[jira]
+email = "you@example.com"
+
+[repository]
+# Your normal clone of the application. The coordinator never edits it.
+checkout_path = "~/src/your-app"
+# Managed worktrees, one per run. Must be outside the checkout.
+worktree_root = "~/delivery-worktrees"
+
+[runtime]
+# Local recovery journal, logs and locks. Must be outside any Git checkout.
+state_dir = "~/.local/state/delivery"
+
+# Watch Claude work and type to it: each session runs in tmux and a terminal window opens on it.
+# [claude.interactive]
+# enabled = true
+# window = "Terminal"       # or "iTerm", or "none" (then: coordinator attach <ticket>)
+"""
 
 
 # --------------------------------------------------------------------------- editing the TOML text
@@ -204,6 +258,86 @@ def set_table(text: str, table: str, entries: dict[str, Any]) -> str:
     at = _append_at(lines, start, end)
     lines[at:at] = [f"{k} = {toml_value(v)}" for k, v in entries.items()]
     return "\n".join(lines) + "\n"
+
+
+def set_top(text: str, key: str, value: object) -> str:
+    """Set a top-level ``key`` (before the first table)."""
+    lines = text.splitlines()
+    first = next((i for i, line in enumerate(lines) if _HEADER.match(line)), len(lines))
+    new = f"{key} = {toml_value(value)}"
+    for i in range(first):
+        m = _KEY.match(lines[i])
+        if m and m.group(1) == key:
+            lines[i : _value_end(lines, i)] = [new]
+            return "\n".join(lines) + "\n"
+    at = first
+    while at > 0 and not lines[at - 1].strip():
+        at -= 1
+    lines.insert(at, new)
+    return "\n".join(lines) + "\n"
+
+
+def _bare(key: str) -> str:
+    return key if re.fullmatch(r"[A-Za-z0-9_-]+", key) else json.dumps(key)
+
+
+def dumps(data: dict[str, Any], header: str = "") -> str:
+    """A new TOML document: top-level values first, then each table as ``[a.b]``."""
+    lines = [f"# {ln}".rstrip() for ln in header.splitlines()]
+    if lines:
+        lines.append("")
+    lines += [f"{_bare(k)} = {toml_value(v)}" for k, v in data.items() if not isinstance(v, dict)]
+
+    def table(prefix: str, body: dict[str, Any]) -> None:
+        values = {k: v for k, v in body.items() if not isinstance(v, dict)}
+        if values or not any(isinstance(v, dict) for v in body.values()):
+            lines.extend(["", f"[{prefix}]", *(f"{_bare(k)} = {toml_value(v)}" for k, v in values.items())])
+        for k, v in body.items():
+            if isinstance(v, dict):
+                table(f"{prefix}.{_bare(k)}", v)
+
+    for k, v in data.items():
+        if isinstance(v, dict):
+            table(_bare(k), v)
+    text = "\n".join(lines).strip("\n") + "\n"
+    tomllib.loads(text)
+    return text
+
+
+def project_candidates() -> list[Path]:
+    """Shared project files kept in this installation (``projects/*.toml``)."""
+    return sorted(PROJECTS_DIR.glob("*.toml")) if PROJECTS_DIR.is_dir() else []
+
+
+def _project_of(path: Path, text: str) -> Path | None:
+    with contextlib.suppress(tomllib.TOMLDecodeError):
+        ref = tomllib.loads(text).get("project")
+        if isinstance(ref, str) and ref:
+            p = Path(ref).expanduser()
+            return p if p.is_absolute() else path.parent / p
+    return None
+
+
+def export_project(config_path: Path, out: Path, force: bool = False) -> Path:
+    """Write the team settings of a working config as a shared project file."""
+    raw = tomllib.loads(config_path.read_text())
+    project = _project_of(config_path, config_path.read_text())
+    raw.pop("project", None)
+    if project:
+        raw = merge_tables(tomllib.loads(project.read_text()), raw)
+    team, _personal = split_personal(raw)
+    team.pop("config_version", None)
+    if out.exists() and not force:
+        raise FileExistsError(out)
+    header = (
+        "delivery shared project settings\n\n"
+        "The same for everyone on this project. Each developer's own config names this file\n"
+        '(project = "<path>") and adds only personal settings; `delivery setup --project` writes it.\n'
+        "No secrets, nothing personal and nothing specific to one laptop."
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(dumps(team, header))
+    return out
 
 
 # --------------------------------------------------------------------------- reading answers
@@ -469,13 +603,27 @@ class SetupResult:
 
 
 class Wizard:
-    def __init__(self, path: Path, deps: SetupDeps) -> None:
+    def __init__(self, path: Path, deps: SetupDeps, project: Path | None = None) -> None:
         self.path = path
         self.d = deps
         self.io = deps.io
         self.existing = path.exists()
         self.original = path.read_text() if self.existing else ""
-        self.text = self.original or template_text()
+        named = _project_of(path, self.original) if self.original else None
+        # The team's shared project file: its settings are not asked again.
+        self.project = project or named
+        self.shared: dict[str, Any] = {}
+        if self.project and self.project.is_file():
+            with contextlib.suppress(tomllib.TOMLDecodeError, OSError):
+                self.shared = tomllib.loads(self.project.read_text())
+        if self.original:
+            self.text = self.original
+            if self.project and named is None:
+                self.text = set_top(self.text, "project", str(self.project))
+        elif self.project:
+            self.text = PERSONAL_TEMPLATE.format(project=toml_value(str(self.project)))
+        else:
+            self.text = template_text()
         self.loop = asyncio.new_event_loop()
         self.jira: SetupJira | None = None
         self.me = JiraUser("", "")
@@ -488,8 +636,23 @@ class Wizard:
     def wait(self, call: Awaitable[T]) -> T:
         return self.loop.run_until_complete(call)
 
+    def _merged(self, text: str) -> dict[str, Any]:
+        """What the config means: the project file's settings, then this file's on top."""
+        data = tomllib.loads(text)
+        data.pop("project", None)
+        return merge_tables(self.shared, data) if self.shared else data
+
+    def team(self, dotted: str) -> bool:
+        """Whether the team's project file sets this (so it is not asked)."""
+        data: Any = self.shared
+        for part in dotted.split("."):
+            if not isinstance(data, dict) or part not in data:
+                return False
+            data = data[part]
+        return True
+
     def get(self, dotted: str) -> Any:
-        data: Any = tomllib.loads(self.text)
+        data: Any = self._merged(self.text)
         for part in dotted.split("."):
             if not isinstance(data, dict) or part not in data:
                 return None
@@ -506,7 +669,7 @@ class Wizard:
 
     def _validate(self, text: str) -> list[str]:
         try:
-            Config.model_validate(tomllib.loads(text), context={"base_dir": str(self.path.parent)})
+            Config.model_validate(self._merged(text), context={"base_dir": str(self.path.parent)})
         except ValidationError as exc:
             return [_format_error(dict(e)) for e in exc.errors()]
         except tomllib.TOMLDecodeError as exc:
@@ -514,7 +677,7 @@ class Wizard:
         return []
 
     def config(self) -> Config:
-        return Config.model_validate(tomllib.loads(self.text), context={"base_dir": str(self.path.parent)})
+        return Config.model_validate(self._merged(self.text), context={"base_dir": str(self.path.parent)})
 
     def problem(self, table: str, key: str, value: object) -> str | None:
         """Why this answer would make the config invalid, or None."""
@@ -545,6 +708,15 @@ class Wizard:
 
     def _run(self) -> SetupResult | None:
         io = self.io
+        if self.project:
+            if not self.shared:
+                io.say(f"Cannot read the project file {tilde(self.project)}.")
+                return None
+            personal = personal_keys_in(self.shared)
+            if personal:
+                io.say(f"{tilde(self.project)} holds personal settings ({', '.join(personal)});")
+                io.say("a shared project file must not. Take them out, then run setup again.")
+                return None
         problems = self._validate(self.text)
         if problems:
             io.say(f"{tilde(self.path)} has problems setup cannot work around:")
@@ -553,6 +725,8 @@ class Wizard:
             io.say("Fix them in the file, or move it aside to start again.")
             return None
         io.say(f"Delivery setup. A few questions, then {tilde(self.path)} is written for you.")
+        if self.project:
+            io.say(f"The team's settings come from {tilde(self.project)}; only yours are asked.")
         io.say("Press Enter to accept the answer in [brackets]. Ctrl-C stops; nothing is saved till the end.")
         try:
             self.jira_signin()
@@ -580,9 +754,16 @@ class Wizard:
         io = self.io
         io.say("\nJira")
         site_default, email_default = self.current("jira.base_url"), self.current("jira.email")
+        team_site = str(self.get("jira.base_url")) if self.team("jira.base_url") else ""
+        if team_site:
+            io.say(f"  Site {team_site} (the team's)")
         while True:
-            answer = io.ask("Jira site (its address, or paste any link from it)", site_default)
-            site, hint = parse_site(answer)
+            site: str | None
+            if team_site:
+                site, hint = team_site, ""
+            else:
+                answer = io.ask("Jira site (its address, or paste any link from it)", site_default)
+                site, hint = parse_site(answer)
             if not site:
                 io.say("  That is not a Jira address; it looks like https://your-company.atlassian.net")
                 continue
@@ -591,7 +772,8 @@ class Wizard:
                 email_default,
                 lambda a: None if EMAIL.match(a) else "That is not an email address.",
             )
-            self.set("jira", "base_url", site)
+            if not team_site:
+                self.set("jira", "base_url", site)
             self.set("jira", "email", email)
             if self.d.keychain and not self.get("jira.token_keychain_service"):
                 self.set("jira", "token_keychain_service", "delivery-jira")
@@ -662,6 +844,10 @@ class Wizard:
     def jira_project(self) -> None:
         io, jira = self.io, self.jira
         assert jira
+        if self.team("jira.project_key"):
+            kinds = ", ".join(self.get("jira.supported_issue_types") or [])
+            io.say(f"  Project {self.get('jira.project_key')}, issue types {kinds} (the team's)")
+            return
         default = self.project_hint or self.current("jira.project_key")
         if not default:
             try:
@@ -711,6 +897,10 @@ class Wizard:
 
     def approvers(self) -> None:
         io = self.io
+        if self.team("approvals.jira_account_ids"):
+            ids = self.get("approvals.jira_account_ids") or []
+            io.say("  Approvers: " + ", ".join(self.person_name(a) for a in ids) + " (the team's)")
+            return
         io.say("  Approvers sign off specifications, plans, acceptance and releases in Jira.")
         ids = self.get("approvals.jira_account_ids") if self.existing else None
         current = [a for a in ids or [] if not is_placeholder(a)]
@@ -784,6 +974,14 @@ class Wizard:
             except IntegrationError:
                 io.say("  GitHub CLI is not signed in, so nothing can be checked on GitHub.")
                 self.note("Sign in to GitHub CLI: gh auth login")
+        if self.team("repository.url"):
+            team_slug = parse_repo(str(self.get("repository.url"))) or ""
+            base = self.get("repository.base_branch") or "main"
+            io.say(f"  Repository {team_slug}, PRs into {base} (the team's)")
+            self.clone(team_slug, self.existing)
+            if not self.team("approvals.github_logins"):
+                self.reviewers()
+            return
         current = parse_repo(self.current("repository.url")) or ""
         info: RepoInfo | None = None
         while True:
@@ -904,6 +1102,8 @@ class Wizard:
     # ---- the application's checks
     def checks(self) -> None:
         io = self.io
+        if self.team("checks.commands"):
+            return
         io.say("\nChecks")
         checkout = Path(str(self.get("repository.checkout_path"))).expanduser()
         found = detect_checks(checkout)
@@ -942,15 +1142,18 @@ class Wizard:
                 for p in problems:
                     io.say(f"  {p}")
                 self.note("Sign in to Claude Code with your subscription: claude auth login")
-        model = self.ask_until(
-            "Claude model for every stage: opus, sonnet, or default for your plan's",
-            str(self.get("claude.model") or "default"),
-            lambda a: None if MODEL_NAME.match(a) else "That is not a model name.",
-        )
-        if model == "default":
-            self.text = unset_value(self.text, "claude", "model")
+        if self.project:
+            pass  # the team's project file chooses the models
         else:
-            self.set("claude", "model", model)
+            model = self.ask_until(
+                "Claude model for every stage: opus, sonnet, or default for your plan's",
+                str(self.get("claude.model") or "default"),
+                lambda a: None if MODEL_NAME.match(a) else "That is not a model name.",
+            )
+            if model == "default":
+                self.text = unset_value(self.text, "claude", "model")
+            else:
+                self.set("claude", "model", model)
         if not d.macos:
             return
         watching = bool(self.get("claude.interactive.enabled"))
@@ -969,6 +1172,8 @@ class Wizard:
     def preview(self) -> None:
         """Offer to run the app from each finished development session (needs the windows)."""
         io = self.io
+        if self.team("preview.command"):
+            return
         current = self.get("preview.command") or []
         found = detect_preview(Path(str(self.get("repository.checkout_path"))).expanduser())
         command = current or (found[0] if found else [])
@@ -1055,6 +1260,9 @@ class Wizard:
         assert jira
         io.say("\nJira workflow")
         cfg = self.config()
+        if self.project and not cfg.workflow.missing_statuses():
+            io.say(f"  Mapped in the team's project file ({len(cfg.workflow.statuses)} statuses).")
+            return
         try:
             wf = self.wait(inspect_workflow(cfg, jira))
         except IntegrationError as exc:
@@ -1082,6 +1290,24 @@ class Wizard:
             self.note("See which Jira transitions need fixing: delivery workflow inspect")
 
 
-def run_setup(path: Path, deps: SetupDeps) -> SetupResult | None:
-    """Ask the questions and write ``path``. None when stopped or not saved."""
-    return Wizard(path.expanduser().absolute(), deps).run()
+def run_setup(path: Path, deps: SetupDeps, project: Path | None = None) -> SetupResult | None:
+    """Ask the questions and write ``path``. None when stopped or not saved.
+
+    A new config offers the team project files kept in this installation's ``projects/``.
+    """
+    path = path.expanduser().absolute()
+    if project is None and not path.exists():
+        found = project_candidates()
+        try:
+            if len(found) == 1 and confirm(
+                deps.io, f"Your team's settings are in {tilde(found[0])}. Use them (only your own are asked)?"
+            ):
+                project = found[0]
+            elif len(found) > 1:
+                deps.io.say("Team project files: " + ", ".join(p.stem for p in found))
+                pick = deps.io.ask("Which project (Enter for none, to answer everything yourself)", "")
+                project = next((p for p in found if p.stem.lower() == pick.strip().lower()), None)
+        except (KeyboardInterrupt, EOFError):
+            deps.io.say("\nSetup stopped. Nothing was saved.")
+            return None
+    return Wizard(path, deps, project).run()
