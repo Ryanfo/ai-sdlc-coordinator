@@ -7,6 +7,7 @@ the human must use, a copyable template and the next human action.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 from delivery.feedback import (
     DecisionKind,
@@ -15,8 +16,9 @@ from delivery.feedback import (
     change_template,
     record_release_template,
 )
-from delivery.models import CheckResult, Finding, Question
-from delivery.overlap import OverlapFinding, Severity
+from delivery.models import CheckResult, Finding, Question, Severity
+from delivery.overlap import OverlapFinding
+from delivery.overlap import Severity as OverlapSeverity
 
 STAGE_TITLES = {
     "refinement": "Refinement",
@@ -26,6 +28,12 @@ STAGE_TITLES = {
     "release_preparation": "Release preparation",
     "release_verification": "Release verification",
 }
+
+
+NOTE_HINT = (
+    "To guide the next Claude session, first add a comment that starts with `FOR CLAUDE` "
+    "(or `FOR CLAUDE development` for one stage) followed by what it should know or do."
+)
 
 
 def _session_line(run_id: str, worker_id: str) -> str:
@@ -39,10 +47,13 @@ def started(
     reason: str,
     moved_by_hand: str | None = None,
     models: dict[str, str | None] | None = None,
+    notes: int = 0,
 ) -> str:
     text = (
         f"**{STAGE_TITLES.get(stage, stage)} started.** {_session_line(run_id, worker_id)}\nInput: {reason}"
     )
+    if notes:
+        text += f"\nNotes for Claude: {notes} `FOR CLAUDE` comment{'s' if notes != 1 else ''} included"
     if models:
         names = {p: m or "Claude Code default" for p, m in models.items()}
         if len(set(names.values())) == 1:
@@ -154,6 +165,7 @@ def blocked(stage: str, reason: str, action: str, resume_stage: str) -> str:
             f"**Next action**: {action}",
             f"When resolved, choose **Resume {STAGE_TITLES.get(resume_stage, resume_stage).lower()}** "
             "(only after any previous worker has stopped).",
+            NOTE_HINT,
         ]
     )
 
@@ -190,6 +202,9 @@ def code_gate(
     overlap: list[OverlapFinding],
     reviewers: str,
     provenance: str = "",
+    *,
+    base: str = "main",
+    merge_conflicts: list[dict[str, Any]] | None = None,
 ) -> str:
     lines = [
         f"## Candidate ready for code review: {code_token}",
@@ -200,9 +215,9 @@ def code_gate(
     ]
     if provenance:
         lines += ["", f"CI integration provenance: {provenance}"]
+    lines += conflicts_section(merge_conflicts or [], base)
     if findings:
-        lines += ["", "**Non-blocking findings**:"]
-        lines += [f"- {f.id} ({f.severity.value}): {f.description[:300]}" for f in findings[:15]]
+        lines += ["", "**Non-blocking findings**:", *_by_author(findings, 15)]
     if unverified:
         lines += [
             "",
@@ -236,33 +251,125 @@ def code_gate(
     return "\n".join(lines)
 
 
+def _clip(text: str, limit: int = 700) -> str:
+    """Shorten long text at a sentence (or word) boundary, never mid-word."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    end = max(cut.rfind(". "), cut.rfind("; "))
+    if end < limit // 2:
+        end = cut.rfind(" ")
+    return cut[: end + 1].rstrip() + " …"
+
+
+def _findings(findings: list[Finding], limit: int) -> list[str]:
+    return [f"- **{f.id}** ({f.severity.value}): {_clip(f.description)}" for f in findings[:limit]]
+
+
+def _by_author(findings: list[Finding], limit: int) -> list[str]:
+    """Reviewer findings (F1-F99) and verifier findings (F101+), which may overlap."""
+    review = [f for f in findings if int(f.id[1:]) < 100]
+    verify = [f for f in findings if int(f.id[1:]) >= 100]
+    lines: list[str] = []
+    for title, group in (("reviewer", review), ("verifier", verify)):
+        if group:
+            lines += [f"From the {title}:", *_findings(group, limit)]
+    return lines
+
+
+def conflicts_section(conflicts: list[dict[str, Any]], base: str) -> list[str]:
+    """Flag textual conflicts. They are resolved when the PR is merged, never a failure."""
+    if not conflicts:
+        return []
+    lines = ["", "**Merge conflicts to resolve when merging** (flagged, not a failure):"]
+    for c in conflicts:
+        paths = ", ".join(c["paths"])
+        if c["with"] == base:
+            lines.append(f"- the latest `{base}` (`{str(c['sha'])[:12]}`): {paths}")
+        else:
+            lines.append(
+                f"- {c['with']}'s candidate `{str(c['sha'])[:12]}` (not merged yet): {paths}. "
+                f"Whichever of the two merges second resolves it."
+            )
+    lines.append(
+        "The integration checks ran without the conflicting changes. Resolve the conflict in the "
+        "pull request when you merge it (for example with GitHub's Resolve conflicts). Release "
+        "verification accepts the approved candidate plus that merge and lists the files it "
+        "changed for you to check."
+    )
+    return lines
+
+
 def verification_failed(
     code_token: str,
     pr_url: str,
+    candidate_no: int,
     candidate: str,
     review_url: str,
     verification_url: str,
     checks: list[CheckResult],
     findings: list[Finding],
-    reasons: list[str],
+    problems: list[str],
+    *,
+    key: str = "",
+    base: str = "main",
+    merge_conflicts: list[dict[str, Any]] | None = None,
 ) -> str:
+    serious = [f for f in findings if f.severity in (Severity.BLOCKER, Severity.MAJOR)]
+    minor = [f for f in findings if f not in serious]
+    failed = [c for c in checks if c.conclusion != "passed"]
+    why = [f"- **R{i}**: {p}" for i, p in enumerate(problems, 1)]
+    if serious:
+        why.append(
+            f"- {len(serious)} blocker/major finding{'s' if len(serious) != 1 else ''}: "
+            + ", ".join(f.id for f in serious)
+        )
+    if failed:
+        checks_line = f"Failed checks: {', '.join(f'{c.name} ({c.target})' for c in failed)}."
+    else:
+        checks_line = "All coordinator and CI checks passed." if checks else ""
     lines = [
-        f"## Verification failed for candidate `{candidate[:12]}`",
+        f"## Verification failed for candidate c{candidate_no} `{candidate[:12]}`",
         f"PR: {pr_url} · [Independent review]({review_url}) · [Verification report]({verification_url})",
         "",
-        "**Why**:",
-        *[f"- {r}" for r in reasons],
+        "**Why it failed**:",
+        *why,
+        *([checks_line] if checks_line else []),
         "",
-        *_checks_table(checks),
+        "**What to do next** (pick one):",
+        f"- **Fix it in this ticket**: choose **Submit implementation changes**. Development gets "
+        f"every R- and F-item below and publishes candidate c{candidate_no + 1}, which is reviewed "
+        "and verified again.",
     ]
     if findings:
-        lines += ["", "**Findings** (use these IDs when submitting changes):"]
-        lines += [f"- {f.id} ({f.severity.value}): {f.description[:300]}" for f in findings[:25]]
+        lines += [
+            "To limit the findings it works on, first add this comment with the F-IDs to fix "
+            "and a note on each (R-items are always included):",
+            "```",
+            f"{DecisionKind.SUBMIT_CHANGES.value} {code_token}",
+            *(f"{f.id}: <what to do>" for f in (serious or minor)[:3]),
+            "```",
+        ]
+    lines += [
+        "- **Change what is being built**: choose **Revise scope** (back to refinement).",
+        "- **Verify the same candidate again**: choose **Submit follow-up changes**. The code does "
+        "not change, so this only helps when the cause was outside this candidate (a flaky check, "
+        f"or {base} or another ticket changed since).",
+        NOTE_HINT,
+    ]
+    if serious:
+        lines += ["", "**Blocking findings** (blocker/major):", *_by_author(serious, 15)]
+    if minor:
+        lines += ["", "**Other findings** (minor/info):", *_by_author(minor, 15)]
+    lines += conflicts_section(merge_conflicts or [], base)
     lines += [
         "",
-        "**Next action**: review the findings. To fix within the approved scope choose **Submit "
-        "implementation changes** (optionally first comment `SUBMIT CHANGES "
-        f"{code_token}` with the F-IDs to address). To change scope choose **Revise scope**.",
+        *_checks_table(checks),
+        "",
+        "Reviewer and verifier work independently, so their findings can overlap. Full text is "
+        f"in the linked reports. On the developer's machine `delivery inspect {key}` shows this "
+        "outcome with the check logs and Claude session logs.",
     ]
     return "\n".join(lines)
 
@@ -303,17 +410,30 @@ def done(release_commit: str, environment: str, url: str, provenance: str) -> st
     )
 
 
-def candidate_ready(candidate_no: int, sha: str, pr_url: str, summary: str) -> str:
-    return "\n".join(
-        [
-            f"## Implementation candidate c{candidate_no} ready for verification",
-            f"PR: {pr_url} · commit `{sha}`",
+def candidate_ready(
+    candidate_no: int,
+    sha: str,
+    pr_url: str,
+    summary: str,
+    *,
+    merge_conflicts: list[dict[str, Any]] | None = None,
+    base: str = "main",
+) -> str:
+    lines = [
+        f"## Implementation candidate c{candidate_no} ready for verification",
+        f"PR: {pr_url} · commit `{sha}`",
+        "",
+        summary,
+    ]
+    if merge_conflicts:
+        lines += [
             "",
-            summary,
-            "",
-            "Fresh independent review and verification start automatically.",
+            f"The latest `{base}` was not merged into this candidate because it conflicts in "
+            f"{', '.join(p for c in merge_conflicts for p in c['paths'])}. Resolve that when "
+            "merging the pull request.",
         ]
-    )
+    lines += ["", "Fresh independent review and verification start automatically."]
+    return "\n".join(lines)
 
 
 def follow_up(candidate_no: int, sha: str, url: str, requests: list[str], was_in: str, moved: bool) -> str:
@@ -337,7 +457,7 @@ def follow_up(candidate_no: int, sha: str, url: str, requests: list[str], was_in
 
 def overlap_warning(f: OverlapFinding, assignees: dict[str, str | None], here: str) -> str:
     other = f.other if f.ticket == here else f.ticket
-    sev = "Sequencing decision needed" if f.severity is Severity.BLOCK else "Overlap warning"
+    sev = "Sequencing decision needed" if f.severity is OverlapSeverity.BLOCK else "Overlap warning"
     rev = "; ".join(
         f"{k}: plan v{v.get('plan')} @ {str(v.get('commit'))[:12]}" for k, v in sorted(f.revisions.items())
     )
@@ -348,7 +468,7 @@ def overlap_warning(f: OverlapFinding, assignees: dict[str, str | None], here: s
         f"Inspected: {rev}.",
         "",
     ]
-    if f.severity is Severity.BLOCK:
+    if f.severity is OverlapSeverity.BLOCK:
         lines += [
             "Path comparison cannot prove independence. A human decides the order. Comment one of:",
             "```",

@@ -331,6 +331,20 @@ then choose **Request specification changes**. The next revision is written from
 current draft plus your numbered items. All templates are in
 [docs/human-templates.md](docs/human-templates.md).
 
+To tell Claude something (why the last run went wrong, an approach to take or avoid), add a
+comment whose first line is `FOR CLAUDE`, or `FOR CLAUDE development` (any stage name) to aim
+it at one stage, then choose the usual action. Every later session of that stage gets the note:
+
+```text
+FOR CLAUDE development
+The e2e failure is the date picker's timezone; use the fixed clock in tests/clock.ts.
+```
+
+**What Claude sees from the ticket**: the description (the brief), its attachments and linked
+Figma frames, the decision comments for the current step (`ANSWERS`, `CHANGE …`,
+`SUBMIT CHANGES …`), the findings or change items it must address, and `FOR CLAUDE` notes from
+the assignee or an approver. Other comments, including the coordinator's own, are never sent.
+
 ## 9. Approve, review, accept and release
 
 - **Specification and plan**: `APPROVE SPEC <token>` / `APPROVE PLAN <token>`, then the approve
@@ -355,6 +369,10 @@ current draft plus your numbered items. All templates are in
   `OVERLAP <id> PROCEED`, `WAIT <KEY>` or `RESCOPE` and resumes it.
 - Verification tests your candidate alone **and** merged with the latest base and other
   interacting candidates, so behavioural conflicts show up even when Git merges cleanly.
+- A textual merge conflict (with the base or another ticket's candidate) is **flagged, never a
+  failure**: the comments name the files and the integration checks run without the conflicting
+  change. Resolve it in the PR when you merge; release verification accepts the approved
+  candidate plus that merge and lists the files the resolution changed.
 
 Overlap detection is advisory: it cannot see unpublished work on other laptops.
 
@@ -486,7 +504,7 @@ delivery dispatch pause --reason "machine busy" --config ~/delivery.local.toml
 | `logs` | Readable Claude session log for a ticket; `--follow` to watch live |
 | `attach` / `sessions` / `close` | Interactive sessions in tmux: open one, list them, end one left open |
 | `status` | Every session: ticket, stage, run/session ID, state, start time, next action |
-| `inspect` | Why a ticket is (not) eligible, its gates, pause, candidate, overlaps, local runs; read-only |
+| `inspect` | Why a ticket is (not) eligible, its gates and candidate, and the latest run explained: reasons, findings in full, failed check output, merge conflicts, log locations and the Jira actions available now; read-only |
 | `stop` | Stops one ticket's session and keeps its work; other sessions continue |
 | `recover` | Reconciles one ticket against Jira/GitHub before any retry; `--resume` continues held work |
 | `handover` | Stops and checkpoints one ticket and moves it to Blocked so it can be reassigned |
@@ -510,6 +528,8 @@ delivery dispatch pause --reason "machine busy" --config ~/delivery.local.toml
 | Symptom | What to do |
 |---|---|
 | Ticket not picked up | `delivery inspect <KEY>`: assignee, status, type, label, waiting input or an existing attempt |
+| Verification failed or a stage blocked, next step unclear | `delivery inspect <KEY>`: every reason and finding in full, failed check output, Claude logs, and what each Jira action offered now does |
+| Claude keeps getting something wrong | Add a comment starting `FOR CLAUDE` (or `FOR CLAUDE development`) with the guidance, then Resume or Submit as usual: the next session gets it as input |
 | "It is in the Ready column" | Several statuses share a column; inspect the exact status |
 | Stays paused after answering | Check the round token and Q-IDs, then use the Submit answers action |
 | Approval rejected | Use the current token; the approver must make both the comment and the transition; for code, an independent GitHub review on the current head with CI green |

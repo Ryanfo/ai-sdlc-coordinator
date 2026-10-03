@@ -26,7 +26,7 @@ from delivery.publication import (
 )
 from delivery.resources import ResourceExhausted
 from delivery.runtime import ChildCallback, Decision, Deps, RunContext
-from delivery.stages import STRATEGIES, OutputInvalid, StageStrategy, WorkerFailure
+from delivery.stages import STRATEGIES, OutputInvalid, StageStrategy, WorkerFailure, notes_for
 from delivery.workflow import STAGES, STATUS_NAMES, Stage, Status
 
 
@@ -273,6 +273,7 @@ class StageExecutor:
                     rc.intake.reason,
                     moved_by_hand=STATUS_NAMES[active] if rc.record.adopted else None,
                     models={p: rc.cfg.claude.model_for(p) for p in sd.procedures},
+                    notes=len(notes_for(rc)),
                 ),
             )
         rc.record = rc.record.model_copy(update={"state": RunState.RUNNING, "heartbeat_at": utcnow()})

@@ -174,7 +174,7 @@ def interactive(argv: list[str], scenario_path: Path) -> int:
     envelope = json.loads(envelope_path.read_text())
     ticket = envelope.get("ticket_key", "doctor-probe")
     b = next_behaviour(scenario_path, ticket, procedure)
-    (log_dir / f"{ticket}-{procedure}-{uuid.uuid4().hex[:8]}.json").write_text(
+    (log_dir / f"{time.time_ns()}-{ticket}-{procedure}-{uuid.uuid4().hex[:8]}.json").write_text(
         json.dumps(
             {
                 "argv": argv,
@@ -389,7 +389,7 @@ def main() -> int:
 
     log_dir = scenario_path.parent / "invocations"
     log_dir.mkdir(exist_ok=True)
-    (log_dir / f"{ticket}-{procedure}-{uuid.uuid4().hex[:8]}.json").write_text(
+    (log_dir / f"{time.time_ns()}-{ticket}-{procedure}-{uuid.uuid4().hex[:8]}.json").write_text(
         json.dumps(
             {
                 "argv": argv,

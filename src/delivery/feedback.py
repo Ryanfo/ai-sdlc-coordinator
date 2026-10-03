@@ -302,3 +302,44 @@ def record_release_template(token: str, environment: str) -> str:
         f"environment: {environment}\n"
         "merged-pr: <PR number>"
     )
+
+
+_NOTE = re.compile(
+    r"^FOR\s+CLAUDE"
+    r"(?:\s+(?P<stage>refinement|planning|development|verification|"
+    r"release(?:[ _](?:preparation|verification))?))?"
+    r"\s*[:\-]?\s*(?P<text>.*)$",
+    re.I,
+)
+
+
+def note_text(comment: JiraComment, stage: str) -> str | None:
+    """The guidance in a ``FOR CLAUDE [stage]`` comment for this stage, or None.
+
+    The first line is ``FOR CLAUDE`` (every stage) or ``FOR CLAUDE development`` (one stage;
+    ``release`` covers release preparation and verification); the note follows on that line
+    after a colon or on the next lines.
+    """
+    if is_coordinator_comment(comment):
+        return None
+    first, _, rest = comment.body_text.strip().partition("\n")
+    m = _NOTE.match(first.strip())
+    if not m:
+        return None
+    scope = (m.group("stage") or "").lower().replace(" ", "_")
+    if scope and scope != stage and not (scope == "release" and stage.startswith("release")):
+        return None
+    text = "\n".join(t for t in (m.group("text").strip(), rest.strip()) if t)
+    return text or None
+
+
+def claude_notes(
+    comments: list[JiraComment], *, stage: str, allowed_authors: set[str], limit: int = 10
+) -> list[tuple[JiraComment, str]]:
+    """Notes for Claude for this stage from the assignee or approvers, oldest first."""
+    notes = [
+        (c, text)
+        for c in comments
+        if c.author_account_id in allowed_authors and (text := note_text(c, stage)) is not None
+    ]
+    return notes[-limit:]

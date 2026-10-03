@@ -97,6 +97,8 @@ All directories are created with mode 0700 and files 0600. Do not commit anythin
 | Subscription limit reached | Tickets block with "usage limit". Wait for the reset, then Resume each in Jira |
 | Claude login expired | `claude auth login` in a terminal, then Resume |
 | Base branch moved after code approval | The code gate blocks (head or CI no longer current). Request code changes → Submit implementation changes merges the base into the candidate (no rebase) and re-verifies |
+| Merge conflict with the base or another ticket | Flagged in the candidate, code-review and verification comments, never a failure. Resolve it in the PR when merging (for example GitHub's Resolve conflicts); release verification accepts the approved candidate plus merges of the base and lists the files the resolution changed. Any other commit added to the PR is still refused |
+| Verification failed and the next step is unclear | `delivery inspect <KEY>`: every reason and finding in full, failed check output, Claude logs and what each Jira action available now does |
 | Overlap blocks development | Read the overlap comment, decide `OVERLAP <id> PROCEED/WAIT/RESCOPE`, then Resume development |
 | Remote ticket branch diverged | The ticket blocks. Reconcile the branch by hand (never force-push), then Resume |
 | Jira offline | Polling backs off; nothing is mutated; publication resumes when Jira is back |

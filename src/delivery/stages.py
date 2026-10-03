@@ -19,6 +19,7 @@ from typing import Any, ClassVar
 from delivery import comments
 from delivery.checks import all_passed, run_checks
 from delivery.claude import ChildHandle, ClaudeInvocation, ClaudeOutcome, ClaudeStatus, OpenSession
+from delivery.feedback import claude_notes
 from delivery.gates import (
     current_gate,
     evaluate_ci,
@@ -57,6 +58,7 @@ from delivery.open_sessions import OpenRecord, SessionRegistry
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
 from delivery.permissions import PROCEDURE_ROLES, PROTECTED_WORKTREE_PATHS, build_profile
+from delivery.ports import JiraComment
 from delivery.publication import Posted
 from delivery.resources import port_env
 from delivery.results import OutputInvalid, validate_result
@@ -143,6 +145,15 @@ def share_check_logs(ctx: RunContext, checks: list[CheckResult]) -> None:
             shutil.copy(c.log_path, dest / Path(c.log_path).name)
 
 
+def notes_for(ctx: RunContext) -> list[tuple[JiraComment, str]]:
+    """`FOR CLAUDE` notes for this run's stage from the developer, assignee or approvers."""
+    view = ctx.ticket.issue.view
+    humans = {ctx.cfg.identity.developer_jira_account_id, *ctx.cfg.approvals.jira_account_ids}
+    if view.assignee_account_id:
+        humans.add(view.assignee_account_id)
+    return claude_notes(ctx.ticket.comments, stage=ctx.record.stage.value, allowed_authors=humans)
+
+
 def _rev_numbers(names: list[str], pattern: str) -> list[int]:
     out = []
     for n in names:
@@ -206,8 +217,11 @@ class StageStrategy:
         gate = current_gate(self.ctx.shared.gates, kind)
         if gate is None or not gate.artefact_path or not gate.artefact_commit:
             return None
+        # Specification and plan revisions share file names (v001.md): prefix the kind.
         dest = await self.copy_input(
-            gate.artefact_commit, gate.artefact_path, f"approved/{Path(gate.artefact_path).name}"
+            gate.artefact_commit,
+            gate.artefact_path,
+            f"approved/{art_kind.value}-{Path(gate.artefact_path).name}",
         )
         if dest is None:
             return None
@@ -235,6 +249,7 @@ class StageStrategy:
         review_report: str | None = None,
         write_globs: list[str] | None = None,
         prior_work: PriorWork | None = None,
+        feedback: dict[str, str] | None = None,
     ) -> InputEnvelope:
         ctx = self.ctx
         issue = ctx.ticket.issue
@@ -272,6 +287,8 @@ class StageStrategy:
             prior_work=prior_work,
             clarification_round=ctx.intake.round_token,
             feedback_token=ctx.intake.feedback_token,
+            feedback_items=dict(ctx.intake.feedback_items if feedback is None else feedback),
+            notes=self.notes(),
             approved_artefacts=approved or [],
             prior_drafts=prior or [],
             source=source or self.source_refs(),
@@ -287,6 +304,21 @@ class StageStrategy:
             ports=ports or {},
             policy={"plugin_digest": ctx.deps.plugin.digest, "config_digest": ctx.cfg.digest()},
         )
+
+    def notes(self) -> list[SelectedComment]:
+        """`FOR CLAUDE` comments for this stage. Not part of the run's material inputs: a note
+        never starts or restarts work, it guides the next session that runs."""
+        return [
+            SelectedComment(
+                id=c.id,
+                author_account_id=c.author_account_id,
+                created=c.created,
+                updated=c.updated,
+                body=text,
+                digest=digest(text),
+            )
+            for c, text in notes_for(self.ctx)
+        ]
 
     def source_refs(self, **kw: str | None) -> SourceRefs:
         ctx = self.ctx
@@ -1055,13 +1087,11 @@ class DevelopmentStage(StageStrategy):
             if exists and base_sha and not await repo.is_ancestor(base_sha, await repo.worktree_head(wt)):
                 merged = await repo.merge(wt, f"origin/{base}", f"{ctx.key}: merge {base} into candidate")
                 if not merged.ok:
-                    return Decision(
-                        outcome="blocked",
-                        reason=f"merging the latest {base} conflicts in: {', '.join(merged.conflicts)}",
-                        action="A human must decide how the conflicting changes combine (resolve on "
-                        "the feature branch or revise scope), then resume development.",
-                        blocker_kind="merge_conflict",
-                    )
+                    # Resolved when the PR is merged; development carries on without it.
+                    ctx.record.outputs["merge_conflicts"] = [
+                        {"with": base, "sha": base_sha, "paths": list(merged.conflicts)}
+                    ]
+                    ctx.save("base_merge_conflicts", paths=list(merged.conflicts))
         start_sha = ctx.record.outputs.get("start_sha") or await repo.worktree_head(wt)
         ctx.record.outputs["start_sha"] = start_sha
         ctx.save("worktree_ready", start_sha=start_sha)
@@ -1074,10 +1104,10 @@ class DevelopmentStage(StageStrategy):
                 action="Check the delivery branch and resume.",
                 blocker_kind="missing_input",
             )
-        if ctx.intake.feedback_items:
-            (ctx.inputs_dir / "feedback.json").write_text(
-                json.dumps(ctx.intake.feedback_items, indent=2, sort_keys=True)
-            )
+        feedback = self._carried_feedback()
+        if feedback:
+            (ctx.inputs_dir / "feedback.json").write_text(json.dumps(feedback, indent=2, sort_keys=True))
+            ctx.record.outputs["feedback_items"] = feedback
         ports = ctx.record.ports or self.deps.ports.allocate(ctx.run_id)
         ctx.record = ctx.record.model_copy(update={"ports": ports})
         prior = await self._continue_unfinished(wt, start_sha, spec, plan) if fresh else None
@@ -1091,6 +1121,7 @@ class DevelopmentStage(StageStrategy):
             source=self.source_refs(feature_commit=start_sha),
             write_globs=[f"{wt}/**", f"{out}/**"],
             prior_work=prior,
+            feedback=feedback,
         )
         try:
             result = await self.run_procedure("implement-ticket", wt, env, ports=ports)
@@ -1123,6 +1154,15 @@ class DevelopmentStage(StageStrategy):
                 reason=result.summary,
                 result=result.model_dump(mode="json"),
                 extra={"changed": changed},
+            )
+        if not changed and ctx.shared.candidate_sha and start_sha != ctx.shared.candidate_sha:
+            # Nothing more to change, but the branch moved on from the recorded candidate (the
+            # latest base merged in, or a conflict resolved by hand): that is the next candidate.
+            return Decision(
+                outcome="success",
+                reason=result.summary,
+                result=result.model_dump(mode="json"),
+                extra={"changed": [], "start_sha": start_sha},
             )
         if not changed:
             return Decision(
@@ -1160,6 +1200,25 @@ class DevelopmentStage(StageStrategy):
         meta = {"start_sha": start_sha, "spec": _ref(spec), "plan": _ref(plan), "files": files}
         ctx.record.outputs["wip"] = meta
         ctx.save("wip_saved", files=len(files))
+
+    def _carried_feedback(self) -> dict[str, str]:
+        """This run's change items or, when it resumes a blocked development run, that run's:
+        a blocker (such as a merge conflict resolved by hand) must not drop what was asked."""
+        ctx = self.ctx
+        if ctx.intake.feedback_items:
+            return dict(ctx.intake.feedback_items)
+        for e in reversed(self.deps.store.runs_for_ticket(ctx.key)):
+            rec = e.record
+            if e.run_id == ctx.run_id or rec is None or rec.stage is not Stage.DEVELOPMENT:
+                continue
+            if rec.state is not RunState.BLOCKED:
+                return {}
+            items = rec.outputs.get("feedback_items") or (rec.outputs.get("intake") or {}).get(
+                "feedback_items"
+            )
+            if items:
+                return dict(items)
+        return {}
 
     async def _continue_unfinished(
         self, wt: Path, start_sha: str, spec: ArtefactPointer, plan: ArtefactPointer
@@ -1259,7 +1318,8 @@ class DevelopmentStage(StageStrategy):
             revision=f"c{n}",
         )
         if sha is None:
-            sha = await self.deps.repo.worktree_head(wt)
+            # No new edits: publish the branch as it is (for example with the latest base merged).
+            sha = await pub.push_head(wt, ctx.feature_branch, "feature-head", revision=f"c{n}")
         spec_gate = current_gate(ctx.shared.gates, GateKind.SPEC)
         plan_gate = current_gate(ctx.shared.gates, GateKind.PLAN)
         body = "\n".join(
@@ -1311,7 +1371,9 @@ class DevelopmentStage(StageStrategy):
         await self.publish_files(files, "execution", f"c{n}", f"{ctx.key}: candidate c{n} record")
         code_token = gate_token(ctx.key, GateKind.CODE, n)
         fp_ref = dict(ctx.shared.footprint_ref or {})
-        fp_ref.update({"actual_paths": changed[:200], "candidate_sha": sha})
+        # A later candidate's edits add to the earlier ones; they never replace them.
+        actual = sorted(set(fp_ref.get("actual_paths") or []) | set(changed))
+        fp_ref.update({"actual_paths": actual[:200], "candidate_sha": sha})
         ctx.shared = ctx.shared.model_copy(
             update={
                 "candidate_number": n,
@@ -1338,7 +1400,17 @@ class DevelopmentStage(StageStrategy):
             )
         await pub.save_record(ctx.key, ctx.shared, "candidate")
         await pub.comment(
-            ctx.key, "candidate", comments.candidate_ready(n, sha, pr.url, result.summary), f"c{n}"
+            ctx.key,
+            "candidate",
+            comments.candidate_ready(
+                n,
+                sha,
+                pr.url,
+                result.summary,
+                merge_conflicts=ctx.record.outputs.get("merge_conflicts", []),
+                base=ctx.cfg.repository.base_branch,
+            ),
+            f"c{n}",
         )
         await pub.transition(ctx.key, Status.DEVELOPING, Action.COMPLETE_DEVELOPMENT)
 
@@ -1411,16 +1483,19 @@ class VerificationStage(StageStrategy):
         )
         integration_wt = await self.detached_worktree("integration", candidate)
         merged_with = []
-        conflicts: list[str] = []
+        # Textual conflicts are flagged, never a failure: they are resolved when the PR is
+        # merged. Failing on them would also deadlock two tickets that conflict with each other.
+        # The integration tree is tested without whatever conflicts.
+        conflicts: list[dict[str, Any]] = []
         res = await repo.merge(integration_wt, base_sha, f"integration: {base} into {candidate[:12]}")
         if not res.ok:
-            conflicts.append(f"{base}: {', '.join(res.conflicts)}")
+            conflicts.append({"with": base, "sha": base_sha, "paths": list(res.conflicts)})
         for other_key, other_sha in interacting:
             r2 = await repo.merge(integration_wt, other_sha, f"integration: {other_key}")
             if r2.ok:
                 merged_with.append(f"{other_key}@{other_sha[:12]}")
             else:
-                conflicts.append(f"{other_key}: {', '.join(r2.conflicts)}")
+                conflicts.append({"with": other_key, "sha": other_sha, "paths": list(r2.conflicts)})
         tree = (await repo.git("rev-parse", "HEAD^{tree}", cwd=integration_wt)).stdout.strip()
         int_head = await repo.worktree_head(integration_wt)
         integ = await self.setup_and_check(
@@ -1486,28 +1561,27 @@ class VerificationStage(StageStrategy):
             )
             overlap = await coord.check(fp, ctx.shared, checkpoint="candidate", use_actual=True)
 
-        reasons: list[str] = []
+        # Problems the coordinator found itself; each becomes an R-item for development.
+        problems: list[str] = []
         failed = [c for c in all_checks if c.conclusion != "passed"]
-        if failed:
-            reasons += [f"coordinator check {c.name} ({c.target}) {c.conclusion}" for c in failed]
-        if conflicts:
-            reasons.append("integration merge conflicts: " + "; ".join(conflicts))
+        problems += [f"coordinator check {c.name} ({c.target}) {c.conclusion}" for c in failed]
         if ci and not ci.ok and not ci.pending:
-            reasons.append("CI failed: " + "; ".join(ci.problems[:5]))
+            problems.append("CI failed: " + ", ".join(ci.problems[:5]))
         if provenance["state"] == "mismatch":
-            reasons.append(f"CI integration provenance does not match the candidate: {provenance['detail']}")
+            problems.append(f"CI integration provenance does not match the candidate: {provenance['detail']}")
         findings = [
             *review.findings,
             *[f.model_copy(update={"id": f"F{100 + i}"}) for i, f in enumerate(verify.findings, 1)],
         ]
-        serious = [f for f in findings if f.severity in (Severity.BLOCKER, Severity.MAJOR)]
-        if serious:
-            reasons.append(f"{len(serious)} blocker/major findings")
         not_met = sorted(
             {e.criterion_id for e in [*review.evidence, *verify.evidence] if e.status == "not_met"}
         )
         if not_met:
-            reasons.append(f"criteria not met: {', '.join(not_met)}")
+            problems.append(f"acceptance criteria not met: {', '.join(not_met)}")
+        serious = [f for f in findings if f.severity in (Severity.BLOCKER, Severity.MAJOR)]
+        reasons = list(problems)
+        if serious:
+            reasons.append(f"{len(serious)} blocker/major findings ({', '.join(f.id for f in serious)})")
         verified = {e.criterion_id for e in verify.evidence if e.status == "met"}
         unverified = sorted({e.criterion_id for e in [*review.evidence, *verify.evidence]} - verified)
         extra = {
@@ -1516,6 +1590,8 @@ class VerificationStage(StageStrategy):
             "integration_tree": tree,
             "integration_head": int_head,
             "integration_with": merged_with,
+            "merge_conflicts": conflicts,
+            "problems": problems,
             "ci": [c.model_dump(mode="json") for c in ci_results],
             "ci_pending": bool(ci and ci.pending),
             "ci_provenance": provenance,
@@ -1529,6 +1605,10 @@ class VerificationStage(StageStrategy):
         return Decision(
             outcome=outcome,
             reason="; ".join(reasons) or "verification passed",
+            action=f"In Jira: Submit implementation changes to fix, or Revise scope. "
+            f"`delivery inspect {ctx.key}` shows why."
+            if reasons
+            else "",
             result=verify.model_dump(mode="json"),
             extra=extra,
         )
@@ -1651,6 +1731,11 @@ class VerificationStage(StageStrategy):
             "base_sha": d.extra.get("base_sha"),
             "integration_tree": d.extra.get("integration_tree"),
             "integration_with": ",".join(d.extra.get("integration_with", [])) or "base only",
+            "merge_conflicts": "; ".join(
+                f"{c['with']}@{str(c['sha'])[:12]}: {', '.join(c['paths'])}"
+                for c in d.extra.get("merge_conflicts", [])
+            )
+            or "none",
         }
         files = {
             f"{rdir}/review.md": provenance_header(ctx, "review", ctx.run_id, meta)
@@ -1689,7 +1774,10 @@ class VerificationStage(StageStrategy):
                 "verification": f"{rdir}/verification.md@{sha}",
             },
         }
+        conflicts = list(d.extra.get("merge_conflicts", []))
+        base_branch = ctx.cfg.repository.base_branch
         if d.outcome == "verification_failed":
+            problems = list(d.extra.get("problems", []))
             ctx.shared = ctx.shared.model_copy(
                 update={
                     **base,
@@ -1698,7 +1786,7 @@ class VerificationStage(StageStrategy):
                         {"id": f.id, "description": f.description, "severity": f.severity.value}
                         for f in findings
                     ]
-                    + [{"id": f"R{i}", "description": r} for i, r in enumerate(d.reason.split("; "), 1)],
+                    + [{"id": f"R{i}", "description": r} for i, r in enumerate(problems, 1)],
                 }
             )
             await self.announce(
@@ -1706,12 +1794,16 @@ class VerificationStage(StageStrategy):
                 comments.verification_failed(
                     code_token,
                     pr_url,
+                    n,
                     candidate,
                     review_url,
                     verify_url,
                     checks,
                     findings,
-                    d.reason.split("; "),
+                    problems,
+                    key=ctx.key,
+                    base=base_branch,
+                    merge_conflicts=conflicts,
                 ),
                 candidate[:12],
             )
@@ -1769,6 +1861,8 @@ class VerificationStage(StageStrategy):
                 "{state}: {detail}".format(
                     **{"state": "missing", "detail": "", **d.extra.get("ci_provenance", {})}
                 ),
+                base=base_branch,
+                merge_conflicts=conflicts,
             ),
             f"c{n}",
             gate_tokens=(code_token, accept_token),
@@ -1954,18 +2048,28 @@ class ReleaseVerificationStage(StageStrategy):
         }
         if not pr.merged or not pr.merge_commit_sha:
             return False, f"PR #{pr.number} is not merged", info
+        base = ctx.cfg.repository.base_branch
+        base_sha = await repo.remote_sha(base) or ""
+        resolved: list[str] = []
         if pr.head_sha != candidate:
-            return (
-                False,
-                (
-                    f"merged PR head {pr.head_sha[:12]} is not the approved candidate "
-                    f"{candidate[:12]} (unapproved changes merged)"
-                ),
-                info,
-            )
+            # Conflicts are resolved when merging (e.g. GitHub's Resolve conflicts), which merges
+            # the base into the PR branch. Accept only that: no other commits on top.
+            extra = await self._merge_only_update(candidate, pr.head_sha, f"{pr.merge_commit_sha}^1")
+            if extra is None:
+                return (
+                    False,
+                    (
+                        f"merged PR head {pr.head_sha[:12]} is not the approved candidate "
+                        f"{candidate[:12]} (unapproved changes merged)"
+                    ),
+                    info,
+                )
+            resolved = extra
+            info["merged_base_into_candidate"] = pr.head_sha
+            info["resolved_paths"] = resolved
+            candidate = pr.head_sha
         if not await repo.resolve(released):
             return False, f"recorded commit {released[:12]} does not exist in the repository", info
-        base_sha = await repo.remote_sha(ctx.cfg.repository.base_branch) or ""
         if not await repo.is_ancestor(released, base_sha):
             return (
                 False,
@@ -2008,6 +2112,15 @@ class ReleaseVerificationStage(StageStrategy):
                 "released_equals_merge": released == merge,
             }
         )
+        if resolved:
+            return (
+                True,
+                (
+                    f"the approved candidate was merged with {base} when merging (conflict "
+                    f"resolution); check the resolved files on the released commit: {', '.join(resolved)}"
+                ),
+                info,
+            )
         if not exact:
             return (
                 True,
@@ -2018,6 +2131,24 @@ class ReleaseVerificationStage(StageStrategy):
                 info,
             )
         return True, f"{strategy}; released commit contains the approved candidate", info
+
+    async def _merge_only_update(self, candidate: str, head: str, base_before: str) -> list[str] | None:
+        """If ``head`` is ``candidate`` plus merges of the base branch (as it was before the PR
+        merged) only, the files those merges changed beyond a plain merge (the conflict
+        resolutions); otherwise None."""
+        repo = self.deps.repo
+        if not await repo.is_ancestor(candidate, head):
+            return None
+        own = await repo.git("rev-list", "--no-merges", head, f"^{candidate}", f"^{base_before}", check=False)
+        if own.returncode != 0 or own.stdout.strip():
+            return None  # commits that are neither the candidate's nor the base's
+        merges = await repo.git("rev-list", "--merges", head, f"^{candidate}", check=False)
+        paths: set[str] = set()
+        for sha in merges.stdout.split():
+            # `--cc` shows only what a merge changed beyond its parents: the resolutions.
+            cc = await repo.git("show", "--cc", "--name-only", "--format=", sha, check=False)
+            paths.update(n for n in cc.stdout.splitlines() if n.strip())
+        return sorted(paths)
 
     async def work(self) -> Decision:
         ctx = self.ctx
