@@ -173,7 +173,8 @@ def closing_note(
     """Finish an interactive session that stays open: after actioning Jira change requests, say
     so item by item; development always ends this way too (and mentions the app, which is about
     to run from its worktree). Then ask for anything further: the session stays open for the
-    reply, and what is asked there is published (delivery.open_sessions)."""
+    reply, and what is asked there is published (delivery.open_sessions). A development session
+    also says to type /exit when finished, because verification waits until it has closed."""
     develop = procedure == "implement-ticket"
     if procedure not in CHANGES_BY_PROCEDURE or not (ids or develop):
         return ""
@@ -195,17 +196,23 @@ def closing_note(
             " Say that the coordinator is now starting the app from this working copy and will open "
             "it in their browser so they can try it."
         )
-    further = (
-        "If they ask for more, make those changes here too: the coordinator pushes them as the "
-        "next candidate, which is reviewed and verified again."
-        if develop
-        else f"If they ask for more, edit {document or f'the {what}'} in place: the coordinator "
-        f"publishes it as the next revision of the {what} for review."
-    )
-    return (
-        f'{opening} End by asking "Are there any further changes you\'d like to make?" and saying '
-        f"that if not, they can close this window (or type /exit). {further}"
-    )
+    if develop:
+        close = (
+            "that if not, they should type /exit to end this session: review and verification of "
+            "the candidate start then, not before (closing the window only hides the session)."
+        )
+        further = (
+            "If they ask for more, make those changes here too: the coordinator pushes them as the "
+            "next candidate, and the latest candidate is reviewed and verified once they type /exit."
+        )
+    else:
+        close = "that if not, they can close this window (or type /exit)."
+        further = (
+            f"If they ask for more, edit {document or f'the {what}'} in place: the coordinator "
+            f"publishes it as the next revision of the {what} for review."
+        )
+    ask = '"Are there any further changes you\'d like to make?"'
+    return f"{opening} End by asking {ask} and saying {close} {further}"
 
 
 def notes_for(ctx: RunContext) -> list[tuple[JiraComment, str]]:
@@ -1508,6 +1515,7 @@ class DevelopmentStage(StageStrategy):
                 result.summary,
                 merge_conflicts=ctx.record.outputs.get("merge_conflicts", []),
                 base=ctx.cfg.repository.base_branch,
+                session_open=SessionRegistry(ctx.cfg.runtime.state_dir).development(ctx.key) is not None,
             ),
             f"c{n}",
         )

@@ -114,7 +114,8 @@ permission_profile = "local_pilot"
 #                           # you ask for there are published: a development session's as a
 #                           # new candidate (the ticket returns to Ready for verification), a
 #                           # specification, plan or release proposal session's as the next
-#                           # revision for review
+#                           # revision for review. Verification waits until you end a
+#                           # development session (/exit), so it runs once on the final candidate
 # idle_close_hours = 12
 
 [approvals]

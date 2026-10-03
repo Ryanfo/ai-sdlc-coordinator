@@ -522,7 +522,15 @@ next candidate (Claude never pushes), says so in Jira, and moves the ticket back
 verification** so the new candidate is verified and reviewed again; earlier code and
 acceptance approvals no longer count. This happens while the ticket is in Ready for
 verification, Code review, Acceptance review or Changes requested and no run is working on it;
-otherwise the change waits and the terminal says why. It needs three transitions in Jira,
+otherwise the change waits and the terminal says why.
+
+**Verification waits until you end the development session.** While it is open, the ticket stays
+in Ready for verification and no review or verification runs, so a series of small changes
+costs one round of review and verification rather than one per change. Type `/exit` in the
+session (or run `delivery close <ticket>`) when you have finished: a change Claude finished
+making that had not been pushed yet is pushed first, then review and verification start on the
+next poll, on that latest candidate. Closing the terminal window does not end the session (it
+only detaches it), so it does not start verification. It needs three transitions in Jira,
 named **Submit follow-up changes**, from Code review, Acceptance review and Changes requested to
 Ready for verification (`delivery workflow verify --yes` checks them once they exist).
 
@@ -536,15 +544,17 @@ is, so no Jira transitions are needed. This happens while the ticket is in that 
 **After acting on changes you asked for in Jira** (`CHANGE …`, `SUBMIT CHANGES …`, `REVISE
 SCOPE …` or verification findings), Claude ends the session by listing each item and what it did
 ("The changes requested in Jira have been actioned: …") and asks whether you would like any
-further changes. If not, close the window (that only detaches it; `delivery attach` reopens it).
-Anything else you ask for there is picked up straight away as above. Once the coordinator has
+further changes. If not, close the window (that only detaches it; `delivery attach` reopens it),
+or in a development session type `/exit`, which starts verification. Anything else you ask for
+there is picked up straight away as above. Once the coordinator has
 published the result, it brings that session up: a terminal window opens on it if none is
 attached, with a note on the status line. Every development session ends by asking too. A change
 request still needs both the comment and the Jira action; a comment alone never starts work.
 
 A session closes when you type `/exit` (or `delivery close <ticket>`), after `idle_close_hours`
 with nothing happening, when a new run of the same stage starts for the ticket, or when the
-ticket is done or cancelled. Its conversation is kept with the run's logs
+ticket is done or cancelled. A development session left open therefore holds verification for
+up to `idle_close_hours` (default 12). Its conversation is kept with the run's logs
 (`claude-<procedure>-after`), and changes that were never pushed are saved: as the unfinished
 work the next development run continues from, or as a patch whose path the terminal prints.
 Set `keep_open = false` to close sessions as soon as the result is handed over.
@@ -553,7 +563,7 @@ Set `keep_open = false` to close sessions as soon as the result is handed over.
 |---|---|
 | `delivery attach PILOT-123` | Open the ticket's session in this terminal (`Ctrl-b d` leaves it running) |
 | `delivery sessions` | Every Claude session in tmux: working, or open for questions; and running apps |
-| `delivery close PILOT-123` | End a session left open for questions |
+| `delivery close PILOT-123` | End a session left open for questions (for development, verification then starts) |
 | `delivery preview PILOT-123` | Open the app running from the ticket's development session, or start it again |
 
 ### Trying the change in your browser
@@ -576,7 +586,7 @@ command = ["npm", "run", "dev"]
 
 Then ask for changes in the development session that is still open: with a dev server that
 reloads, they show in the browser as Claude makes them, and each one is pushed as a new
-candidate as described above. The app stops when the session closes. `delivery preview
+candidate as described above; verification starts once you `/exit` the session. The app stops when the session closes. `delivery preview
 PILOT-123` opens it again, or starts it again if it stopped, and `delivery attach PILOT-123
 --procedure preview` shows its output. Like the coordinator's checks, it runs as you, outside
 Claude's sandbox, without your credentials ([security boundary](docs/security-boundary.md)).

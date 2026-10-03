@@ -466,7 +466,8 @@ def _coordinator_routes() -> tuple[Route, ...]:
 
 # A developer can keep talking to a finished development session (interactive sessions with
 # keep_open). The coordinator publishes changes made there as a new candidate, which must be
-# verified and reviewed again, so the ticket returns to Ready for verification.
+# verified and reviewed again, so the ticket returns to Ready for verification (where it waits
+# until that session has closed: see delivery.open_sessions).
 FOLLOW_UP_SOURCES = (Status.CODE_REVIEW, Status.ACCEPTANCE_REVIEW, Status.CHANGES_REQUESTED)
 FOLLOW_UP_STATUSES = frozenset({Status.READY_VERIFICATION, *FOLLOW_UP_SOURCES})
 FOLLOW_UP_ROUTES: tuple[Route, ...] = tuple(

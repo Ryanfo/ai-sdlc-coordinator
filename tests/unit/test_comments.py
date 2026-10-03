@@ -61,4 +61,7 @@ def test_questions_blocked_and_waiting_name_the_ready_status(stage: str) -> None
 def test_candidate_and_done_say_nothing_is_needed() -> None:
     cand = comments.candidate_ready(1, "sha", "pr", "summary")
     assert "**Moving into Ready for verification**" in first_lines(cand) and "Nothing to do" in cand
+    assert "start by themselves" in cand
+    held = comments.candidate_ready(1, "sha", "pr", "summary", session_open=True)
+    assert "start once the developer closes the Claude session" in first_lines(held)
     assert "Nothing more to do" in comments.done("sha", "prod", "u", "merge commit")

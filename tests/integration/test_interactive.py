@@ -108,6 +108,20 @@ async def _to_development(w: World, sup: Supervisor) -> None:
     w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
 
 
+async def _exit_development(w: World, sup: Supervisor) -> None:
+    """The developer types /exit in the open development session and the coordinator closes it."""
+    dev = _open(w, "implement-ticket")
+    assert dev is not None and sup.open is not None
+    _type(w, dev.name, "/exit")
+    await _until(lambda: not _alive(w, dev.name))
+    await sup.open.tick()
+    assert _open(w, "implement-ticket") is None
+
+
+def _verifications(w: World) -> int:
+    return sum(i["procedure"] == "verify-ticket" for i in w.invocations())
+
+
 async def test_development_session_stays_open_and_follow_ups_are_published(world: World) -> None:
     w = world
     w.new_ticket(KEY)
@@ -117,6 +131,7 @@ async def test_development_session_stays_open_and_follow_ups_are_published(world
         await _to_development(w, sup)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.READY_VERIFICATION, w.last_comment(KEY)
+        assert "start once the developer closes the Claude session" in w.last_comment(KEY)
         c1 = w.record(KEY)
         dev = _open(w, "implement-ticket")
         assert dev is not None and _alive(w, dev.name)
@@ -125,6 +140,11 @@ async def test_development_session_stays_open_and_follow_ups_are_published(world
         # The session ran in tmux with exactly the coordinator's environment.
         inv = next(i for i in w.invocations() if i["procedure"] == "implement-ticket")
         assert inv["interactive"] and "TMPDIR" in inv["env_keys"] and "TMUX" not in inv["env_keys"]
+
+        # Verification waits while the session is open, so the changes asked for there are
+        # verified once, together.
+        assert await step(sup) == []
+        assert w.jira.status_of(KEY) is Status.READY_VERIFICATION
 
         # The developer asks for a change while the ticket waits for verification.
         stops = _stops(dev)
@@ -136,43 +156,77 @@ async def test_development_session_stays_open_and_follow_ups_are_published(world
         assert _show(w, f"feature/{KEY}:src/followup.ts") == "export const followup = 1\n"
         assert "EDIT src/followup.ts" in _show(w, f"feature/{KEY}")  # the request is in the commit
         assert "Follow-up change: candidate c2" in w.last_comment(KEY)
+        assert "they start once the developer closes the session" in w.last_comment(KEY)
         assert w.jira.status_of(KEY) is Status.READY_VERIFICATION  # no move needed
-
-        # Verification runs on the new candidate; then another change sends it back.
-        await step(sup)
-        assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
-        dev = _open(w, "implement-ticket")
-        assert dev is not None
-        stops = _stops(dev)
-        _type(w, dev.name, "EDIT src/followup.ts export const followup = 2")
-        await _until(lambda: _stops(dev) > stops)
-        await sup.open.tick()
-        c3 = w.record(KEY)
-        assert c3.candidate_number == 3
-        assert w.jira.status_of(KEY) is Status.READY_VERIFICATION
-        assert "moved from Code review back to Ready for verification" in w.last_comment(KEY)
-        code = [g for g in c3.gates if g.kind is GateKind.CODE]
-        assert code and all(g.state is GateState.SUPERSEDED for g in code), "c2's code gate no longer counts"
-        # The coordinator's own move back is accepted: verification runs again, on c3.
-        await step(sup)
-        assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
-        assert w.token(KEY, "CODE").endswith("3")
+        assert await step(sup) == [], "still open, so still not verified"
 
         # Questions only: no changes, nothing published.
         stops = _stops(dev)
         _type(w, dev.name, "why did you name it followup?")
         await _until(lambda: _stops(dev) > stops)
         await sup.open.tick()
-        assert w.record(KEY).candidate_number == 3
+        assert w.record(KEY).candidate_number == 2
 
-        # /exit closes it: the conversation is kept with the run's logs, the worktree goes.
+        # One more change and /exit straight away, before the coordinator has looked: the change
+        # is pushed as it closes. The conversation is kept with the run's logs, the worktree goes.
+        stops = _stops(dev)
+        _type(w, dev.name, "EDIT src/followup.ts export const followup = 2")
+        await _until(lambda: _stops(dev) > stops)
         _type(w, dev.name, "/exit")
         await _until(lambda: not _alive(w, dev.name))
         await sup.open.tick()
         assert _open(w, "implement-ticket") is None
+        assert w.record(KEY).candidate_number == 3
+        assert _show(w, f"feature/{KEY}:src/followup.ts") == "export const followup = 2\n"
+        assert "has closed the session, so they start now" in w.last_comment(KEY)
         assert not Path(dev.worktree).exists()
         after = Path(dev.journal_dir) / "logs" / "claude-implement-ticket-after.jsonl"
         assert "why did you name it followup?" in after.read_text()
+
+        # Verification runs once, on the final candidate.
+        assert _verifications(w) == 0
+        await step(sup)
+        assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
+        assert w.token(KEY, "CODE").endswith("3")
+        assert _verifications(w) == 1
+
+
+async def test_a_change_after_verification_sends_the_ticket_back(world: World) -> None:
+    """A development session still open once its candidate is in Code review (verified by an
+    older coordinator, which did not wait for the session to close)."""
+    w = world
+    w.new_ticket(KEY)
+    w.submit(KEY)
+    async with Supervisor(w.deps) as sup:
+        assert sup.open is not None
+        await _to_development(w, sup)
+        await step(sup)
+        dev = _open(w, "implement-ticket")
+        assert dev is not None
+        entry = w.cfg.runtime.state_dir / "open-sessions" / f"{dev.name}.json"
+        saved = entry.read_bytes()
+        entry.unlink()
+        await step(sup)
+        entry.write_bytes(saved)
+        assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
+
+        stops = _stops(dev)
+        _type(w, dev.name, "EDIT src/followup.ts export const followup = 1")
+        await _until(lambda: _stops(dev) > stops)
+        await sup.open.tick()
+        c2 = w.record(KEY)
+        assert c2.candidate_number == 2
+        assert w.jira.status_of(KEY) is Status.READY_VERIFICATION
+        assert "moved from Code review back to Ready for verification" in w.last_comment(KEY)
+        code = [g for g in c2.gates if g.kind is GateKind.CODE]
+        assert code and all(g.state is GateState.SUPERSEDED for g in code), "c1's code gate no longer counts"
+        # It waits for the session like any candidate; then the coordinator's own move back is
+        # accepted and verification runs again, on c2.
+        assert await step(sup) == []
+        await _exit_development(w, sup)
+        await step(sup)
+        assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
+        assert w.token(KEY, "CODE").endswith("2")
 
 
 async def test_stop_hook_keeps_claude_working_until_the_result_is_valid(world: World) -> None:
@@ -271,6 +325,7 @@ async def _to_review(w: World, sup: Supervisor, stage: Stage) -> None:
         return
     w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
     await step(sup)
+    await _exit_development(w, sup)
     await step(sup)
     pr = w.record(KEY).pr_number
     assert pr is not None
@@ -393,6 +448,7 @@ async def test_change_requests_and_development_end_by_asking_what_else(world: Wo
     assert ask not in plan
     (dev,) = _prompts(w, "implement-ticket")
     assert ask in dev and "next candidate" in dev and "actioned" not in dev
+    assert "type /exit to end this session: review and verification" in dev
     assert "starting the app" not in dev, "no app preview is configured"
 
 
@@ -489,6 +545,7 @@ async def test_after_actioning_change_requests_the_session_is_brought_up(tmp_pat
             sup.open.opener, sup.open.attach_wait = opener, 0
             await _to_development(w, sup)
             await step(sup)  # c1: no change requests, so nothing is brought up
+            await _exit_development(w, sup)
             await step(sup)  # verification fails: R1 for the failed check
             assert w.jira.status_of(KEY) is Status.CHANGES_REQUESTED
             assert opened == []

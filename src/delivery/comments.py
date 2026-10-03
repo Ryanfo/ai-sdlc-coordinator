@@ -486,11 +486,17 @@ def candidate_ready(
     *,
     merge_conflicts: list[dict[str, Any]] | None = None,
     base: str = "main",
+    session_open: bool = False,
 ) -> str:
+    starts = (
+        "once the developer closes the Claude session, which stays open for further changes"
+        if session_open
+        else "by themselves"
+    )
     lines = [
         f"## Implementation candidate c{candidate_no} ready for verification",
         f"**Moving into {_into(Status.DEVELOPING, Action.COMPLETE_DEVELOPMENT)}**: independent review "
-        "and verification start by themselves. Nothing to do yet.",
+        f"and verification start {starts}. Nothing to do yet.",
         f"PR: {pr_url} · commit `{sha}`",
         "",
         summary,
@@ -505,7 +511,22 @@ def candidate_ready(
     return "\n".join(lines)
 
 
-def follow_up(candidate_no: int, sha: str, url: str, requests: list[str], was_in: str, moved: bool) -> str:
+def follow_up(
+    candidate_no: int,
+    sha: str,
+    url: str,
+    requests: list[str],
+    was_in: str,
+    moved: bool,
+    *,
+    ended: bool = False,
+) -> str:
+    """A candidate pushed from the open development session (``ended``: as it closed)."""
+    starts = (
+        "the developer has closed the session, so they start now"
+        if ended
+        else "they start once the developer closes the session"
+    )
     lines = [
         f"## Follow-up change: candidate c{candidate_no}",
         f"Commit `{sha}`: {url}",
@@ -517,9 +538,10 @@ def follow_up(candidate_no: int, sha: str, url: str, requests: list[str], was_in
         "approvals do not cover it.",
     ]
     lines.append(
-        f"The ticket moved from {was_in} back to Ready for verification; review and verification start again."
+        f"The ticket moved from {was_in} back to Ready for verification. Review and verification "
+        f"run again; {starts}."
         if moved
-        else "Verification of the new candidate starts automatically."
+        else f"Review and verification run on the latest candidate; {starts}."
     )
     return "\n".join(lines)
 

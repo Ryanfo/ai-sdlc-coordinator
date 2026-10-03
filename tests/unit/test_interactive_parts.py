@@ -417,7 +417,9 @@ def test_change_requests_and_development_get_a_closing_message() -> None:
     note = closing_note("implement-ticket", ["F1", "R1"])
     assert "change requests from Jira: F1, R1" in note
     assert "The changes requested in Jira have been actioned" in note
-    assert "pushes them as the next candidate" in note and "close this window" in note
+    assert "pushes them as the next candidate" in note
+    assert "type /exit to end this session" in note and "start then, not before" in note
+    assert "close this window" not in note, "closing the window does not start verification"
     spec = closing_note("refine-ticket", ["F1"], document=Path("/out/specification.md"))
     assert "The changes requested in Jira have been actioned" in spec
     assert "edit /out/specification.md in place" in spec and "next revision of the specification" in spec

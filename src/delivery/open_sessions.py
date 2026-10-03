@@ -2,15 +2,20 @@
 
 With ``[claude.interactive] keep_open``, a session that has handed a valid result to the
 coordinator stays open in tmux (delivery.interactive) so the developer can keep asking Claude
-about the work. The coordinator carries on with the ticket meanwhile. This module tracks those
-sessions in ``<state_dir>/open-sessions`` (so they survive a coordinator restart) and:
+about the work. The coordinator carries on with the ticket meanwhile, except that it does not
+verify a candidate while its development session is open (the supervisor holds the ticket in
+Ready for verification): every change asked for there is a new candidate, and verifying each
+one would repeat the whole review. This module tracks those sessions in
+``<state_dir>/open-sessions`` (so they survive a coordinator restart) and:
 
 * publishes follow-up changes from development sessions. When Claude finishes a reply and the
   feature worktree differs from the published candidate, the coordinator (never Claude, which
   has no Git credentials) commits and pushes the change as the next candidate, supersedes the
   code and later approvals, comments on the ticket and moves it back to Ready for verification.
   It only does this while the ticket is in Ready for verification, Code review, Acceptance
-  review or Changes requested and no run is working on it; otherwise the change waits;
+  review or Changes requested and no run is working on it; otherwise the change waits. When the
+  session is ended, a reply not yet published is published before it closes, so the candidate
+  verified next includes it;
 * publishes follow-up changes from specification, plan and release proposal sessions. When
   Claude finishes a reply and the document in its output directory has changed, the
   coordinator publishes it as the next revision for review, through the stage's own
@@ -199,6 +204,10 @@ class SessionRegistry:
     def for_ticket(self, key: str) -> list[OpenRecord]:
         return [r for r in self.all() if r.ticket_key == key]
 
+    def development(self, key: str) -> OpenRecord | None:
+        """The ticket's open development session: verification waits until it has closed."""
+        return next((r for r in self.for_ticket(key) if r.stage is Stage.DEVELOPMENT), None)
+
     def held_worktrees(self, run_id: str) -> set[str]:
         return {w for r in self.all() if r.run_id == run_id for w in r.worktrees}
 
@@ -333,7 +342,14 @@ class OpenSessions:
         if new:
             rec.events_seen = len(events)
             self.registry.save(rec)
+        follow_ups = self.cfg.claude.interactive.follow_ups
         if not await self.tmux.alive(rec.name):
+            # Publish what Claude finished since the last check before closing: the candidate
+            # verified once a development session closes must include it.
+            if follow_ups and (rec.unchecked_stops or rec.held):
+                if self.is_running(rec.ticket_key) or rec.ticket_key in self.busy:
+                    return
+                await self._follow_up(rec, ended=True)
             await self.close(rec, "the session was ended")
             return
         limit = timedelta(hours=self.cfg.claude.interactive.idle_close_hours)
@@ -351,11 +367,8 @@ class OpenSessions:
             if status in TERMINAL_STATUSES:
                 await self.close(rec, f"{rec.ticket_key} is {STATUS_NAMES[status]}")
                 return
-        if self.cfg.claude.interactive.follow_ups and (rec.unchecked_stops or (rec.held and full)):
-            if rec.stage is Stage.DEVELOPMENT:
-                await self.follow_up(rec)
-            elif rec.stage in DOCUMENTS:
-                await self.follow_up_document(rec)
+        if follow_ups and (rec.unchecked_stops or (rec.held and full)):
+            await self._follow_up(rec)
         if (
             rec.stage is Stage.DEVELOPMENT
             and self.cfg.preview.enabled
@@ -371,7 +384,15 @@ class OpenSessions:
         return True
 
     # ------------------------------------------------------------------ follow-ups
-    async def follow_up(self, rec: OpenRecord) -> None:
+    async def _follow_up(self, rec: OpenRecord, ended: bool = False) -> None:
+        if rec.stage is Stage.DEVELOPMENT:
+            await self.follow_up(rec, ended)
+        elif rec.stage in DOCUMENTS:
+            await self.follow_up_document(rec)
+
+    async def follow_up(self, rec: OpenRecord, ended: bool = False) -> None:
+        """Push the session's changes as the next candidate (``ended``: the session has just
+        closed, so verification of it starts now)."""
         key = rec.ticket_key
         if self.is_running(key) or key in self.busy:
             return  # checked again on the next tick, once that run has published
@@ -422,7 +443,7 @@ class OpenSessions:
             if protected:
                 self._note(rec, f"protected paths cannot change in a feature ticket: {protected[:5]}")
                 return
-            await self._publish(rec, ctx, base, head, changed)
+            await self._publish(rec, ctx, base, head, changed, ended)
         except BranchDiverged:
             self._note(rec, f"feature/{key} changed on GitHub; reconcile the branch by hand (no force push)")
         except (TicketMoved, PublicationUncertain, PublicationError, IntegrationError, GitError) as exc:
@@ -430,7 +451,9 @@ class OpenSessions:
         finally:
             self.busy.discard(key)
 
-    async def _publish(self, rec: OpenRecord, ctx: Any, base: str, head: str, changed: list[str]) -> None:
+    async def _publish(
+        self, rec: OpenRecord, ctx: Any, base: str, head: str, changed: list[str], ended: bool
+    ) -> None:
         from delivery.gates import gate_token, supersede_for_new_revision
 
         key, repo, wt = rec.ticket_key, self.deps.repo, Path(rec.worktree)
@@ -486,7 +509,10 @@ class OpenSessions:
         url = commit_url(self.cfg.repository.url, sha)
         moved = status is not Status.READY_VERIFICATION
         await pub.comment(
-            key, "followup", comments.follow_up(n, sha, url, prompts, STATUS_NAMES[status], moved), f"c{n}"
+            key,
+            "followup",
+            comments.follow_up(n, sha, url, prompts, STATUS_NAMES[status], moved, ended=ended),
+            f"c{n}",
         )
         if moved:
             await pub.transition(key, status, Action.SUBMIT_FOLLOW_UP, revision=f"c{n}")
@@ -495,9 +521,11 @@ class OpenSessions:
         rec.pending_prompts, rec.unchecked_stops, rec.held = [], 0, ""
         self.registry.save(rec)
         self.emit(
-            console.follow_up_published(self.cfg, key, n, sha, len(changed), STATUS_NAMES[status], prompts)
+            console.follow_up_published(
+                self.cfg, key, n, sha, len(changed), STATUS_NAMES[status], prompts, ended=ended
+            )
         )
-        await self.tmux.message(rec.name, f"Pushed as c{n}; {key} is Ready for verification again")
+        await self.tmux.message(rec.name, f"Pushed as c{n}; verification starts when you /exit this session")
 
     # ------------------------------------------------------------------ document follow-ups
     async def follow_up_document(self, rec: OpenRecord) -> None:

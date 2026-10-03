@@ -9,7 +9,7 @@ from typing import Any
 
 from delivery.comments import STAGE_TITLES
 from delivery.config import Config
-from delivery.models import RunRecord, RunState, utcnow
+from delivery.models import Outcome, RunRecord, RunState, utcnow
 from delivery.workflow import STAGES, STATUS_NAMES, Stage
 
 WIDTH = 78
@@ -93,16 +93,30 @@ def session_started(
 
 
 def follow_up_published(
-    cfg: Config, key: str, n: int, sha: str, files: int, was_in: str, asked: list[str]
+    cfg: Config,
+    key: str,
+    n: int,
+    sha: str,
+    files: int,
+    was_in: str,
+    asked: list[str],
+    *,
+    ended: bool = False,
 ) -> str:
+    starts = "start now" if ended else "start once you close the session"
     return block(
         f"FOLLOW-UP  Development  {key}  -  pushed as c{n}",
         [
             ("Asked", "; ".join(asked)[:300]),
             ("Commit", f"{sha[:12]}  ({files} file{'s' if files != 1 else ''} changed)"),
-            ("Status", f"{was_in} -> Ready for verification (verification and review start again)"),
+            ("Status", f"{was_in} -> Ready for verification (verification and review {starts})"),
             ("Jira", ticket_url(cfg, key)),
-            ("Session", f"still open: delivery attach {key}"),
+            (
+                "Session",
+                "closed"
+                if ended
+                else f"still open: delivery attach {key}; type /exit in it when you have finished",
+            ),
         ],
     )
 
@@ -195,7 +209,10 @@ def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path
     picked_up = ""
     if cfg.claude.interactive.follow_ups:
         if record.stage is Stage.DEVELOPMENT:
-            picked_up = " (changes you ask for are pushed as a new candidate)"
+            picked_up = " (changes you ask for are pushed as a new candidate"
+            if record.outcome is Outcome.COMPLETED:
+                picked_up += "; verification and review start once you type /exit in it"
+            picked_up += ")"
         elif record.stage in (Stage.REFINEMENT, Stage.PLANNING, Stage.RELEASE_PREPARATION):
             picked_up = " (changes you ask for are published as the next revision for review)"
     return block(

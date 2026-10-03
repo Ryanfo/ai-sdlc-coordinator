@@ -18,6 +18,7 @@ from delivery.git import BranchDiverged, GitError, WorktreeConflict
 from delivery.intake import Intake, IntakeKind, TicketContext, brief_text, load_context
 from delivery.journal import RunJournal, new_run_id
 from delivery.models import Outcome, RunRecord, RunState, digest, utcnow
+from delivery.open_sessions import SessionRegistry
 from delivery.ports import IntegrationError, UncertainResult
 from delivery.publication import (
     PublicationError,
@@ -451,7 +452,12 @@ class StageExecutor:
                 "outcome": outcome,
                 "ended_at": utcnow(),
                 "reason": d.reason[:2000],
-                "next_action": d.action or _next_action(d.outcome, rc.record.stage),
+                "next_action": d.action
+                or _next_action(
+                    d.outcome,
+                    rc.record.stage,
+                    session_open=SessionRegistry(rc.cfg.runtime.state_dir).development(rc.key) is not None,
+                ),
             }
         )
         rc.save("published", outcome=d.outcome)
@@ -504,13 +510,16 @@ class StageExecutor:
         rc.save("failed", reason=reason)
 
 
-def _next_action(outcome: str, stage: Stage) -> str:
+def _next_action(outcome: str, stage: Stage, *, session_open: bool = False) -> str:
     ready = STATUS_NAMES[STAGES[stage].ready]
     return {
         "success": {
             Stage.REFINEMENT: "Review the specification in Jira; approving moves it into Ready for planning.",
             Stage.PLANNING: "Review the plan in Jira; approving moves it into Ready for development.",
-            Stage.DEVELOPMENT: "Nothing yet: it moves into Ready for verification and verification starts.",
+            Stage.DEVELOPMENT: "Ask for any further changes in the development session, then type /exit "
+            "in it: verification and review start once it is closed."
+            if session_open
+            else "Nothing yet: it moves into Ready for verification and verification starts.",
             Stage.VERIFICATION: "Independent GitHub review, then Approve code in Jira "
             "(moves into Acceptance review).",
             Stage.RELEASE_PREPARATION: "Review the release proposal; approving moves it into "

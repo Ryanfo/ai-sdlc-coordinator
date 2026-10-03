@@ -306,6 +306,17 @@ class Supervisor:
         self, ctx: TicketContext, stage: Stage, report: PollReport, adopt: bool = False
     ) -> None:
         key = ctx.key
+        dev = self.open.registry.development(key) if self.open and stage is Stage.VERIFICATION else None
+        if dev is not None:
+            # Each change asked for in that session is pushed as a new candidate. Verify once,
+            # after the developer has finished with it, rather than once per change.
+            report.waiting.append({"ticket": key, "reason": VERIFY_AFTER_CLOSE})
+            self._note_once(
+                f"{key}:{dev.name}:verification",
+                f"{key}: verification and review wait until you close its development session "
+                f"(type /exit in it, or `delivery close {key}`)",
+            )
+            return
         foreign = (
             ctx.record.current_state in ACTIVE_RUN_STATES
             and ctx.record.worker_id != self.cfg.identity.worker_id
@@ -701,5 +712,6 @@ class Supervisor:
 
 TERMINAL = frozenset({RunState.AWAITING_HUMAN, RunState.COMPLETED, RunState.FAILED, RunState.BLOCKED})
 OPEN_SESSION_TICK_SECONDS = 3.0
+VERIFY_AFTER_CLOSE = "its development session is still open; verification starts once it is closed"
 
 __all__ = ["JournalCorrupt", "LockHeld", "PollReport", "Supervisor"]

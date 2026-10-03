@@ -863,8 +863,9 @@ def cmd_close(args: argparse.Namespace) -> int:
     for n in found:
         asyncio.run(_tmux(cfg).kill(n))
     print(
-        f"Ended {', '.join(found)}. The running coordinator keeps the conversation in the run's logs, "
-        "saves any unpublished changes and removes the worktree within a few seconds."
+        f"Ended {', '.join(found)}. Within a few seconds the running coordinator publishes changes Claude "
+        "finished making, keeps the conversation in the run's logs, saves anything else unpublished "
+        "and removes the worktree. Verification of a development session's candidate starts then."
     )
     return EXIT_OK
 
