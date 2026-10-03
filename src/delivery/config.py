@@ -20,6 +20,7 @@ import json
 import os
 import re
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
@@ -385,10 +386,46 @@ class ClaudeConfig(StrictModel):
         return v
 
 
+class Accounts:
+    """Jira accounts whose decisions count: the listed ones, or any person when ``anyone``.
+
+    A decision still needs a human author: an automated transition (no author) never counts.
+    """
+
+    def __init__(self, ids: Iterable[str] = (), *, anyone: bool = False) -> None:
+        self.ids = frozenset(ids)
+        self.anyone = anyone
+
+    def __contains__(self, account: object) -> bool:
+        return isinstance(account, str) and bool(account) and (self.anyone or account in self.ids)
+
+    def __or__(self, other: Iterable[str]) -> Accounts:
+        return Accounts(self.ids | set(other), anyone=self.anyone)
+
+
 class ApprovalsConfig(StrictModel):
-    jira_account_ids: list[str] = Field(min_length=1)
+    # Who may approve, accept, answer and resume in Jira. Empty: anyone who can comment on
+    # and move the ticket, so a decision is never stuck waiting for one particular person.
+    jira_account_ids: list[str] = Field(default_factory=list)
     github_logins: list[str] = Field(default_factory=list)
     require_independent_github_review: bool = True
+
+    @property
+    def anyone(self) -> bool:
+        return not self.jira_account_ids
+
+    def approvers(self) -> Accounts:
+        return Accounts(self.jira_account_ids, anyone=self.anyone)
+
+    @property
+    def who(self) -> str:
+        """Who may decide, as the gate comments put it."""
+        return "anyone" if self.anyone else "authorised approvers"
+
+    @property
+    def who_answers(self) -> str:
+        """Who may answer questions and resume, as the comments put it."""
+        return "anyone" if self.anyone else "the assignee or an approver"
 
     @field_validator("jira_account_ids")
     @classmethod
@@ -510,7 +547,7 @@ class Config(StrictModel):
     repository: RepositoryConfig
     runtime: RuntimeConfig
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
-    approvals: ApprovalsConfig
+    approvals: ApprovalsConfig = ApprovalsConfig()
     release: ReleaseConfig = ReleaseConfig()
     checks: ChecksConfig = ChecksConfig()
     workflow: WorkflowConfig = WorkflowConfig()

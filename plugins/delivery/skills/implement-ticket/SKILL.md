@@ -35,9 +35,12 @@ acceptance criterion in the approved specification is met, following the approve
 - Use the ports in `envelope.ports` for anything that listens (dev server, e2e tests): set
   `PORT` from `ports.app`. Never assume a default port; other sessions run concurrently.
 - `feedback_items` lists the changes this run must make (`F1`... findings or requested
-  changes, `R1`... problems the coordinator found), and `selected_comments` may add the
-  human's notes on them. Address each item and say how in `summary`; if an item is not a
-  code problem (for example it reports missing inputs), say so instead of changing code.
+  changes, `R1`... problems the coordinator found, `D1`... deviations from the specification
+  that a human did not accept), and `selected_comments` may add the human's notes on them.
+  Address each item and say how in `summary`; if an item is not a code problem (for example
+  it reports missing inputs), say so instead of changing code. For a `D` item, change the
+  code so it follows the approved specification for that behaviour, as the human's note
+  says; leave other changes made during development alone.
 
 ## Steps
 

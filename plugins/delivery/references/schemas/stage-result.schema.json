@@ -37,6 +37,72 @@
       "title": "ArtifactRef",
       "type": "object"
     },
+    "Deviation": {
+      "additionalProperties": false,
+      "description": "Working behaviour that differs from the approved specification (added, changed or,\nwhen the developer asked for it, dropped). Not a defect: a human decides whether it is\nacceptable. Accepted, the specification is rewritten to include it; not accepted,\ndevelopment changes the code to follow the specification.",
+      "properties": {
+        "id": {
+          "pattern": "^D\\d{1,3}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "criterion_id": {
+          "anyOf": [
+            {
+              "pattern": "^AC\\d{1,3}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Criterion Id"
+        },
+        "requested": {
+          "default": false,
+          "title": "Requested",
+          "type": "boolean"
+        },
+        "request": {
+          "default": "",
+          "maxLength": 1000,
+          "title": "Request",
+          "type": "string"
+        },
+        "spec_change": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Spec Change",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "maxLength": 400,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        }
+      },
+      "required": [
+        "id",
+        "description"
+      ],
+      "title": "Deviation",
+      "type": "object"
+    },
     "Evidence": {
       "additionalProperties": false,
       "properties": {
@@ -70,7 +136,8 @@
             "met",
             "not_met",
             "unverified",
-            "defined"
+            "defined",
+            "deviates"
           ],
           "title": "Status",
           "type": "string"
@@ -436,6 +503,14 @@
       },
       "maxItems": 200,
       "title": "Findings",
+      "type": "array"
+    },
+    "deviations": {
+      "items": {
+        "$ref": "#/$defs/Deviation"
+      },
+      "maxItems": 50,
+      "title": "Deviations",
       "type": "array"
     },
     "evidence": {

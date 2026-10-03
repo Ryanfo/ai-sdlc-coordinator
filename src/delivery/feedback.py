@@ -8,6 +8,7 @@ ambiguous the ticket stays paused and the human is told exactly how to resubmit.
 from __future__ import annotations
 
 import re
+from collections.abc import Container
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -39,6 +40,7 @@ class DecisionKind(StrEnum):
     RECORD_RELEASE = "RECORD RELEASE"
     REVISE_SCOPE = "REVISE SCOPE"
     SUBMIT_CHANGES = "SUBMIT CHANGES"
+    ACCEPT_DEVIATIONS = "ACCEPT DEVIATIONS"
     ANSWERS = "ANSWERS"
 
 
@@ -51,6 +53,7 @@ _TOKEN_KIND: dict[DecisionKind, str] = {
     DecisionKind.APPROVE_CODE: "CODE",
     DecisionKind.CHANGE_CODE: "CODE",
     DecisionKind.SUBMIT_CHANGES: "CODE",
+    DecisionKind.ACCEPT_DEVIATIONS: "CODE",
     DecisionKind.ACCEPT_DELIVERY: "ACCEPT",
     DecisionKind.CHANGE_ACCEPTANCE: "ACCEPT",
     DecisionKind.APPROVE_RELEASE: "RELEASE",
@@ -60,11 +63,13 @@ _TOKEN_KIND: dict[DecisionKind, str] = {
 
 _HEADER = re.compile(
     r"^(?P<verb>APPROVE|CHANGE|ACCEPT|RECORD|REVISE|SUBMIT)\s+"
-    r"(?P<subject>SPEC|PLAN|CODE|DELIVERY|ACCEPTANCE|RELEASE|SCOPE|CHANGES)\s+"
+    r"(?P<subject>SPEC|PLAN|CODE|DELIVERY|ACCEPTANCE|RELEASE|SCOPE|CHANGES|DEVIATIONS)\s+"
     r"(?P<token>\S+)\s*$"
 )
 _ANSWERS = re.compile(r"^ANSWERS\s+(?P<token>\S+)\s*$")
-_ITEM = re.compile(r"^(?P<id>[QF]\d{1,3})\s*[:.)-]\s*(?P<text>.*)$")
+_ITEM = re.compile(r"^(?P<id>[QFD]\d{1,3})\s*[:.)-]\s*(?P<text>.*)$")
+# Deviation IDs on their own, alone or as a list ("D1", "D1, D3"): accepting them needs no note.
+_D_LIST = re.compile(r"^D\d{1,3}(?:\s*[,;\s]\s*D\d{1,3})*\s*[.]?$")
 _FIELD = re.compile(r"^(?P<name>commit|environment|merged-pr|pr)\s*:\s*(?P<value>\S+)\s*$", re.I)
 
 
@@ -117,7 +122,13 @@ def parse_decision(text: str) -> Decision | None:
     for ln in body:
         if MARKER_PREFIX in ln:
             continue
-        if im := _ITEM.match(ln):
+        if _D_LIST.match(ln):
+            for did in re.findall(r"D\d{1,3}", ln):
+                if did in items:
+                    problems.append(f"{did} appears more than once")
+                items[did] = ""
+            current = None
+        elif im := _ITEM.match(ln):
             current = im.group("id")
             if current in items:
                 problems.append(f"{current} appears more than once")
@@ -196,7 +207,7 @@ def collect_answers(
     token: str,
     question_ids: list[str],
     since: datetime,
-    allowed_authors: set[str],
+    allowed_authors: Container[str],
     submitted_at: datetime | None = None,
 ) -> AnswerSet:
     """Merge several answer comments for one round. Later answers to the same ID win."""
@@ -237,16 +248,24 @@ class FeedbackSet:
     problems: tuple[str, ...]
 
 
+# Change requests against a candidate, which may name deviations (D-items) to change back.
+CANDIDATE_CHANGES = frozenset(
+    {DecisionKind.CHANGE_CODE, DecisionKind.CHANGE_ACCEPTANCE, DecisionKind.SUBMIT_CHANGES}
+)
+
+
 def collect_feedback(
     comments: list[JiraComment],
     *,
     token: str,
     kinds: set[DecisionKind],
     since: datetime | None,
-    allowed_authors: set[str],
+    allowed_authors: Container[str],
 ) -> FeedbackSet:
-    """Numbered feedback (F1, F2...) bound to one artefact or candidate token."""
+    """Numbered feedback (F1, F2...) bound to one artefact or candidate token. Changes to a
+    candidate can also name deviations from the specification to change back (D1, D2...)."""
     found = decisions(comments, token=token, kinds=kinds, since=since)
+    prefixes = ("F", "D") if kinds & CANDIDATE_CHANGES else ("F",)
     items: dict[str, str] = {}
     used: list[CommentDecision] = []
     unauthorised: list[str] = []
@@ -257,9 +276,9 @@ def collect_feedback(
             continue
         problems.extend(cd.decision.problems)
         for fid, text in cd.decision.items.items():
-            if not fid.startswith("F"):
+            if not fid.startswith(prefixes):
                 problems.append(f"comment {cd.comment.id} uses {fid}; feedback items are F1, F2...")
-            elif text:
+            elif text or fid.startswith("D"):
                 key = fid if fid not in items else f"{fid}@{cd.comment.id}"
                 items[key] = text
         used.append(cd)
@@ -322,7 +341,7 @@ def note_text(comment: JiraComment, stage: str) -> str | None:
 
 
 def claude_notes(
-    comments: list[JiraComment], *, stage: str, allowed_authors: set[str], limit: int = 10
+    comments: list[JiraComment], *, stage: str, allowed_authors: Container[str], limit: int = 10
 ) -> list[tuple[JiraComment, str]]:
     """Notes for Claude for this stage from the assignee or approvers, oldest first."""
     notes = [

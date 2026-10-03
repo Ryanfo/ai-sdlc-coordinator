@@ -16,6 +16,7 @@ decision for the current gate, a recorded release). Outcomes:
 from __future__ import annotations
 
 import re
+from collections.abc import Container
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
@@ -23,6 +24,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from delivery import deviations
 from delivery.config import Config
 from delivery.feedback import (
     DecisionKind,
@@ -141,6 +143,9 @@ class Intake:
     blocker_kind: str = ""
     gate_token: str | None = None
     release_record: dict[str, Any] | None = None
+    # Deviations from the specification an approver accepted: the run has Claude rewrite the
+    # specification to include them before its own work (delivery.deviations).
+    accepted_deviations: list[str] = field(default_factory=list)
 
     def persisted(self) -> dict[str, Any]:
         return {
@@ -158,6 +163,7 @@ class Intake:
             "blocker_kind": self.blocker_kind,
             "gate_token": self.gate_token,
             "release_record": self.release_record,
+            "accepted_deviations": self.accepted_deviations,
         }
 
     @classmethod
@@ -181,6 +187,7 @@ class Intake:
             data.get("blocker_kind", ""),
             data.get("gate_token"),
             data.get("release_record"),
+            list(data.get("accepted_deviations") or []),
         )
 
     def material(self, brief_digest: str) -> dict[str, Any]:
@@ -202,6 +209,7 @@ class Intake:
             "items": sorted(self.feedback_items.items()),
             "decided_gates": sorted(decided, key=str),
             "release": self.release_record,
+            "accepted_deviations": self.accepted_deviations,
         }
 
 
@@ -264,13 +272,17 @@ _JIRA_GATES: dict[GateKind, tuple[Status, Status, Status, DecisionKind, set[Deci
 }
 
 
+# Stages that rewrite the specification first when deviations were accepted.
+AMENDING_STAGES = frozenset({Stage.DEVELOPMENT, Stage.VERIFICATION, Stage.RELEASE_PREPARATION})
+
+
 class IntakeEvaluator:
     def __init__(self, cfg: Config, github: GitHubPort | None) -> None:
         self.cfg = cfg
         self.github = github
         self.ids = {s: sid for s, sid in cfg.workflow.statuses.items()}
         self.by_id = cfg.status_by_id()
-        self.approvers = set(cfg.approvals.jira_account_ids)
+        self.approvers = cfg.approvals.approvers()
         self.humans = self.approvers | {cfg.identity.developer_jira_account_id}
 
     # ------------------------------------------------------------------ helpers
@@ -318,7 +330,7 @@ class IntakeEvaluator:
         change_to: Status | None,
         approve: DecisionKind,
         change: set[DecisionKind],
-        approvers: set[str] | None = None,
+        approvers: Container[str] | None = None,
     ) -> GateEval:
         return evaluate_human_gate(
             gate,
@@ -423,7 +435,49 @@ class IntakeEvaluator:
                     kind="missing_prerequisite",
                     entry=entry,
                 )
+            if stage in AMENDING_STAGES:
+                return self._deviation_decisions(ctx, stage, result)
         return result
+
+    def _deviation_decisions(self, ctx: TicketContext, stage: Stage, intake: Intake) -> Intake:
+        """Deviations an approver accepted since verification announced them: this run first
+        has the specification rewritten to include them. Release preparation waits until
+        every deviation of the accepted candidate is decided, so the specification describes
+        what is released."""
+        rec = intake.record or ctx.record
+        pending = deviations.open_deviations(rec)
+        if not pending:
+            return intake
+        token = make_gate_token(ctx.key, GateKind.CODE, rec.candidate_number)
+        acc = deviations.accepted(ctx.comments, rec, token=token, approvers=self.approvers)
+        # Named for change in this run's change request: that explicit request wins.
+        ids = [d for d in acc.ids if d not in intake.feedback_items]
+        undecided = [d.id for d in pending if d.id not in ids]
+        if stage is Stage.RELEASE_PREPARATION and undecided:
+            return self._wait(
+                stage,
+                f"deviations from the approved specification are not decided: {', '.join(undecided)}"
+                + (f" ({'; '.join(acc.problems)})" if acc.problems else ""),
+                f"If they are acceptable, an approver comments `{DecisionKind.ACCEPT_DEVIATIONS.value} "
+                f"{token}` (add a line with the IDs to accept only some). Claude then rewrites the "
+                "specification to include them and release preparation starts. Changing them back "
+                "needs Request code changes or Request acceptance changes before delivery is accepted.",
+                intake.entry,
+            )
+        if not ids:
+            return intake
+        seen = {c.id for c in intake.selected}
+        intake.selected += [cd.comment for cd in acc.comments if cd.comment.id not in seen]
+        intake.accepted_deviations = ids
+        note = f"deviations {', '.join(ids)} accepted (the specification is rewritten to include them)"
+        if acc.problems:
+            note += f"; ignored: {'; '.join(acc.problems)}"
+        if stage is Stage.VERIFICATION:
+            # Not "verified again": a candidate that already passed is not reviewed again.
+            intake.reason = f"candidate c{rec.candidate_number}; {note}"
+        else:
+            intake.reason = f"{intake.reason}; {note}" if intake.reason else note
+        return intake
 
     async def _resume(self, ctx: TicketContext, stage: Stage, src: Status, entry: StatusChange) -> Intake:
         rec = ctx.record
@@ -820,6 +874,7 @@ class IntakeEvaluator:
         items: dict[str, str] = {}
         selected: list[JiraComment] = []
         token: str | None = None
+        chosen_d: dict[str, str] = {}
         if origin is Status.VERIFYING:
             for f in rec.pending_feedback:
                 items[str(f.get("id"))] = str(f.get("description"))
@@ -864,11 +919,13 @@ class IntakeEvaluator:
             sub = [cd for cd in sub if cd.comment.author_account_id in self.humans]
             if sub:
                 chosen = set(sub[-1].decision.items)
+                chosen_d = {k: v for k, v in sub[-1].decision.items.items() if k.startswith("D")}
                 if chosen:
                     # R-items are problems the coordinator found (failed checks, conflicts with
                     # the base branch): the next candidate cannot pass without them.
                     items = {k: v for k, v in items.items() if k.split("@")[0] in chosen or k.startswith("R")}
                 selected.append(sub[-1].comment)
+        items = self._deviation_items(rec, items, chosen_d)
         if not items:
             return self._wait(
                 stage,
@@ -885,6 +942,19 @@ class IntakeEvaluator:
             feedback_token=token,
             feedback_items=items,
         )
+
+    def _deviation_items(
+        self, rec: SharedExecutionRecord, items: dict[str, str], named: dict[str, str]
+    ) -> dict[str, str]:
+        """Deviations named in the change request (`D2: <note>`) become work items that change
+        the code back to the specification. Deviations nobody named are left as they are."""
+        known = {d.id: d for d in deviations.open_deviations(rec)}
+        out = {k: v for k, v in items.items() if not k.startswith("D")}
+        for key, note in [*[(k, v) for k, v in items.items() if k.startswith("D")], *named.items()]:
+            did = key.split("@")[0]
+            if did in known and did not in out:
+                out[did] = deviations.change_back(known[did], note)
+        return out
 
     async def _req_stage_success(
         self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange

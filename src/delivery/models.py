@@ -96,11 +96,29 @@ class Finding(Model):
     related_tickets: list[str] = Field(default_factory=list, max_length=20)
 
 
+class Deviation(Model):
+    """Working behaviour that differs from the approved specification (added, changed or,
+    when the developer asked for it, dropped). Not a defect: a human decides whether it is
+    acceptable. Accepted, the specification is rewritten to include it; not accepted,
+    development changes the code to follow the specification."""
+
+    id: str = Field(pattern=r"^D\d{1,3}$")
+    description: str = Field(min_length=1, max_length=4000)
+    criterion_id: str | None = Field(default=None, pattern=r"^AC\d{1,3}$")
+    # The developer asked for it (in the open Claude session, a note or a change request).
+    requested: bool = False
+    request: str = Field(default="", max_length=1000)
+    # Wording the specification would need to describe the code as it is.
+    spec_change: str = Field(default="", max_length=4000)
+    path: str | None = Field(default=None, max_length=400)
+
+
 class Evidence(Model):
     criterion_id: str = Field(pattern=r"^AC\d{1,3}$")
     description: str = Field(min_length=1, max_length=2000)
     path: str | None = Field(default=None, max_length=400)
-    status: Literal["met", "not_met", "unverified", "defined"] = "defined"
+    # `deviates`: the criterion is implemented differently on purpose (see `deviations`).
+    status: Literal["met", "not_met", "unverified", "defined", "deviates"] = "defined"
 
 
 class WorkerCheck(Model):
@@ -155,6 +173,7 @@ class StageResult(Model):
     artifacts: list[ArtifactRef] = Field(default_factory=list, max_length=200)
     questions: list[Question] = Field(default_factory=list, max_length=50)
     findings: list[Finding] = Field(default_factory=list, max_length=200)
+    deviations: list[Deviation] = Field(default_factory=list, max_length=50)
     evidence: list[Evidence] = Field(default_factory=list, max_length=200)
     worker_checks: list[WorkerCheck] = Field(default_factory=list, max_length=50)
     footprint: FootprintProposal | None = None
@@ -166,6 +185,7 @@ class StageResult(Model):
         for label, ids in (
             ("question", [q.id for q in self.questions]),
             ("finding", [f.id for f in self.findings]),
+            ("deviation", [d.id for d in self.deviations]),
             ("artifact path", [a.path for a in self.artifacts]),
         ):
             if len(ids) != len(set(ids)):
@@ -518,6 +538,22 @@ PROPERTY_KEY = "delivery.execution"
 PROPERTY_MAX_BYTES = 24 * 1024
 
 
+class DeviationRecord(Model):
+    """A deviation found by verification, as kept in the shared record (the full text is in
+    ``deviations.json`` next to the review on the delivery branch)."""
+
+    id: str = Field(pattern=r"^D\d{1,3}$")
+    summary: str = Field(max_length=400)
+    criterion_id: str | None = None
+    requested: bool = False
+    candidate: int
+    # When the comment announcing it was posted (Jira's clock): decisions must come later.
+    announced_at: datetime | None = None
+    state: Literal["open", "accepted"] = "open"
+    # The specification revision that took it in, once accepted.
+    spec_revision: int | None = None
+
+
 class SharedExecutionRecord(Model):
     """Compact shared record stored as a Jira issue property.
 
@@ -551,6 +587,8 @@ class SharedExecutionRecord(Model):
     # No longer written (overlaps never pause work); kept so earlier records still load.
     overlap_decisions: dict[str, str] = Field(default_factory=dict)
     pending_feedback: list[dict[str, Any]] = Field(default_factory=list)
+    # Deviations from the approved specification found by the latest verification.
+    deviations: list[DeviationRecord] = Field(default_factory=list)
     release: dict[str, Any] = Field(default_factory=dict)
     history: list[dict[str, Any]] = Field(default_factory=list)
 

@@ -6,6 +6,11 @@
 | Criterion | Observation | Command / test | Status |
 |---|---|---|---|
 
+## Deviations observed
+Criteria that work as built but differ from the specification (review `D` IDs, or new ones).
+| ID | Criterion | Observation |
+|---|---|---|
+
 ## Commands run
 | Command | Result | Notes |
 |---|---|---|

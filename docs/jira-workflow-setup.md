@@ -28,7 +28,7 @@ Strict worker/human separation needs a paid plan and a separate worker account.
 |---|---|
 | Administrator | Workflow, field, scheme and board configuration (setup only) |
 | Developer (runs a supervisor) | Browse, comment, transition, edit issue properties; assignable |
-| Approver | Comment and perform approval transitions; listed in each developer's config |
+| Approver | Comment and perform approval transitions. Anyone, unless `[approvals] jira_account_ids` lists specific people |
 | GitHub reviewer | A human other than the PR author |
 | Release owner | Merges, releases, records the release |
 

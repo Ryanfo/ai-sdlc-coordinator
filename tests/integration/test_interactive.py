@@ -229,6 +229,29 @@ async def test_a_change_after_verification_sends_the_ticket_back(world: World) -
         assert w.token(KEY, "CODE").endswith("2")
 
 
+async def test_a_specification_rewrite_session_closes_once_it_hands_over(world: World) -> None:
+    """Accepting a deviation runs amend-spec; its session must not linger as if it were a
+    development session (verification would wait for it to close)."""
+    w = world
+    green = {"id": "D1", "description": "The button is green.", "requested": True}
+    w.scenario({"review-ticket": [{"deviations": [green]}, {}]})
+    w.new_ticket(KEY)
+    w.submit(KEY)
+    async with Supervisor(w.deps) as sup:
+        await _to_development(w, sup)
+        await step(sup)
+        await _exit_development(w, sup)
+        await step(sup)
+        assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
+        w.decide(KEY, f"ACCEPT DEVIATIONS {KEY}-CODE-c1", Status.READY_VERIFICATION)
+        assert await step(sup) == [KEY]
+        assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
+        assert w.token(KEY, "SPEC") == f"{KEY}-SPEC-v2"
+        assert any(i["procedure"] == "amend-spec" for i in w.invocations())
+        assert _open(w, "amend-spec") is None
+        assert SessionRegistry(w.cfg.runtime.state_dir).development(KEY) is None
+
+
 async def test_stop_hook_keeps_claude_working_until_the_result_is_valid(world: World) -> None:
     w = world
     w.scenario({"refine-ticket": [{"forget_result": 2}]})

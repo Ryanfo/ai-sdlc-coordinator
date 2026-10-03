@@ -221,7 +221,15 @@ def check_config(cfg: Config, report: Report) -> None:
         )
     else:
         report.add("config", "resume stage field", "ok", cfg.jira.fields.resume_stage)
-    if cfg.identity.developer_jira_account_id in cfg.approvals.jira_account_ids:
+    if cfg.approvals.anyone:
+        report.add(
+            "config",
+            "approvers",
+            "info",
+            "anyone who can comment on and move a ticket can approve, accept and answer "
+            "(approvals.jira_account_ids is empty); decisions still need the exact token and a human",
+        )
+    elif cfg.identity.developer_jira_account_id in cfg.approvals.jira_account_ids:
         report.add(
             "config",
             "approver separation",

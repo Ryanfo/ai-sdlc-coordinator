@@ -20,6 +20,7 @@ PROCEDURES = (
     "verify-ticket",
     "prepare-release",
     "verify-release",
+    "amend-spec",
 )
 _CONTRACT = re.compile(r"^contract_id:\s*`?(?P<id>delivery\.[a-z-]+/v\d+)`?\s*$", re.M)
 

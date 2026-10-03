@@ -18,7 +18,7 @@ from delivery.feedback import (
     change_template,
     record_release_template,
 )
-from delivery.models import CheckResult, Finding, Question, Severity
+from delivery.models import CheckResult, DeviationRecord, Finding, Question, Severity
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
 from delivery.workflow import STAGES, STATUS_NAMES, Action, Stage, StageDef, Status, route_for_action
@@ -279,12 +279,24 @@ def code_gate(
     *,
     base: str = "main",
     merge_conflicts: list[dict[str, Any]] | None = None,
+    deviations: list[DeviationRecord] | None = None,
+    approvers_only: bool = True,
 ) -> str:
+    devs = deviations or []
     lines = [
         f"## Candidate ready for code review: {code_token}",
         _ready_to_move(Status.CODE_REVIEW, Action.APPROVE_CODE, "once the code is approved")
         + f" After that, **Accept delivery** moves it into "
         f"**{_into(Status.ACCEPTANCE_REVIEW, Action.ACCEPT_DELIVERY)}**.",
+        *(
+            [
+                f"**It differs from the approved specification in {len(devs)} "
+                f"way{'s' if len(devs) != 1 else ''} that work**: decide whether each deviation "
+                "below is acceptable."
+            ]
+            if devs
+            else []
+        ),
         f"PR: {pr_url} · candidate `{candidate}`",
         f"[Independent review]({review_url}) · [Verification report]({verification_url})",
         "",
@@ -293,6 +305,7 @@ def code_gate(
     if provenance:
         lines += ["", f"CI integration provenance: {provenance}"]
     lines += conflicts_section(merge_conflicts or [], base)
+    lines += deviations_section(devs, code_token, Status.CODE_REVIEW, approvers_only=approvers_only)
     if findings:
         lines += ["", "**Non-blocking findings**:", *_by_author(findings, 15)]
     if unverified:
@@ -359,6 +372,113 @@ def _by_author(findings: list[Finding], limit: int) -> list[str]:
     return lines
 
 
+def _deviation_lines(devs: list[DeviationRecord]) -> list[str]:
+    out = []
+    for d in devs:
+        why = (
+            "asked for by the developer"
+            if d.requested
+            else "not asked for: Claude went beyond the specification"
+        )
+        where = f"; changes {d.criterion_id}" if d.criterion_id else ""
+        out.append(f"- **{d.id}** ({why}{where}): {d.summary}")
+    return out
+
+
+def deviations_section(
+    devs: list[DeviationRecord], code_token: str, here: Status, *, approvers_only: bool = True
+) -> list[str]:
+    """Working differences from the approved specification: a question, never a failure.
+
+    Accepting one rewrites the specification (no new refinement round); rejecting one sends it
+    to development. One left undecided is never changed back, but release preparation waits.
+    """
+    if not devs:
+        return []
+    accept = f"{DecisionKind.ACCEPT_DEVIATIONS.value} {code_token}"
+    who = " (an approver)" if approvers_only else ""
+    lines = [
+        "",
+        "**Deviations from the approved specification** (not failures; is each one acceptable?):",
+        *_deviation_lines(devs),
+    ]
+    if here is Status.CODE_REVIEW:
+        return [
+            *lines,
+            f"**If they are acceptable**{who}: add this comment, then choose **Submit follow-up "
+            f"changes** {_moves(Status.CODE_REVIEW, Action.SUBMIT_FOLLOW_UP)}. Claude rewrites the "
+            "specification to include them and publishes it as the approved revision, without a new "
+            "refinement round. The code is not reviewed again: the ticket comes back to Code review "
+            "with the same tokens. To accept only some, list their IDs on the lines below it.",
+            "```",
+            accept,
+            "```",
+            "**If not**: add this comment with what to do about each one, choose **Request code "
+            f"changes** {_moves(Status.CODE_REVIEW, Action.REQUEST_CODE_CHANGES)}, then **Submit "
+            "implementation changes**. A development session changes the code to follow the "
+            "specification and the new candidate is verified.",
+            "```",
+            f"{DecisionKind.CHANGE_CODE.value} {code_token}",
+            f"{devs[0].id}: <follow the specification: ...>",
+            "```",
+            "Release preparation does not start while a deviation is undecided.",
+        ]
+    return [
+        *lines,
+        f"**If they are acceptable**{who}: add this comment before choosing what happens "
+        "next (list IDs on the lines below it to accept only some). Claude rewrites the "
+        "specification to include them before development or verification runs again, without a "
+        "new refinement round.",
+        "```",
+        accept,
+        "```",
+        "**If not**: name each one with what to do in the `SUBMIT CHANGES` comment (for example "
+        f"`{devs[0].id}: follow the specification`) and choose **Submit implementation changes**: "
+        "development changes the code to follow the specification. A deviation nobody names is "
+        "left as it is.",
+    ]
+
+
+def spec_amended(
+    revision: int,
+    url: str,
+    accepted: list[DeviationRecord],
+    summary: str,
+    next_steps: list[str],
+) -> str:
+    lines = [
+        f"## Specification v{revision:03d}: accepted deviations included",
+        f"[Read specification v{revision:03d}]({url}) (pinned to the exact commit). An approver "
+        "accepted the deviations below, so this revision is the approved specification from now "
+        "on, without a new refinement or planning round.",
+        "",
+        *_deviation_lines(accepted),
+    ]
+    if summary:
+        lines += ["", f"**What changed in the specification**: {_clip(summary)}"]
+    return "\n".join([*lines, *next_steps])
+
+
+def back_to_code_review(
+    code_token: str,
+    accept_token: str,
+    candidate_no: int,
+    remaining: list[DeviationRecord],
+    *,
+    approvers_only: bool = True,
+) -> list[str]:
+    """After accepting deviations from Code review: the same candidate and tokens carry on."""
+    return [
+        "",
+        _ready_to_move(Status.CODE_REVIEW, Action.APPROVE_CODE, "once the code is approved")
+        + f" Candidate c{candidate_no} is unchanged, so the code review comment above still "
+        f"applies with the same tokens: `{approve_template(DecisionKind.APPROVE_CODE, code_token)}` "
+        f"then **Approve code**, and `{approve_template(DecisionKind.ACCEPT_DELIVERY, accept_token)}` "
+        "then **Accept delivery**.",
+        *deviations_section(remaining, code_token, Status.CODE_REVIEW, approvers_only=approvers_only),
+    ]
+
+
 def conflicts_section(conflicts: list[dict[str, Any]], base: str) -> list[str]:
     """Flag textual conflicts. They are resolved when the PR is merged, never a failure."""
     if not conflicts:
@@ -396,6 +516,8 @@ def verification_failed(
     key: str = "",
     base: str = "main",
     merge_conflicts: list[dict[str, Any]] | None = None,
+    deviations: list[DeviationRecord] | None = None,
+    approvers_only: bool = True,
 ) -> str:
     serious = [f for f in findings if f.severity in (Severity.BLOCKER, Severity.MAJOR)]
     minor = [f for f in findings if f not in serious]
@@ -450,6 +572,9 @@ def verification_failed(
         lines += ["", "**Blocking findings** (blocker/major):", *_by_author(serious, 15)]
     if minor:
         lines += ["", "**Other findings** (minor/info):", *_by_author(minor, 15)]
+    lines += deviations_section(
+        deviations or [], code_token, Status.CHANGES_REQUESTED, approvers_only=approvers_only
+    )
     lines += conflicts_section(merge_conflicts or [], base)
     lines += [
         "",

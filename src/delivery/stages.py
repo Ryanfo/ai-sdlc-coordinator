@@ -13,13 +13,14 @@ import fnmatch
 import json
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
-from delivery import comments
+from delivery import comments, deviations
 from delivery.checks import all_passed, run_checks
 from delivery.claude import ChildHandle, ClaudeInvocation, ClaudeOutcome, ClaudeStatus, OpenSession
-from delivery.feedback import claude_notes
+from delivery.feedback import DecisionKind, claude_notes, parse_decision
 from delivery.gates import (
     current_gate,
     evaluate_ci,
@@ -35,10 +36,13 @@ from delivery.models import (
     ArtifactKind,
     Brief,
     CheckResult,
+    DecisionEvidence,
+    Deviation,
     Finding,
     Footprint,
     GateKind,
     GateRecord,
+    GateState,
     InputEnvelope,
     Outcome,
     OutputContract,
@@ -161,9 +165,15 @@ CHANGES_BY_PROCEDURE = {
 }
 
 
+# Procedures whose interactive session closes once it has handed over its result: the stage
+# carries on with another procedure (a development session must not be mistaken for it).
+CLOSED_AT_HAND_OFF = frozenset({"amend-spec"})
+
+
 def change_ids(items: dict[str, str]) -> list[str]:
-    """Requested changes (F) and problems the coordinator found (R); answers (Q) are not changes."""
-    ids = {k.split("@")[0] for k in items if k[:1] in ("F", "R") and k.split("@")[0][1:].isdigit()}
+    """Requested changes (F), problems the coordinator found (R) and deviations to change back
+    (D); answers (Q) are not changes."""
+    ids = {k.split("@")[0] for k in items if k[:1] in ("F", "R", "D") and k.split("@")[0][1:].isdigit()}
     return sorted(ids, key=lambda i: (i[0], int(i[1:])))
 
 
@@ -245,6 +255,9 @@ class StageStrategy:
         # Set when publishing a document edited in this stage's open session: the ticket stays
         # in its review status and the new revision supersedes the one under review.
         self.follow_up: FollowUp | None = None
+        # The specification rewritten in this run to include accepted deviations, until
+        # publication makes it the approved revision (see amend_specification).
+        self.amended_spec: ArtefactPointer | None = None
 
     # ------------------------------------------------------------------ workspace
     async def delivery_worktree(self) -> Path:
@@ -573,7 +586,10 @@ class StageStrategy:
             )
             raise WorkerFailure(procedure, outcome, f"output rejected: {exc}{hint}") from None
         if outcome.open_session is not None:
-            self.keep_open(procedure, worktree, outcome.open_session, out_dir)
+            if procedure in CLOSED_AT_HAND_OFF:
+                await tmux_for(ctx.cfg.claude.interactive).kill(outcome.open_session.name)
+            else:
+                self.keep_open(procedure, worktree, outcome.open_session, out_dir)
         return result
 
     def keep_open(self, procedure: str, worktree: Path, session: OpenSession, out_dir: Path) -> None:
@@ -633,6 +649,195 @@ class StageStrategy:
                 result=result.model_dump(mode="json"),
             )
         return None
+
+    # ------------------------------------------------------------------ accepted deviations
+    async def spec_input(self) -> ArtefactPointer | None:
+        """The specification this run works to: rewritten in this run, or the approved one."""
+        return self.amended_spec or await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION)
+
+    async def deviation_details(self) -> dict[str, Deviation]:
+        """Full text of the latest verification's deviations (deviations.json next to its review)."""
+        ref = self.ctx.shared.artefacts.get("deviations")
+        if not ref or "@" not in ref:
+            return {}
+        path, commit = ref.rsplit("@", 1)
+        data = await self.deps.repo.show_file(commit, path)
+        if data is None:
+            return {}
+        try:
+            return {d.id: d for d in (Deviation.model_validate(x) for x in json.loads(data))}
+        except (ValueError, TypeError):
+            return {}
+
+    async def amend_specification(self) -> Decision | None:
+        """Rewrite the approved specification to include the deviations an approver accepted
+        (``intake.accepted_deviations``), without a new refinement round. The rewrite becomes
+        ``self.amended_spec`` for the rest of this run and is published, already approved, by
+        ``publish_amendment``. Returns a decision only when the rewrite could not be made."""
+        ctx = self.ctx
+        ids = list(ctx.intake.accepted_deviations)
+        if not ids:
+            return None
+        out = ctx.output_dir("amend-spec")
+        done = ctx.record.outputs.get("amendment")
+        if not done:
+            spec = await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION)
+            if spec is None:
+                return Decision(
+                    outcome="blocked",
+                    reason="the approved specification could not be read to include the accepted deviations",
+                    action="Check the delivery branch and resume.",
+                    blocker_kind="missing_input",
+                )
+            details = await self.deviation_details()
+            records = {d.id: d for d in ctx.shared.deviations}
+            items = {d: deviations.describe(details.get(d), records[d]) for d in ids if d in records}
+            revs = await self.revisions("specification")
+            rev = max([*revs, ctx.shared.spec_revision, 0]) + 1
+            candidate = ctx.shared.candidate_sha or f"origin/{ctx.cfg.repository.base_branch}"
+            wt = await self.detached_worktree("amend", candidate)
+            review = None
+            ref = ctx.shared.artefacts.get("review")
+            if ref and "@" in ref:
+                path, commit = ref.rsplit("@", 1)
+                got = await self.copy_input(commit, path, "deviations-review.md")
+                review = str(got) if got else None
+            env = self.envelope(
+                "amend-spec",
+                out,
+                required=[ArtifactKind.SPECIFICATION],
+                next_revision=rev,
+                approved=[spec],
+                review_report=review,
+                source=self.source_refs(candidate_sha=ctx.shared.candidate_sha),
+                feedback=items,
+            )
+            result = await self.run_procedure("amend-spec", wt, env)
+            if (d := self.worker_decision(result)) is not None:
+                return d.model_copy(
+                    update={
+                        "reason": f"the specification could not be rewritten to include {', '.join(ids)}: "
+                        + d.reason,
+                        "action": "Resolve what Claude reported (or change the deviations back with a "
+                        "change request), then resume.",
+                    }
+                )
+            require_artifact(result, out, ArtifactKind.SPECIFICATION, "specification.md")
+            done = {
+                "revision": rev,
+                "accepted": ids,
+                "summary": result.summary,
+                "amends": spec.revision,
+                "at": utcnow().isoformat(),
+            }
+            ctx.record.outputs["amendment"] = done
+            ctx.save("specification_amended", revision=rev, deviations=ids)
+        rev = int(done["revision"])
+        dest = ctx.inputs_dir / "approved" / f"specification-v{rev:03d}.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(out / "specification.md", dest)
+        self.amended_spec = ArtefactPointer(kind=ArtifactKind.SPECIFICATION, path=str(dest), revision=rev)
+        return None
+
+    async def publish_amendment(self, next_steps: list[str] | None = None) -> None:
+        """Publish this run's rewritten specification as the approved revision. Approval comes
+        from the approver's ``ACCEPT DEVIATIONS`` comment and the human move that started this
+        run; the plan and the candidate's gates still stand (only the specification changed, to
+        match the code). Repeating it after a crash changes nothing."""
+        ctx = self.ctx
+        done = ctx.record.outputs.get("amendment")
+        if not done:
+            return
+        rev = int(done["revision"])
+        ids = list(done["accepted"])
+        token = gate_token(ctx.key, GateKind.SPEC, rev)
+        spec_rel = f"{ctx.doc_root}/specification/v{rev:03d}.md"
+        accept = [
+            c
+            for c in ctx.intake.selected
+            if (pd := parse_decision(c.body_text)) and pd.kind is DecisionKind.ACCEPT_DEVIATIONS
+        ]
+        by = accept[-1] if accept else None
+        header = provenance_header(
+            ctx,
+            "specification",
+            f"v{rev:03d}",
+            {
+                "status": "approved (deviations accepted during development)",
+                "deviations": ",".join(ids),
+                "accepted_in_comment": by.id if by else "-",
+                "amends": f"v{int(done.get('amends', rev - 1)):03d}",
+            },
+        )
+        text = (ctx.output_dir("amend-spec") / "specification.md").read_text()
+        sha = await self.publish_files(
+            {spec_rel: header + text},
+            "spec-amended",
+            f"v{rev}",
+            f"{ctx.key}: specification v{rev:03d} (accepted deviations {', '.join(ids)})",
+        )
+        entry = ctx.intake.entry
+        at = datetime.fromisoformat(done["at"]) if done.get("at") else utcnow()
+        gate = GateRecord(
+            token=token,
+            kind=GateKind.SPEC,
+            ticket_key=ctx.key,
+            revision=rev,
+            artefact_path=spec_rel,
+            artefact_commit=sha,
+            candidate_sha=ctx.shared.candidate_sha,
+            published_at=at,
+            approvers=ctx.cfg.approvals.jira_account_ids,
+            state=GateState.APPROVED,
+            decided_at=at,
+            evidence=DecisionEvidence(
+                comment_id=by.id,
+                comment_author=by.author_account_id,
+                comment_digest=digest(by.body_text),
+                comment_updated=by.updated,
+                history_id=entry.history_id if entry else None,
+                transition_author=entry.author_account_id if entry else None,
+                transition_at=entry.created if entry else None,
+            )
+            if by
+            else None,
+        )
+        gates = [
+            g.model_copy(update={"state": GateState.SUPERSEDED, "superseded_by": token})
+            if g.kind is GateKind.SPEC and g.state is not GateState.SUPERSEDED
+            else g
+            for g in ctx.shared.gates
+            if g.token != token
+        ]
+        n = ctx.shared.candidate_number
+        devs = [
+            d.model_copy(update={"state": "accepted", "spec_revision": rev})
+            if d.id in ids and d.candidate == n and d.state == "open"
+            else d
+            for d in ctx.shared.deviations
+        ]
+        url = blob_url(ctx.cfg.repository.url, sha, spec_rel)
+        ctx.shared = ctx.shared.model_copy(
+            update={
+                "gates": [*gates, gate],
+                "spec_revision": rev,
+                "artefacts": {**ctx.shared.artefacts, "specification": f"{spec_rel}@{sha}"},
+                "deviations": devs,
+                "updated_at": utcnow(),
+            }
+        )
+        await self.announce(
+            "spec-amended",
+            comments.spec_amended(
+                rev,
+                url,
+                [d for d in devs if d.id in ids and d.candidate == n],
+                str(done.get("summary", "")),
+                next_steps or [],
+            ),
+            f"v{rev}",
+        )
+        await ctx.publisher().save_record(ctx.key, ctx.shared, "spec-amended")
 
     # ------------------------------------------------------------------ publication helpers
     async def publish_files(self, files: dict[str, str], op_type: str, revision: str, message: str) -> str:
@@ -872,7 +1077,7 @@ class RefinementStage(StageStrategy):
             await self.announce(
                 "questions",
                 comments.questions(
-                    token, url, result.questions, "the assignee or an approver", self.stage.value
+                    token, url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value
                 ),
                 f"r{n}",
                 pause=True,
@@ -898,7 +1103,7 @@ class RefinementStage(StageStrategy):
         )
         await self.announce(
             "spec-gate",
-            comments.spec_gate(token, url, rev, self.gate_summary(result.summary), "authorised approvers"),
+            comments.spec_gate(token, url, rev, self.gate_summary(result.summary), ctx.cfg.approvals.who),
             f"v{rev}",
             gate_tokens=(token,),
         )
@@ -1083,7 +1288,7 @@ class PlanningStage(StageStrategy):
             await self.announce(
                 "questions",
                 comments.questions(
-                    token, url, result.questions, "the assignee or an approver", self.stage.value
+                    token, url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value
                 ),
                 f"r{n}",
                 pause=True,
@@ -1119,7 +1324,7 @@ class PlanningStage(StageStrategy):
                 blob_url(ctx.cfg.repository.url, sha, fp_rel),
                 rev,
                 self.gate_summary(result.summary),
-                "authorised approvers",
+                ctx.cfg.approvals.who,
                 overlap,
             ),
             f"v{rev}",
@@ -1201,7 +1406,11 @@ class DevelopmentStage(StageStrategy):
         start_sha = ctx.record.outputs.get("start_sha") or await repo.worktree_head(wt)
         ctx.record.outputs["start_sha"] = start_sha
         ctx.save("worktree_ready", start_sha=start_sha)
-        spec = await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION)
+        # Deviations accepted alongside the change request go into the specification first, so
+        # development keeps them while it makes the other changes.
+        if (d := await self.amend_specification()) is not None:
+            return d
+        spec = await self.spec_input()
         plan = await self.approved_input(GateKind.PLAN, ArtifactKind.PLAN)
         if spec is None or plan is None:
             return Decision(
@@ -1389,6 +1598,7 @@ class DevelopmentStage(StageStrategy):
     async def publish(self, d: Decision) -> None:
         ctx = self.ctx
         pub = ctx.publisher()
+        await self.publish_amendment()
         if d.outcome == "blocked":
             await self.publish_block(d, Status.DEVELOPING)
             return
@@ -1420,7 +1630,7 @@ class DevelopmentStage(StageStrategy):
             await self.announce(
                 "questions",
                 comments.questions(
-                    token, pr_url, result.questions, "the assignee or an approver", self.stage.value
+                    token, pr_url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value
                 ),
                 f"r{n}",
                 pause=True,
@@ -1562,13 +1772,34 @@ class VerificationStage(StageStrategy):
                 blocker_kind="candidate_changed",
                 resume_stage=Stage.DEVELOPMENT.value,
             )
+        if (d := await self.amend_specification()) is not None:
+            return d
+        if self.amended_spec is not None and self.verified_before(candidate):
+            # Accepted from Code review: this candidate already passed review and verification,
+            # and the behaviour now in the specification is what they observed. Nothing to redo.
+            return Decision(
+                outcome="amended",
+                reason=f"specification v{self.amended_spec.revision:03d} includes the accepted "
+                f"deviations {', '.join(ctx.intake.accepted_deviations)}; candidate "
+                f"c{ctx.shared.candidate_number} was already reviewed and verified",
+                extra={"candidate": candidate},
+            )
         base = ctx.cfg.repository.base_branch
         base_sha = await repo.remote_sha(base) or ""
-        spec = await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION)
+        spec = await self.spec_input()
         plan = await self.approved_input(GateKind.PLAN, ArtifactKind.PLAN)
         approved = [a for a in (spec, plan) if a]
         diff = await repo.git("diff", f"{base_sha}...{candidate}")
         (ctx.inputs_dir / "candidate.diff").write_text(diff.stdout)
+        # What the developer asked for in the open session is in the follow-up commit messages:
+        # the reviewer uses it to tell intended deviations from the specification apart.
+        log = await repo.git(
+            "log",
+            "--format=%h %s%n%n%b%n----",
+            f"{base_sha}..{candidate}" if base_sha else candidate,
+            check=False,
+        )
+        (ctx.inputs_dir / "candidate-commits.txt").write_text(log.stdout)
         from delivery.coordination import Coordinator
 
         coord = Coordinator(self.deps)
@@ -1698,6 +1929,11 @@ class VerificationStage(StageStrategy):
             *review.findings,
             *[f.model_copy(update={"id": f"F{100 + i}"}) for i, f in enumerate(verify.findings, 1)],
         ]
+        # Differences from the specification that work are questions for a human, never a failure.
+        found = [
+            *review.deviations,
+            *[x.model_copy(update={"id": f"D{100 + i}"}) for i, x in enumerate(verify.deviations, 1)],
+        ]
         not_met = sorted(
             {e.criterion_id for e in [*review.evidence, *verify.evidence] if e.status == "not_met"}
         )
@@ -1707,7 +1943,7 @@ class VerificationStage(StageStrategy):
         reasons = list(problems)
         if serious:
             reasons.append(f"{len(serious)} blocker/major findings ({', '.join(f.id for f in serious)})")
-        verified = {e.criterion_id for e in verify.evidence if e.status == "met"}
+        verified = {e.criterion_id for e in verify.evidence if e.status in ("met", "deviates")}
         unverified = sorted({e.criterion_id for e in [*review.evidence, *verify.evidence]} - verified)
         extra = {
             "candidate": candidate,
@@ -1721,15 +1957,21 @@ class VerificationStage(StageStrategy):
             "ci_pending": bool(ci and ci.pending),
             "ci_provenance": provenance,
             "findings": [f.model_dump(mode="json") for f in findings],
+            "deviations": [x.model_dump(mode="json") for x in found],
             "unverified": unverified,
             "overlap": findings_json(overlap),
             "review": review.model_dump(mode="json"),
             "verify": verify.model_dump(mode="json"),
         }
         outcome = "verification_failed" if reasons else "success"
+        passed = "verification passed" + (
+            f" with {len(found)} deviation{'s' if len(found) != 1 else ''} from the specification to decide"
+            if found
+            else ""
+        )
         return Decision(
             outcome=outcome,
-            reason="; ".join(reasons) or "verification passed",
+            reason="; ".join(reasons) or passed,
             action="In Jira: Submit implementation changes to fix (moves into Ready for development), "
             f"or Revise scope. `delivery inspect {ctx.key}` shows why."
             if reasons
@@ -1737,6 +1979,11 @@ class VerificationStage(StageStrategy):
             result=verify.model_dump(mode="json"),
             extra=extra,
         )
+
+    def verified_before(self, candidate: str) -> bool:
+        """The candidate passed review and verification: its code gate is the current one."""
+        code = current_gate(self.ctx.shared.gates, GateKind.CODE)
+        return code is not None and code.candidate_sha == candidate
 
     async def setup_and_check(
         self,
@@ -1846,11 +2093,16 @@ class VerificationStage(StageStrategy):
     async def publish(self, d: Decision) -> None:
         ctx = self.ctx
         pub = ctx.publisher()
+        if d.outcome == "amended":
+            await self.publish_amended()
+            return
+        await self.publish_amendment()
         if d.outcome == "blocked":
             await self.publish_block(d, Status.VERIFYING)
             return
         candidate = d.extra["candidate"]
         rdir = f"{ctx.doc_root}/reviews/{ctx.run_id}"
+        found = [Deviation.model_validate(x) for x in d.extra.get("deviations", [])]
         meta = {
             "candidate_sha": candidate,
             "base_sha": d.extra.get("base_sha"),
@@ -1879,6 +2131,10 @@ class VerificationStage(StageStrategy):
             + "\n",
             f"{ctx.doc_root}/executions/{ctx.run_id}.json": self.execution_summary(d, meta),
         }
+        if found:
+            files[f"{rdir}/deviations.json"] = (
+                json.dumps([x.model_dump(mode="json") for x in found], indent=2, sort_keys=True) + "\n"
+            )
         sha = await self.publish_files(files, "reports", ctx.run_id, f"{ctx.key}: verification {ctx.run_id}")
         repo_url = ctx.cfg.repository.url
         review_url = blob_url(repo_url, sha, f"{rdir}/review.md")
@@ -1889,15 +2145,20 @@ class VerificationStage(StageStrategy):
         pr_url = f"{repo_url.removesuffix('.git')}/pull/{ctx.shared.pr_number}"
         code_token = gate_token(ctx.key, GateKind.CODE, n)
         accept_token = gate_token(ctx.key, GateKind.ACCEPT, n)
+        artefacts = {k: v for k, v in ctx.shared.artefacts.items() if k != "deviations"}
+        if found:
+            artefacts["deviations"] = f"{rdir}/deviations.json@{sha}"
+        records = deviations.to_records(found, n)
         base = {
             "current_run_id": ctx.run_id,
             "current_stage": self.stage,
             "updated_at": utcnow(),
             "artefacts": {
-                **ctx.shared.artefacts,
+                **artefacts,
                 "review": f"{rdir}/review.md@{sha}",
                 "verification": f"{rdir}/verification.md@{sha}",
             },
+            "deviations": records,
         }
         conflicts = list(d.extra.get("merge_conflicts", []))
         base_branch = ctx.cfg.repository.base_branch
@@ -1914,7 +2175,7 @@ class VerificationStage(StageStrategy):
                     + [{"id": f"R{i}", "description": r} for i, r in enumerate(problems, 1)],
                 }
             )
-            await self.announce(
+            posted = await self.announce(
                 "verification-failed",
                 comments.verification_failed(
                     code_token,
@@ -1929,9 +2190,12 @@ class VerificationStage(StageStrategy):
                     key=ctx.key,
                     base=base_branch,
                     merge_conflicts=conflicts,
+                    deviations=records,
+                    approvers_only=not ctx.cfg.approvals.anyone,
                 ),
                 candidate[:12],
             )
+            self._stamp_deviations(posted)
             await pub.save_record(ctx.key, ctx.shared, "verification-failed")
             await pub.transition(ctx.key, Status.VERIFYING, Action.VERIFICATION_FAILED)
             return
@@ -1969,7 +2233,7 @@ class VerificationStage(StageStrategy):
         from delivery.coordination import Coordinator
 
         await Coordinator(self.deps).publish_warnings(ctx, overlap)
-        await self.announce(
+        posted = await self.announce(
             "code-gate",
             comments.code_gate(
                 code_token,
@@ -1988,11 +2252,51 @@ class VerificationStage(StageStrategy):
                 ),
                 base=base_branch,
                 merge_conflicts=conflicts,
+                deviations=records,
+                approvers_only=not ctx.cfg.approvals.anyone,
             ),
             f"c{n}",
             gate_tokens=(code_token, accept_token),
         )
+        self._stamp_deviations(posted)
         await pub.save_record(ctx.key, ctx.shared, "code-gate")
+        await pub.transition(ctx.key, Status.VERIFYING, Action.COMPLETE_VERIFICATION)
+
+    def _stamp_deviations(self, posted: Posted) -> None:
+        """Decisions about deviations count from the comment that announced them (Jira's clock)."""
+        sh = self.ctx.shared
+        devs = [
+            d.model_copy(update={"announced_at": posted.created}) if d.announced_at is None else d
+            for d in sh.deviations
+        ]
+        self.ctx.shared = sh.model_copy(update={"deviations": devs})
+
+    async def publish_amended(self) -> None:
+        """Deviations accepted from Code review: publish the rewritten specification and return
+        the unchanged candidate to Code review. Its gates and tokens stay as they were."""
+        ctx = self.ctx
+        n = ctx.shared.candidate_number
+        accepted = set(ctx.intake.accepted_deviations)
+        remaining = [d for d in deviations.open_deviations(ctx.shared) if d.id not in accepted]
+        await self.publish_amendment(
+            comments.back_to_code_review(
+                gate_token(ctx.key, GateKind.CODE, n),
+                gate_token(ctx.key, GateKind.ACCEPT, n),
+                n,
+                remaining,
+                approvers_only=not ctx.cfg.approvals.anyone,
+            )
+        )
+        ctx.shared = ctx.shared.model_copy(
+            update={
+                "current_run_id": ctx.run_id,
+                "current_stage": self.stage,
+                "current_state": RunState.AWAITING_HUMAN,
+                "updated_at": utcnow(),
+            }
+        )
+        pub = ctx.publisher()
+        await pub.save_record(ctx.key, ctx.shared, "amended")
         await pub.transition(ctx.key, Status.VERIFYING, Action.COMPLETE_VERIFICATION)
 
 
@@ -2038,11 +2342,13 @@ class ReleasePreparationStage(StageStrategy):
                     use_actual=True,
                 ),
             )
+        if (d := await self.amend_specification()) is not None:
+            return d
         wt = await self.detached_worktree("release", candidate)
         approved = [
             a
             for a in (
-                await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION),
+                await self.spec_input(),
                 await self.approved_input(GateKind.PLAN, ArtifactKind.PLAN),
             )
             if a
@@ -2094,6 +2400,7 @@ class ReleasePreparationStage(StageStrategy):
     async def publish(self, d: Decision) -> None:
         ctx = self.ctx
         pub = ctx.publisher()
+        await self.publish_amendment()
         if d.outcome == "blocked":
             await self.publish_block(d, Status.PREPARING_RELEASE)
             return
@@ -2140,7 +2447,7 @@ class ReleasePreparationStage(StageStrategy):
                 blob_url(ctx.cfg.repository.url, sha, rel),
                 rev,
                 d.extra["candidate"],
-                "authorised approvers",
+                ctx.cfg.approvals.who,
                 ctx.cfg.release.environment,
                 note=self.gate_summary(""),
             ),
