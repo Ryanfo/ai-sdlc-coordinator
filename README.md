@@ -97,7 +97,7 @@ in `~/.delivery-platform` and the `delivery` and `coordinator` commands on your 
 | The project key, and the approvers by name | Every workflow status ID and the resume stage field |
 | The application's GitHub repository, and your clone of it (it offers to clone) | The base branch and the CI checks it requires |
 | Who may approve PRs | The check commands, from the application's `package.json` |
-| Claude model, session windows, and an optional Figma token | Whether you are signed in to GitHub and Claude (it offers to sign you in) |
+| Claude model, session windows (and with them, opening the app in your browser when development finishes), and an optional Figma token | Whether you are signed in to GitHub and Claude (it offers to sign you in); the app's `dev` script for the preview |
 
 Press Enter to accept each suggested answer. It finishes by running `delivery doctor` and listing
 anything left to do; then start with `coordinator` (step 6). Run `delivery setup` again at any
