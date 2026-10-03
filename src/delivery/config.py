@@ -4,6 +4,12 @@ Rules from the handoff: one explicitly selected file, unknown keys rejected, rel
 paths resolved against the config file (never the caller's working directory), and
 secrets only ever referenced by environment variable name.
 
+A team can keep the settings that are the same for everyone on a project (Jira site and
+workflow, repository, approvers, checks, models) in one shared project file. A personal
+config then names it with ``project = "<path>"`` and holds only what is personal: identity,
+email, local folders and terminal preferences. Personal values win where both set a key; the
+project file may not contain ``[identity]``.
+
 There is deliberately no setting that limits the number of concurrent sessions.
 """
 
@@ -11,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import tomllib
 from pathlib import Path
@@ -293,9 +300,14 @@ class PreviewConfig(StrictModel):
         return bool(self.command)
 
 
+def bundled_plugin_path() -> Path:
+    """The delivery plugin of this installation (``plugins/delivery`` next to ``src``)."""
+    return Path(__file__).resolve().parents[2] / "plugins" / "delivery"
+
+
 class ClaudeConfig(StrictModel):
     executable: str = "claude"
-    plugin_path: Path
+    plugin_path: Path = Field(default_factory=bundled_plugin_path)
     auth_profile: Literal["subscription"] = "subscription"
     # Turn limit for procedures not listed in turn_limits (built-in defaults raise it for the
     # long procedures). The loop and stall guardrails are the main protection, not this.
@@ -497,7 +509,7 @@ class Config(StrictModel):
     jira: JiraConfig
     repository: RepositoryConfig
     runtime: RuntimeConfig
-    claude: ClaudeConfig
+    claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     approvals: ApprovalsConfig
     release: ReleaseConfig = ReleaseConfig()
     checks: ChecksConfig = ChecksConfig()
@@ -508,6 +520,7 @@ class Config(StrictModel):
 
     # Set by load_config; not part of the file.
     source_path: Path | None = Field(default=None, exclude=True)
+    project_path: Path | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def _paths_outside_checkout(self) -> Config:
@@ -556,23 +569,112 @@ def _format_error(err: dict[str, Any]) -> str:
     return f"{loc}: {msg}" if loc else msg
 
 
+# Settings that belong to one developer and machine: a shared project file never sets them,
+# and `delivery project export` leaves them out. None means the whole table.
+PERSONAL_KEYS: dict[str, frozenset[str] | None] = {
+    "identity": None,
+    "jira": frozenset({"email", "email_env", "token_env", "token_keychain_service"}),
+    "repository": frozenset({"checkout_path", "worktree_root"}),
+    "runtime": frozenset({"state_dir"}),
+    "claude": frozenset({"executable", "plugin_path", "interactive"}),
+    "figma": frozenset({"token_keychain_service", "token_account", "token_env"}),
+}
+
+
+def personal_keys_in(raw: dict[str, Any]) -> list[str]:
+    """Dotted names of the personal settings present in ``raw``."""
+    found = []
+    for table, keys in PERSONAL_KEYS.items():
+        body = raw.get(table)
+        if not isinstance(body, dict):
+            continue
+        found += [table] if keys is None else [f"{table}.{k}" for k in sorted(keys) if k in body]
+    return found
+
+
+def split_personal(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split a full config into (shared project settings, personal settings)."""
+    project: dict[str, Any] = {}
+    personal: dict[str, Any] = {}
+    for table, body in raw.items():
+        keys = PERSONAL_KEYS.get(table, frozenset())
+        if not isinstance(body, dict):
+            (personal if table in ("config_version", "project") else project)[table] = body
+        elif keys is None:
+            personal[table] = body
+        else:
+            mine = {k: v for k, v in body.items() if k in keys}
+            team = {k: v for k, v in body.items() if k not in keys}
+            if mine:
+                personal[table] = mine
+            if team:
+                project[table] = team
+    return project, personal
+
+
+def merge_tables(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    """``over`` on top of ``base``: tables merge key by key, anything else is replaced."""
+    out = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = merge_tables(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _read_toml(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("rb") as fh:
+            return tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(path, [f"invalid TOML: {exc}"]) from None
+
+
+def default_config_path() -> Path:
+    return Path(os.environ.get("DELIVERY_CONFIG") or Path.home() / "delivery.local.toml")
+
+
 def load_config(path: Path) -> Config:
     path = path.expanduser()
     if not path.is_absolute():
         path = Path.cwd() / path
     path = Path(_normalise(path))
     if not path.is_file():
-        raise ConfigError(path, ["config file not found; create one with `delivery init`"])
-    try:
-        with path.open("rb") as fh:
-            raw = tomllib.load(fh)
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(path, [f"invalid TOML: {exc}"]) from None
+        raise ConfigError(
+            path, ["config file not found; create one with `coordinator setup` (or `delivery init`)"]
+        )
+    raw = _read_toml(path)
+    project_path: Path | None = None
+    if "project" in raw:
+        ref = raw.pop("project")
+        if not isinstance(ref, str) or not ref:
+            raise ConfigError(path, ["project: must be the path of the shared project file"])
+        project_path = Path(ref).expanduser()
+        if not project_path.is_absolute():
+            project_path = path.parent / project_path
+        project_path = Path(_normalise(project_path))
+        if not project_path.is_file():
+            raise ConfigError(path, [f"project: shared project file {project_path} not found"])
+        shared = _read_toml(project_path)
+        personal = personal_keys_in(shared)
+        if personal:
+            raise ConfigError(
+                project_path,
+                [
+                    f"{k} is personal; set it in your own config, not the shared project file"
+                    for k in personal
+                ],
+            )
+        raw = merge_tables(shared, raw)
     try:
         cfg = Config.model_validate(raw, context={"base_dir": str(path.parent)})
     except ValidationError as exc:
-        raise ConfigError(path, [_format_error(dict(e)) for e in exc.errors()]) from None
-    return cfg.model_copy(update={"source_path": path})
+        problems = [_format_error(dict(e)) for e in exc.errors()]
+        if project_path:
+            problems.append(f"(settings come from {path} on top of the project file {project_path})")
+        raise ConfigError(path, problems) from None
+    return cfg.model_copy(update={"source_path": path, "project_path": project_path})
 
 
 def template_text() -> str:

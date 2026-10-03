@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from delivery import comments
 from delivery.attachments import ATTACHMENT_STAGES, fetch_attachments
-from delivery.claude import ClaudeStatus
+from delivery.claude import HUMAN_ACTION, ClaudeStatus
 from delivery.designs import fetch_designs, figma_links
 from delivery.git import BranchDiverged, GitError, WorktreeConflict
 from delivery.intake import Intake, IntakeKind, TicketContext, brief_text, load_context
@@ -23,6 +23,7 @@ from delivery.ports import IntegrationError, UncertainResult
 from delivery.publication import (
     PublicationError,
     PublicationUncertain,
+    Publisher,
     TicketMoved,
 )
 from delivery.resources import ResourceExhausted
@@ -38,6 +39,25 @@ class StopRequested(Exception):
         self.reason = reason
         self.hold = hold
         super().__init__(reason)
+
+
+# Run output key: the run stopped because Claude could not be used and waits for it.
+WAITING_FOR_CLAUDE = "waiting_for_claude"
+
+
+class ClaudeUnavailable(Exception):
+    """Claude's login is missing or expired, or the usage limit is reached.
+
+    Nothing about the ticket is wrong, so it is not blocked: the run waits (interrupted, not
+    held) and the supervisor resumes it once a probe shows Claude works again.
+    """
+
+    def __init__(self, failure: WorkerFailure) -> None:
+        assert failure.outcome is not None
+        self.kind = "auth" if failure.outcome.status is ClaudeStatus.AUTH else "usage_limit"
+        self.procedure = failure.procedure
+        self.detail = failure.detail
+        super().__init__(failure.detail)
 
 
 def scoped_digest(ctx: TicketContext, selected_ids: list[str]) -> str:
@@ -112,6 +132,8 @@ class StageExecutor:
             await self._publish(rc, strategy, decision)
         except StopRequested as stop:
             await self._interrupt(rc, stop.reason, hold=stop.hold)
+        except ClaudeUnavailable as exc:
+            await self._wait_for_claude(rc, exc)
         except asyncio.CancelledError:
             reason = rc.stop_reason or "supervisor shutdown"
             await asyncio.shield(self._interrupt(rc, reason, hold=rc.stop_hold))
@@ -315,6 +337,8 @@ class StageExecutor:
                 return await self._stale_decision(rc, stale)
             raise
         except WorkerFailure as exc:
+            if exc.outcome and exc.outcome.status in HUMAN_ACTION:
+                raise ClaudeUnavailable(exc) from exc
             return self._worker_failure_decision(rc, exc)
         except OutputInvalid as exc:
             return Decision(
@@ -477,6 +501,41 @@ class StageExecutor:
             }
         )
         rc.save("interrupted", reason=reason, hold=hold)
+
+    async def _wait_for_claude(self, rc: RunContext, exc: ClaudeUnavailable) -> None:
+        rc.record.outputs[WAITING_FOR_CLAUDE] = {
+            "kind": exc.kind,
+            "procedure": exc.procedure,
+            "detail": exc.detail,
+            "at": utcnow().isoformat(),
+        }
+        rc.record = rc.record.model_copy(
+            update={
+                "state": RunState.INTERRUPTED,
+                "held": False,
+                "hold_reason": "",
+                "child": None,
+                "reason": f"waiting for Claude: {exc.detail}",
+                "next_action": "Continues automatically once Claude works again; nothing to do in Jira.",
+            }
+        )
+        rc.save("waiting_for_claude", kind=exc.kind, detail=exc.detail)
+        await self.notice(
+            rc,
+            "waiting-for-claude",
+            comments.claude_unavailable(rc.record.stage.value, exc.kind, rc.cfg.identity.worker_id),
+        )
+
+    async def notice(self, rc: RunContext, op: str, markdown: str) -> bool:
+        """Best-effort informational comment, journaled apart from the run's publication."""
+        journal = RunJournal(rc.cfg.runtime.state_dir / "intake" / rc.key)
+        pub = Publisher(rc.cfg, self.deps.jira, None, None, journal, f"notice-{rc.run_id}")
+        try:
+            await pub.comment(rc.key, op, markdown)
+        except Exception as exc:
+            rc.journal.events.append("notice_not_posted", {"op": op, "error": str(exc)[:300]})
+            return False
+        return True
 
     async def _moved(self, rc: RunContext, moved: TicketMoved) -> None:
         if moved.actual is Status.CANCELLED:

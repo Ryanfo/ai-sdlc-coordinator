@@ -54,10 +54,17 @@ def for_config(ic: InteractiveConfig, state_dir: Path | None = None) -> Tmux:
 
 
 class Tmux:
-    def __init__(self, executable: str = "tmux", config: Path | None = None, socket: str = SOCKET) -> None:
+    def __init__(
+        self,
+        executable: str = "tmux",
+        config: Path | None = None,
+        socket: str = SOCKET,
+        config_text: str = CONFIG,
+    ) -> None:
         self.executable = executable
         self.config = config
         self.socket = socket
+        self.config_text = config_text
 
     def path(self) -> str | None:
         return shutil.which(self.executable)
@@ -65,7 +72,7 @@ class Tmux:
     def available(self) -> bool:
         return self.path() is not None
 
-    def _argv(self, *args: str) -> list[str]:
+    def argv(self, *args: str) -> list[str]:
         argv = [self.path() or self.executable, "-L", self.socket]
         if self.config is not None:
             argv += ["-f", str(self.config)]
@@ -74,17 +81,19 @@ class Tmux:
     async def _run(self, *args: str, check: bool = True) -> ProcResult:
         try:
             # The server inherits this environment when it starts: keep it minimal.
-            res = await run_process(self._argv(*args), cwd=Path.home(), env=base_child_env(), timeout=15)
+            res = await run_process(self.argv(*args), cwd=Path.home(), env=base_child_env(), timeout=15)
         except ProcessStartError as exc:
             raise TmuxError(str(exc)) from None
         if check and res.returncode != 0:
             raise TmuxError(f"tmux {args[0]} failed: {(res.stderr or res.stdout).strip()[:300]}")
         return res
 
-    def _write_config(self) -> None:
-        if self.config is not None and (not self.config.exists() or self.config.read_text() != CONFIG):
+    def write_config(self) -> None:
+        if self.config is not None and (
+            not self.config.exists() or self.config.read_text() != self.config_text
+        ):
             self.config.parent.mkdir(parents=True, exist_ok=True)
-            self.config.write_text(CONFIG)
+            self.config.write_text(self.config_text)
 
     async def start(
         self,
@@ -97,7 +106,7 @@ class Tmux:
         height: int = 50,
     ) -> int:
         """Start ``argv`` in a new detached session with exactly ``env``. Returns its pid."""
-        self._write_config()
+        self.write_config()
         assignments = [f"{k}={v}" for k, v in env.items()]
         await self._run(
             "new-session",

@@ -178,6 +178,7 @@ class RunJournal:
     def create(self, record: RunRecord) -> None:
         if self.snapshot_path.exists():
             raise FileExistsError(self.snapshot_path)
+        ensure_private_dir(self.dir.parent)
         ensure_private_dir(self.dir)
         self.events.append("created", {"run_id": record.run_id, "stage": record.stage})
         atomic_write_json(self.snapshot_path, record)
@@ -261,6 +262,11 @@ class SupervisorRecord(Model):
     last_poll_at: datetime | None = None
     last_poll_error: str = ""
     integration_backoff: dict[str, str] = Field(default_factory=dict)
+    # Newest modification time of the coordinator's code when this supervisor started.
+    code_mtime: float | None = None
+    # Claude could not be used (login expired or usage limit): new work waits, runs that hit
+    # it resume once Claude works again. {"kind", "detail", "since", "next_check"}.
+    claude_unavailable: dict[str, str] | None = None
 
 
 @dataclass
@@ -281,7 +287,15 @@ class JournalStore:
         self.supervisor_dir = state_dir / "supervisor" / identity_key
 
     def init(self) -> None:
-        for d in (self.root, self.runs_dir, self.locks_dir, self.supervisor_dir):
+        # Parents first: mkdir(parents=True) would create them with the default mode.
+        for d in (
+            self.root,
+            self.runs_dir,
+            self.locks_dir,
+            self.root / "intake",
+            self.supervisor_dir.parent,
+            self.supervisor_dir,
+        ):
             ensure_private_dir(d)
 
     # supervisor ----------------------------------------------------------------

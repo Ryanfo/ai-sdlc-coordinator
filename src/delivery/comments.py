@@ -221,6 +221,39 @@ def waiting(stage: str, reason: str, action: str) -> str:
     )
 
 
+def claude_unavailable(stage: str, kind: str, worker_id: str) -> str:
+    title = STAGE_TITLES.get(stage, stage)
+    if kind == "auth":
+        why = "Claude Code is not signed in on this machine (the login is missing or expired)."
+        faster = f"run `claude auth login` in a terminal on `{worker_id}`."
+    else:
+        why = "the Claude subscription usage limit has been reached. No paid API fallback is used."
+        faster = "nothing; it carries on once the limit resets."
+    return "\n".join(
+        [
+            f"## {title} paused: waiting for Claude",
+            f"**Why**: {why}",
+            f"Nothing is needed in Jira. The work so far is kept and {title.lower()} continues "
+            f"automatically on `{worker_id}` as soon as Claude works again (the coordinator checks "
+            "every few minutes). New tickets wait too.",
+            f"**To speed it up**: {faster}",
+        ]
+    )
+
+
+def internal_error(stage: str, run_id: str, worker_id: str, error: str, key: str) -> str:
+    return "\n".join(
+        [
+            f"## {STAGE_TITLES.get(stage, stage)} stopped: coordinator error",
+            "The coordinator hit an internal error and stopped this run. Nothing else was "
+            f"published and the ticket stays where it is. {_session_line(run_id, worker_id)}",
+            f"**Error**: {error[:300]}",
+            f"**Next action**: on `{worker_id}`, run `coordinator recover {key} --resume` to continue "
+            "from where it stopped. `coordinator logs` shows the full error.",
+        ]
+    )
+
+
 def _checks_table(results: Iterable[CheckResult]) -> list[str]:
     rows = ["| Check | Target | Result | Commit |", "|---|---|---|---|"]
     for r in results:

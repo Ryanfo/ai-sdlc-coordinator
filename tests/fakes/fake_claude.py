@@ -295,6 +295,19 @@ def wait_for_input(hook, t, say) -> int:  # type: ignore[no-untyped-def]
     return 0
 
 
+def probe(scenario_path: Path) -> int:
+    """The coordinator's one-word availability check (``--output-format json``).
+
+    Scenario key ``probe``: behaviours in order, ``{"usage_limit": true}`` or ``{}`` (works).
+    """
+    b = next_behaviour(scenario_path, "probe", "probe")
+    if b.get("usage_limit"):
+        print(json.dumps({"type": "result", "is_error": True, "result": "Claude usage limit reached."}))
+        return 1
+    print(json.dumps({"type": "result", "is_error": False, "result": "OK", "modelUsage": {"claude-x": {}}}))
+    return 0
+
+
 def main() -> int:
     argv = sys.argv[1:]
     scenario_path = Path(argv[argv.index("--scenario") + 1])
@@ -337,6 +350,8 @@ def main() -> int:
     if "-p" not in argv:
         return interactive(argv, scenario_path)
     prompt = arg(argv, "-p") or ""
+    if prompt == "Reply with the single word OK.":
+        return probe(scenario_path)
     m = re.match(r"^/delivery:([a-z-]+) (\S+)", prompt)
     if not m:
         print("unknown prompt", file=sys.stderr)
@@ -440,6 +455,11 @@ def main() -> int:
         return 0
     print(json.dumps(init))
     if b.get("usage_limit"):
+        # The session may have changed files before it hit the limit.
+        for rel, text in (b.get("edit") or {}).items():
+            target = Path(os.getcwd()) / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
         print(
             json.dumps(
                 {
