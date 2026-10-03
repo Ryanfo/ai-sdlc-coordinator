@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 from pydantic import ValidationError
 
 from delivery import comments
-from delivery.feedback import DecisionKind, decisions
 from delivery.models import PROPERTY_KEY, Footprint, OverlapContext, SharedExecutionRecord, utcnow
 from delivery.overlap import OverlapFinding, OverlapKind, Severity, compare, warning_id
 from delivery.ownership import coordination_jql
@@ -130,7 +129,7 @@ class Coordinator:
                     OverlapFinding(
                         wid,
                         OverlapKind.DECLARED_DEPENDENCY,
-                        Severity.BLOCK,
+                        Severity.HIGH,
                         fp.ticket_key,
                         other_key,
                         None,
@@ -139,26 +138,6 @@ class Coordinator:
                     )
                 )
         return findings
-
-    def unresolved_blocks(self, findings: list[OverlapFinding], ctx: RunContext) -> list[OverlapFinding]:
-        humans = set(self.cfg.approvals.jira_account_ids) | {self.cfg.identity.developer_jira_account_id}
-        unresolved = []
-        for f in findings:
-            if f.severity is not Severity.BLOCK:
-                continue
-            ds = [
-                cd
-                for cd in decisions(ctx.ticket.comments, token=f.warning_id, kinds={DecisionKind.OVERLAP})
-                if cd.comment.author_account_id in humans
-            ]
-            choice = ds[-1].decision.choice if ds else ctx.shared.overlap_decisions.get(f.warning_id, "")
-            if choice:
-                ctx.shared = ctx.shared.model_copy(
-                    update={"overlap_decisions": {**ctx.shared.overlap_decisions, f.warning_id: choice}}
-                )
-            if choice.upper() != "PROCEED":
-                unresolved.append(f)
-        return unresolved
 
     async def interacting_candidates(self, key: str, shared: SharedExecutionRecord) -> list[tuple[str, str]]:
         """Other tickets with published candidates whose footprints overlap this ticket."""

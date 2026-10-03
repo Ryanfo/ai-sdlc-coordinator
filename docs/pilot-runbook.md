@@ -72,8 +72,8 @@ worktrees and ports; all three progress independently.
 
 - Two developers each take a ticket that changes `src/domain/filter.ts` (for example "filter by
   priority" and "filter by due date"). After both plans publish, both tickets carry the same
-  deduplicated overlap warning. If both plans declare the `TaskQuery` interface, the later
-  development is paused for a sequencing decision until `OVERLAP <id> PROCEED` and Resume.
+  deduplicated overlap warning. If both plans declare the `TaskQuery` interface, the warning
+  is marked higher risk; neither ticket is paused.
 - Fault loop: a fixture ticket "Add a deliberately failing example check" whose brief says the
   implementation must make `npm run test:unit` fail once. Verification moves it to Changes
   requested with findings; Submit implementation changes produces candidate c2.

@@ -1049,26 +1049,14 @@ class DevelopmentStage(StageStrategy):
     stage = Stage.DEVELOPMENT
 
     async def preflight(self) -> Decision | None:
-        """Overlap checkpoint 2: immediately before implementation begins."""
+        """Overlap checkpoint 2: immediately before implementation begins. Flags, never pauses."""
         from delivery.coordination import Coordinator
 
         coord = Coordinator(self.deps)
         fp = await coord.own_footprint(self.ctx.shared)
-        if fp is None:
-            return None
-        findings = await coord.check(fp, self.ctx.shared, checkpoint="pre-implementation")
-        await coord.publish_warnings(self.ctx, findings)
-        blocking = coord.unresolved_blocks(findings, self.ctx)
-        if blocking:
-            f = blocking[0]
-            return Decision(
-                outcome="blocked",
-                reason=f"sequencing decision needed with {f.other}: {f.kind.value} "
-                f"({', '.join(f.details[:3])})",
-                action=f"Comment `OVERLAP {f.warning_id} PROCEED`, `WAIT {f.other}` or `RESCOPE`, "
-                "then resume development.",
-                blocker_kind="overlap_dependency",
-                extra={"overlap": findings_json(blocking)},
+        if fp is not None:
+            await coord.publish_warnings(
+                self.ctx, await coord.check(fp, self.ctx.shared, checkpoint="pre-implementation")
             )
         return None
 

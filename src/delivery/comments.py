@@ -457,29 +457,25 @@ def follow_up(candidate_no: int, sha: str, url: str, requests: list[str], was_in
 
 def overlap_warning(f: OverlapFinding, assignees: dict[str, str | None], here: str) -> str:
     other = f.other if f.ticket == here else f.ticket
-    sev = "Sequencing decision needed" if f.severity is OverlapSeverity.BLOCK else "Overlap warning"
     rev = "; ".join(
         f"{k}: plan v{v.get('plan')} @ {str(v.get('commit'))[:12]}" for k, v in sorted(f.revisions.items())
     )
     lines = [
-        f"## {sev}: {f.warning_id}",
+        f"## Overlap warning: {f.warning_id}",
         f"{here} and {other} ({assignees.get(other) or 'unassigned'}) overlap: **{f.kind.value}**.",
         *[f"- {d}" for d in f.details[:20]],
         f"Inspected: {rev}.",
         "",
+        "Work continues on both tickets. Verification tests each candidate together with the "
+        "other's, and any merge conflict is flagged to resolve when merging.",
     ]
-    if f.severity is OverlapSeverity.BLOCK:
-        lines += [
-            "Path comparison cannot prove independence. A human decides the order. Comment one of:",
-            "```",
-            f"OVERLAP {f.warning_id} PROCEED",
-            f"OVERLAP {f.warning_id} WAIT {other}",
-            f"OVERLAP {f.warning_id} RESCOPE",
-            "```",
-            "then choose **Resume** for the paused stage.",
-        ]
-    else:
-        lines.append("Parallel work may continue. Integration scrutiny will be applied before merge.")
+    if f.severity is OverlapSeverity.HIGH:
+        lines.append(
+            "This one is higher risk: both change the same shared interface, schema or migration, "
+            "or one ticket depends on the other. Agree which merges first; to rethink one "
+            "ticket choose **Revise scope**, and to tell its next Claude session about the "
+            "other add a comment starting with `FOR CLAUDE`."
+        )
     return "\n".join(lines)
 
 

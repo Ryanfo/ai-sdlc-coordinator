@@ -386,9 +386,7 @@ async def _inspect(args: argparse.Namespace) -> int:
             f"{rec.pause.round_token or rec.pause.reason}"
         )
     lines.append(f"candidate: {rec.candidate_sha or '-'} PR #{rec.pr_number or '-'}")
-    lines.append(
-        f"overlap warnings: {rec.overlap_warnings or 'none'} decisions: {rec.overlap_decisions or 'none'}"
-    )
+    lines.append(f"overlap warnings: {', '.join(rec.overlap_warnings) or 'none'}")
     if entries:
         lines += ["", *latest_outcome(cfg, entries[-1])]
     actions = jira_actions(cfg, transitions)

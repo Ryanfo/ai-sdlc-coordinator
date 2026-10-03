@@ -96,8 +96,7 @@ def test_multiline_answers_and_record_release_fields() -> None:
         "environment": "local-pilot",
         "merged-pr": "7",
     }
-    o = parse_decision("OVERLAP OVL-0123456789 WAIT PILOT-9")
-    assert o is not None and o.choice == "WAIT PILOT-9"
+    assert parse_decision("OVERLAP OVL-0123456789 WAIT PILOT-9") is None  # overlaps need no decision
 
 
 def test_current_token_approval_with_matching_transition() -> None:

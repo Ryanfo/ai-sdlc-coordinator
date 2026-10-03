@@ -28,7 +28,6 @@ posts each template with the **current** token in Jira; copy it from there. Rule
 | Approve release proposal | `APPROVE RELEASE PILOT-123-RELEASE-v1` | Approve release |
 | Change release proposal | `CHANGE RELEASE PILOT-123-RELEASE-v1 + F1:` | Request release changes |
 | Record the release (after the human merge) | `RECORD RELEASE PILOT-123-RELEASE-v1 + commit:, environment:` | Record release |
-| Decide an overlap | `OVERLAP OVL-0123456789 PROCEED / WAIT PILOT-9 / RESCOPE` | Resume <stage> |
 
 ## Examples
 
@@ -71,12 +70,6 @@ Stage names: `refinement`, `planning`, `development`, `verification`, `release`.
 ```text
 FOR CLAUDE development
 The e2e failure is the date picker's timezone; use the fixed clock in tests/clock.ts.
-```
-
-Overlap decision (the warning ID is in the coordinator's overlap comment):
-
-```text
-OVERLAP OVL-0123456789 PROCEED
 ```
 
 ## What is never accepted

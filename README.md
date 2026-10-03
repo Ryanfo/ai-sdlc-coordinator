@@ -364,9 +364,9 @@ the assignee or an approver. Other comments, including the coordinator's own, ar
   temporary directory, logs and Claude session.
 - Each plan publishes a **change footprint** (files, components, shared interfaces). The
   supervisor compares footprints of every in-flight ticket in the project, **including other
-  developers'**, and posts one warning per overlap on both tickets. A shared interface,
-  schema, migration or declared dependency pauses the later ticket until a human comments
-  `OVERLAP <id> PROCEED`, `WAIT <KEY>` or `RESCOPE` and resumes it.
+  developers'**, and posts one warning per overlap on both tickets. Overlaps never pause work.
+  A shared interface, schema, migration or declared dependency ("is blocked by" link) is
+  flagged as higher risk so you can agree which ticket merges first.
 - Verification tests your candidate alone **and** merged with the latest base and other
   interacting candidates, so behavioural conflicts show up even when Git merges cleanly.
 - A textual merge conflict (with the base or another ticket's candidate) is **flagged, never a

@@ -548,6 +548,7 @@ class SharedExecutionRecord(Model):
     artefacts: dict[str, str] = Field(default_factory=dict)
     pr_number: int | None = None
     overlap_warnings: list[str] = Field(default_factory=list)
+    # No longer written (overlaps never pause work); kept so earlier records still load.
     overlap_decisions: dict[str, str] = Field(default_factory=dict)
     pending_feedback: list[dict[str, Any]] = Field(default_factory=list)
     release: dict[str, Any] = Field(default_factory=dict)
