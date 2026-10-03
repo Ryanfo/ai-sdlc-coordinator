@@ -19,6 +19,41 @@ Humans approve, merge and release. The coordinator never approves, merges or dep
 > procedures exercised with real Claude Code. Live Jira and GitHub pilot pending the project
 > setup; see [docs/completion-report.md](docs/completion-report.md).
 
+## Quick start
+
+**Once per project** (Jira administrator or delivery lead): set up the Jira workflow from
+[docs/jira-workflow-setup.md](docs/jira-workflow-setup.md), protect the application repository's
+base branch, and make sure someone other than the developer can review PRs
+([Before you start](#before-you-start)).
+
+**Once per laptop**: sign in to the GitHub CLI (`gh auth login`), then run:
+
+```bash
+bash <(gh api repos/Ryanfo/ai-sdlc-coordinator/contents/install.sh -H "Accept: application/vnd.github.raw")
+```
+
+It installs what is missing, then asks a few questions and writes `~/delivery.local.toml`
+([Quick install](#quick-install)). The first person on a new project then proves the Jira
+workflow once; it walks two labelled test tickets through every status, which you delete
+afterwards ([step 5](#5-map-the-workflow-and-run-preflight)):
+
+```bash
+delivery workflow verify --yes
+```
+
+**Every day**:
+
+```bash
+coordinator
+```
+
+Then create a ticket in Backlog, assign it to yourself and choose **Submit for refinement**
+([step 7](#7-submit-a-ticket)). `Ctrl-C` stops the coordinator; its sessions resume when you
+start it again.
+
+One config file covers one Jira project and one application repository, and one coordinator
+runs per Jira identity. To work on another project, run `delivery setup` again.
+
 ---
 
 ## Before you start
@@ -26,7 +61,7 @@ Humans approve, merge and release. The coordinator never approves, merges or dep
 Confirm with your delivery lead:
 
 - The Jira project and workflow are set up per [docs/jira-workflow-setup.md](docs/jira-workflow-setup.md)
-  (Jira Software, Kanban, company-managed).
+  (Jira Software, Kanban; company-managed or team-managed).
 - You can comment on and transition tickets, and tickets can be assigned to you.
 - You can push branches and open PRs in the application repository; its base branch is protected.
 - A **second person** can review your PRs on GitHub (you cannot approve your own).
@@ -96,7 +131,7 @@ This also installs `coordinator`: on its own it starts the supervisor with your 
 `coordinator attach PILOT-123`, `coordinator status` or `coordinator --dry-run`.
 
 Otherwise run every command from this folder with `uv run` in front, for example
-`uv run delivery doctor --config ~/delivery.local.toml`.
+`uv run delivery doctor`.
 
 Without uv:
 
@@ -134,6 +169,9 @@ To write it by hand instead, start from the template:
 delivery init --config ~/delivery.local.toml
 ```
 
+Every other command reads `~/delivery.local.toml` unless you pass `--config <file>` or set
+`DELIVERY_CONFIG`, so this guide leaves it out.
+
 Edit it. Everything is commented; the important values are:
 
 | Setting | Value |
@@ -164,7 +202,7 @@ On macOS, store the token once in your login Keychain. The command asks for it (
 shown), checks it with Jira first, and stores it only if Jira accepts it:
 
 ```bash
-delivery credentials set --config ~/delivery.local.toml
+delivery credentials set
 ```
 
 Paste once and press Enter; do not paste anything after it finishes. Every `delivery` command
@@ -195,14 +233,14 @@ SSH agent or your Git credentials.
 ## 5. Map the workflow and run preflight
 
 ```bash
-delivery workflow inspect --config ~/delivery.local.toml
+delivery workflow inspect
 ```
 
 Paste the printed `[workflow.statuses]` and `[jira.fields]` block into your config. Once per
 project (or after changing the workflow), prove every route with real tickets:
 
 ```bash
-delivery workflow verify --config ~/delivery.local.toml --yes
+delivery workflow verify --yes
 ```
 
 It creates two **unassigned** test tickets labelled `delivery-workflow-check` (no supervisor
@@ -211,7 +249,7 @@ transitions, the starting status, the resume field, issue properties and changel
 authorship. Delete the test tickets afterwards (`labels = delivery-workflow-check`). Then:
 
 ```bash
-delivery doctor --config ~/delivery.local.toml
+delivery doctor
 ```
 
 Doctor is read-only. It checks your Jira identity and approvers, the status mapping and the
@@ -224,7 +262,7 @@ subscription.
 Once, prove the Claude permission boundary on this machine (uses a little subscription usage):
 
 ```bash
-delivery doctor --config ~/delivery.local.toml --claude-probe
+delivery doctor --claude-probe
 ```
 
 It verifies objectively that the plugin loads and that a worker session cannot read a
@@ -234,14 +272,16 @@ reach the network.
 Then a dry run (discovery only: no Claude, comments, pushes or transitions):
 
 ```bash
-delivery run --dry-run --config ~/delivery.local.toml
+coordinator --dry-run
 ```
 
 ## 6. Start the supervisor
 
 ```bash
-delivery run --config ~/delivery.local.toml
+coordinator
 ```
+
+`coordinator` on its own is `delivery run`.
 
 Keep the terminal, laptop and network available. It polls every 60 seconds (with jitter),
 so a status change is picked up within about a minute, including tickets that became ready
@@ -269,11 +309,11 @@ model, the outcome and your next step (when finished), and a link to the ticket 
 
 | Part | Meaning |
 |---|---|
-| `run` | Start the supervisor in the foreground until `Ctrl-C` |
-| `--config <file>` | The one config file to use (required on every command) |
+| `coordinator` (or `delivery run`) | Start the supervisor in the foreground until `Ctrl-C` |
+| `--config <file>` | Use another config file (default `~/delivery.local.toml`, or `$DELIVERY_CONFIG`) |
 | `--dry-run` | Discovery only: list what would start; no Claude, comments, pushes or transitions |
 | `--once` | Start every eligible ticket, wait for those sessions to finish, then exit |
-| `-v` (before `run`) | Detailed logging: `delivery -v run --config …` |
+| `-v` | Detailed logging: `coordinator -v` (or `delivery -v run`) |
 
 ## 7. Submit a ticket
 
@@ -321,7 +361,7 @@ them, so do not attach confidential designs to tickets for a public repository.
    Figma before storing; repeat it when the token expires:
 
    ```bash
-   delivery credentials set figma --config ~/delivery.local.toml
+   delivery credentials set figma
    ```
 
 2. In Figma, select the frame (one screen or state), right-click and choose **Copy link to
@@ -418,9 +458,6 @@ picked up straight away and published as the next revision.
 Overlap detection is advisory: it cannot see unpublished work on other laptops.
 
 ## 11. Day-to-day commands
-
-`--config` defaults to `~/delivery.local.toml` (or `$DELIVERY_CONFIG`), so it can be left out
-when your config lives there.
 
 ### Reading what Claude did
 
@@ -559,27 +596,27 @@ plan instead.
 
 
 ```bash
-delivery status --config ~/delivery.local.toml
+delivery status
 ```
 
 ```bash
-delivery inspect PILOT-123 --config ~/delivery.local.toml
+delivery inspect PILOT-123
 ```
 
 ```bash
-delivery stop PILOT-123 --config ~/delivery.local.toml
+delivery stop PILOT-123
 ```
 
 ```bash
-delivery recover PILOT-123 --resume --config ~/delivery.local.toml
+delivery recover PILOT-123 --resume
 ```
 
 ```bash
-delivery handover PILOT-123 --config ~/delivery.local.toml
+delivery handover PILOT-123
 ```
 
 ```bash
-delivery dispatch pause --reason "machine busy" --config ~/delivery.local.toml
+delivery dispatch pause --reason "machine busy"
 ```
 
 | Command | What it does |

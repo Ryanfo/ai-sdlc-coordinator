@@ -4,7 +4,7 @@ Version 1.1 · matches delivery-platform 0.1.0 · audience: Jira administrator a
 
 This is the shipped version of the original setup instructions (`docs/design/Jira_Workflow_Setup_Instructions.md`),
 aligned with what the coordinator actually checks. Configure it once per project, then run
-`delivery workflow inspect` to verify it before anyone runs a supervisor.
+`delivery workflow verify --yes` (section 9) before anyone runs a supervisor.
 
 The parallel-sessions amendment needs **no extra statuses or columns**: many tickets simply sit
 in the existing statuses at the same time.
@@ -12,7 +12,9 @@ in the existing statuses at the same time.
 ## 1. Project
 
 Create **Jira Software → Kanban → Company-managed**, for example *AI SDLC Pilot* with key `PILOT`
-(needs *Administer Jira*). For an existing project, copy its workflow and scheme first; never
+(needs *Administer Jira*). A team-managed project also works: each issue type has its own
+workflow there, so give the delivery workflow to the types you use (for example Story and Bug)
+and list only those in each developer's `jira.supported_issue_types` (`delivery setup` finds them). For an existing project, copy its workflow and scheme first; never
 edit a workflow shared with unrelated teams.
 
 **Plan tier.** On Jira Free you cannot configure permission schemes or roles, so approver-only
@@ -110,6 +112,16 @@ config).
 | Changes requested | Revise scope | Ready for refinement |
 | Release review | Request release changes | Ready for release preparation |
 
+With [interactive sessions](../README.md#watching-claude-work-and-typing-to-it), changes a
+developer asks for in an open development session are verified again as a new candidate. That
+needs three more transitions, all to Ready for verification and performed by the coordinator:
+
+| From | Name | To |
+|---|---|---|
+| Code review | Submit follow-up changes | Ready for verification |
+| Acceptance review | Submit follow-up changes | Ready for verification |
+| Changes requested | Submit follow-up changes | Ready for verification |
+
 ### Pausing and resuming
 
 From **each of the six agent-active statuses** add `Ask questions → Needs clarification` and
@@ -185,28 +197,32 @@ needed: each developer's supervisor polls.
 
 ## 9. Verify with the coordinator
 
-Any developer with a config (statuses can be left empty at first):
+Once the first developer has a config (`delivery setup` writes it and maps the statuses):
 
 ```bash
-delivery workflow inspect --config ~/delivery.local.toml
+delivery workflow verify --yes
 ```
 
-It reports missing or duplicate status names, category problems, the resume field ID and, for
-every status that currently has at least one ticket, the transitions actually offered compared
-with this document (missing and unexpected, including global transitions). Create a throwaway
-ticket and move it through the statuses to get full transition coverage, then:
+It creates two **unassigned** test tickets labelled `delivery-workflow-check` (no supervisor
+picks them up), walks them through every status and reports missing or unexpected transitions,
+the starting status, the resume field, issue properties and changelog authorship. Delete the
+test tickets afterwards (`labels = delivery-workflow-check`). Run it again after any workflow
+change.
 
-```bash
-delivery doctor --config ~/delivery.local.toml
-```
+`delivery workflow inspect` is the read-only version: it reports missing or duplicate status
+names, category problems, the resume field ID and, for every status that currently has a
+ticket, the transitions actually offered.
 
 ## 10. Hand these values to each developer
 
-- Site URL, project key, supported issue types, whether an opt-in label is used.
-- The generated `[workflow.statuses]` block and the resume field ID.
-- Approver account IDs and the GitHub reviewer logins.
-- The application repository URL, base branch, check commands and CI job names.
-- The chosen auth profile (secrets are exchanged separately, never in documents).
+`delivery setup` asks for these and looks up the rest (account IDs, status IDs, resume field,
+issue types, base branch and CI checks):
+
+- Site URL and project key.
+- Who approves in Jira, and who reviews PRs on GitHub.
+- The application repository.
+
+Secrets are exchanged separately, never in documents.
 
 ## 11. Acceptance checks
 
