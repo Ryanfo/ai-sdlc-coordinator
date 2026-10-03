@@ -59,7 +59,6 @@ def test_every_stage_has_start_complete_question_block_routes() -> None:
     [
         (Status.SPECIFICATION_REVIEW, Action.APPROVE_SPECIFICATION),  # coordinator never approves
         (Status.CODE_REVIEW, Action.APPROVE_CODE),
-        (Status.READY_RELEASE, Action.RECORD_RELEASE),  # never records a release
         (Status.REFINING, Action.COMPLETE_PLANNING),  # wrong stage
         (Status.BACKLOG, Action.START_REFINEMENT),  # must be in ready status
         (Status.NEEDS_CLARIFICATION, Action.SUBMIT_REFINEMENT_ANSWERS),
@@ -69,6 +68,15 @@ def test_every_stage_has_start_complete_question_block_routes() -> None:
 def test_coordinator_cannot_take_human_or_wrong_routes(src: Status, action: Action) -> None:
     with pytest.raises(IllegalTransition):
         coordinator_route(src, action)
+
+
+def test_coordinator_records_a_merged_release_on_the_human_route() -> None:
+    # The human merge is the release; the coordinator records it on the same Jira transition a
+    # human would use (and humans still may), with the same requirement checked on arrival.
+    route = coordinator_route(Status.READY_RELEASE, Action.RECORD_RELEASE)
+    assert route.target is Status.READY_RELEASE_VERIFICATION
+    assert route.requires is Requirement.RELEASE_RECORD
+    assert human_route(Status.READY_RELEASE, Status.READY_RELEASE_VERIFICATION)
 
 
 def test_no_global_arbitrary_transition() -> None:

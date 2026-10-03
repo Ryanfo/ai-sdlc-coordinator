@@ -582,7 +582,7 @@ def _next_action(outcome: str, stage: Stage, *, session_open: bool = False) -> s
             Stage.VERIFICATION: "Independent GitHub review, then Approve code in Jira "
             "(moves into Acceptance review).",
             Stage.RELEASE_PREPARATION: "Review the release proposal; approving moves it into "
-            "Ready for release.",
+            "Ready for release. Then merge the PR: release verification starts once the merge is seen.",
             Stage.RELEASE_VERIFICATION: "Done.",
         }[stage],
         "clarification": f"Answer the questions in Jira, then Submit answers (moves into {ready}).",

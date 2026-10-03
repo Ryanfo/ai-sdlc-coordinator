@@ -239,6 +239,11 @@ def active_jql(cfg: Config) -> str:
     return _assigned_jql(cfg, ACTIVE_STATUSES)
 
 
+def release_jql(cfg: Config) -> str:
+    """The developer's tickets in Ready for release (waiting for the human merge)."""
+    return _assigned_jql(cfg, (Status.READY_RELEASE,))
+
+
 def coordination_jql(cfg: Config) -> str:
     """All in-flight tickets in the project, any assignee, for overlap detection."""
     from delivery.workflow import TERMINAL_STATUSES

@@ -1,6 +1,6 @@
 ---
 name: verify-release
-description: Verify a human-recorded release against the approved release proposal using observed smoke evidence. Invoked by the delivery coordinator.
+description: Verify a recorded release against the approved release proposal using observed smoke evidence. Invoked by the delivery coordinator.
 argument-hint: <absolute path to envelope.json>
 arguments: [envelope]
 disable-model-invocation: true
@@ -17,8 +17,9 @@ Read `${CLAUDE_PLUGIN_ROOT}/references/stage-contract.md`, then the envelope at 
 
 ## Goal
 
-The working directory is checked out at the released commit recorded by a human. Confirm
-the release behaves as the approved release proposal says, using observed evidence only.
+The working directory is checked out at the released commit (the human merge of the PR, read
+from GitHub, or a commit a human recorded in Jira). Confirm the release behaves as the approved
+release proposal says, using observed evidence only.
 
 ## Steps
 

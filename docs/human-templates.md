@@ -27,7 +27,7 @@ posts each template with the **current** token in Jira; copy it from there. Rule
 | Change scope after review | `REVISE SCOPE PILOT-123-SPEC-v3 + F1:` | Revise scope |
 | Approve release proposal | `APPROVE RELEASE PILOT-123-RELEASE-v1` | Approve release |
 | Change release proposal | `CHANGE RELEASE PILOT-123-RELEASE-v1 + F1:` | Request release changes |
-| Record the release (after the human merge) | `RECORD RELEASE PILOT-123-RELEASE-v1 + commit:, environment:` | Record release |
+| Record a release by hand (optional: the coordinator records the PR merge itself) | `RECORD RELEASE PILOT-123-RELEASE-v1 + commit:, environment:` | Record release |
 
 ## Examples
 
@@ -53,7 +53,9 @@ Approval:
 APPROVE SPEC PILOT-123-SPEC-v2
 ```
 
-Release record:
+Release record. Not needed for an ordinary release: once the PR is merged, the coordinator
+reads the merge commit from GitHub and chooses Record release itself. If this comment is on the
+ticket when the release is recorded, its commit is verified instead of the merge commit.
 
 ```text
 RECORD RELEASE PILOT-123-RELEASE-v1

@@ -52,14 +52,15 @@ from delivery.ownership import (
     active_jql,
     evaluate_eligibility,
     ready_jql,
+    release_jql,
     supervisor_lock,
 )
 from delivery.ports import IntegrationError
 from delivery.proc import ProcessStartError, pid_alive, process_start_marker, signal_group
-from delivery.publication import Publisher
+from delivery.publication import PublicationError, PublicationUncertain, Publisher, TicketMoved
 from delivery.runtime import Deps, RunContext
 from delivery.stages import change_ids
-from delivery.workflow import STAGES, STATUS_NAMES, Stage, Status, stage_for_active
+from delivery.workflow import STAGES, STATUS_NAMES, Action, Stage, Status, stage_for_active
 
 log = logging.getLogger("delivery")
 
@@ -274,6 +275,8 @@ class Supervisor:
         if loop.time() < self.backoff_until:
             return report
         try:
+            # First, so that a release recorded now starts its verification in this same poll.
+            await self._record_merged_releases(report)
             issues = await self.deps.jira.search(ready_jql(self.cfg))
             working = await self.deps.jira.search(active_jql(self.cfg))
         except IntegrationError as exc:
@@ -314,6 +317,49 @@ class Supervisor:
         )
         self.deps.store.save_supervisor(self.record)
         return report
+
+    async def _record_merged_releases(self, report: PollReport) -> None:
+        """Tickets in Ready for release whose PR has been merged: record the release.
+
+        The human merge is the pilot release. The coordinator only reads it from GitHub (it never
+        merges or deploys) and chooses Record release, which a human would otherwise do after
+        copying the merge commit into a comment. Release verification then validates the release
+        approval and provenance as usual. A RECORD RELEASE comment, if a human left one, wins.
+        """
+        for issue in await self.deps.jira.search(release_jql(self.cfg)):
+            key = issue.key
+            if key in self.corrupt or key in self.busy:
+                continue
+            try:
+                ctx = await load_context(self.deps.jira, self.cfg, key)
+                intake = await self.evaluator.merged_release(ctx)
+                if intake.kind is not IntakeKind.READY or intake.release_record is None:
+                    report.waiting.append({"ticket": key, "reason": intake.reason})
+                    self._note_once(f"{key}:release:{intake.reason}", f"{key}: {intake.reason}")
+                    continue
+                release = intake.release_record
+                what = f"PR #{release['merged_pr']} merged as {str(release['commit'])[:12]}"
+                if self.dry_run:
+                    self.emit(f"[dry-run] would record the release of {key}: {what}")
+                    continue
+                entry = intake.entry.history_id if intake.entry else str(release["commit"])[:12]
+                journal = RunJournal(self.cfg.runtime.state_dir / "intake" / key)
+                pub = Publisher(self.cfg, self.deps.jira, None, None, journal, f"release-{entry}")
+                await pub.transition(key, Status.READY_RELEASE, Action.RECORD_RELEASE)
+                self.emit(console.line(f"{key}: {what}; recorded the release, verifying it"))
+            except (
+                IntegrationError,
+                RecordCorrupt,
+                PublicationError,
+                PublicationUncertain,
+                TicketMoved,
+            ) as exc:
+                report.skipped.append({"ticket": key, "reason": f"release not recorded: {exc}"})
+                self._note_once(
+                    f"{key}:release-error:{exc}",
+                    f"{key}: could not record the release ({exc}); retrying on the next poll, or "
+                    "choose Record release in Jira",
+                )
 
     async def _check_moved_by_hand(self, key: str, status_id: str, report: PollReport) -> None:
         """A ticket of ours in an "agent working" status with no session behind it.
