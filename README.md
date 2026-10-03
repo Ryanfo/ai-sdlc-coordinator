@@ -746,7 +746,7 @@ delivery dispatch pause --reason "machine busy"
 | "Stopped unexpectedly" or a "coordinator error" comment | `coordinator logs` has the error; `coordinator` starts it again, `coordinator recover <KEY> --resume` continues a stopped run |
 | Disk filling up | `coordinator clean` (and `--older-than 30` for old logs) |
 | Branch diverged or publication uncertain | Run `delivery recover <KEY>`; it queries Jira/GitHub before retrying and never force-pushes |
-| Jira or GitHub offline | Nothing is mutated; it backs off and reconciles when back |
+| Jira or GitHub offline | Nothing is mutated; it backs off and reconciles when back. If GitHub is unreachable when the supervisor starts, it logs "could not reach the application repository" and retries (15s, doubling to 10 minutes) without starting work; fix credentials if the error names them. Ctrl-C still stops it |
 | A Figma link was not used | The run's envelope lists it under `designs_skipped` with the reason: a whole-file link (use Copy link to selection), no access, no token (`delivery credentials set figma`), or over the frame limit |
 | "Design changed in Figma" comment | A linked frame changed after the spec was written; work continues on the approved version. Choose Revise scope to adopt the new design |
 | Figma token rejected | It expired or lacks a scope; create a new one and run `delivery credentials set figma` |
