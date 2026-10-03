@@ -899,17 +899,27 @@ class Wizard:
         io = self.io
         if self.team("approvals.jira_account_ids"):
             ids = self.get("approvals.jira_account_ids") or []
-            io.say("  Approvers: " + ", ".join(self.person_name(a) for a in ids) + " (the team's)")
+            names = ", ".join(self.person_name(a) for a in ids) or "anyone"
+            io.say(f"  Approvers: {names} (the team's)")
             return
-        io.say("  Approvers sign off specifications, plans, acceptance and releases in Jira.")
+        io.say(
+            "  Approvers sign off specifications, plans, acceptance and releases in Jira. 'anyone' lets "
+            "anyone who can comment on and move the ticket decide, so nothing waits for one person."
+        )
         ids = self.get("approvals.jira_account_ids") if self.existing else None
         current = [a for a in ids or [] if not is_placeholder(a)]
         others = [a for a in current if a != self.me.account_id]
         if others:
             io.say("  Now: " + ", ".join(self.person_name(a) for a in current))
-        default = ", ".join("me" if a == self.me.account_id else a for a in current) or "me"
+        default = ", ".join("me" if a == self.me.account_id else a for a in current) or "anyone"
         while True:
-            entries = split_list(io.ask("Approvers (names, emails or 'me', comma-separated)", default))
+            entries = split_list(
+                io.ask("Approvers (names, emails, 'me' or 'anyone', comma-separated)", default)
+            )
+            if [e.lower() for e in entries] == ["anyone"]:
+                io.say("  Approvers: anyone")
+                self.set("approvals", "jira_account_ids", [])
+                return
             people = [self.find_person(e) for e in entries]
             found = [p for p in people if p]
             if entries and len(found) == len(entries):

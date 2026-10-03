@@ -9,7 +9,7 @@ authenticates as the same Jira account (a limitation recorded in the setup profi
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Container, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -85,7 +85,7 @@ def evaluate_human_gate(
     change_status_id: str | None,
     approve_kind: DecisionKind,
     change_kinds: set[DecisionKind],
-    approvers: set[str],
+    approvers: Container[str],
     excluded_comment_ids: set[str] | None = None,
 ) -> GateEval:
     """Validate the human decision that moved a ticket out of a review status.

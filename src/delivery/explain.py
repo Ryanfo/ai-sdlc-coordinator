@@ -18,7 +18,8 @@ INDENT = "    "
 # What each human action does next, for the actions people pick from a waiting status.
 ACTION_EFFECTS: dict[Action, str] = {
     Action.SUBMIT_IMPLEMENTATION_CHANGES: "development fixes the pending items as a new candidate",
-    Action.SUBMIT_FOLLOW_UP: "verifies the same candidate again (no code change)",
+    Action.SUBMIT_FOLLOW_UP: "verifies the same candidate again (no code change); after ACCEPT "
+    "DEVIATIONS from Code review, rewrites the specification instead",
     Action.REVISE_SCOPE: "back to refinement to change what is being built",
     Action.REQUEST_CODE_CHANGES: "needs a CHANGE CODE comment; then Submit implementation changes",
     Action.REQUEST_ACCEPTANCE_CHANGES: "needs a CHANGE ACCEPTANCE comment",
@@ -117,6 +118,25 @@ def latest_outcome(cfg: Config, entry: RunEntry) -> list[str]:
             who = "verifier" if int(str(f["id"])[1:]) >= 100 else "reviewer"
             body += _wrap(f"{f['id']} ({f['severity']}, {who}): {f['description']}")
         out += _section("Findings", body)
+    found = list(extra.get("deviations") or [])
+    if found:
+        body = []
+        for d in found:
+            asked = "asked for" if d.get("requested") else "not asked for"
+            body += _wrap(f"{d['id']} ({asked}): {d['description']}")
+        body += _wrap(
+            "Not a failure: accept (ACCEPT DEVIATIONS) or change back (a D-item in the change request)."
+        )
+        out += _section("Deviations from the specification", body)
+    amendment = rec.outputs.get("amendment")
+    if amendment:
+        out += _section(
+            "Specification",
+            _wrap(
+                f"v{int(amendment['revision']):03d} rewritten to include the accepted deviations "
+                f"{', '.join(amendment.get('accepted', []))}"
+            ),
+        )
     out += _section("Next", _wrap(rec.next_action) if rec.next_action else [])
     logs = sorted((run_dir / "logs").glob("claude-*.txt")) if (run_dir / "logs").is_dir() else []
     files = [

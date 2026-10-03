@@ -290,6 +290,15 @@ FIRST_RUN: list[tuple[str, str | BaseException]] = [
 ]
 
 
+def test_setup_can_let_anyone_approve(home: Path, jira: FakeJira) -> None:
+    answers = [("Approvers", "anyone") if q == "Approvers" else (q, a) for q, a in FIRST_RUN]
+    io = Script(answers)
+    assert run_setup(home / "delivery.local.toml", deps(io, jira, {}, [])) is not None, io.output
+    cfg = load_config(home / "delivery.local.toml")
+    assert cfg.approvals.jira_account_ids == [] and cfg.approvals.anyone
+    assert "someone-new" in cfg.approvals.approvers()
+
+
 def test_setup_writes_a_working_config(home: Path, jira: FakeJira) -> None:
     io, keychain, ran = Script(FIRST_RUN), {}, []
     result = run_setup(home / "delivery.local.toml", deps(io, jira, keychain, ran))

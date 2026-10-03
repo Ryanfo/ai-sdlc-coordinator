@@ -31,6 +31,10 @@ an integration tree; its results are authoritative.
    `ports.app` (and other entries in `ports`) for anything that listens.
 3. For each acceptance criterion, run the specific tests or a focused observation
    (for example a unit test filter or an e2e spec) and record what you observed.
+   Where the review lists a deviation (`D…`) for a criterion, observe the behaviour as built
+   and mark the criterion `deviates` (naming the `D` ID) rather than `not_met`, unless the
+   behaviour is broken. Add to `deviations` only differences from the specification the
+   review did not list (same rules as the review: working behaviour, not defects).
 4. Do not edit tracked files. Generated caches and build output are fine; the coordinator
    checks the tracked diff afterwards.
 5. Write `verification.md` in `output.artifact_dir` from
@@ -46,6 +50,6 @@ them as the e2e evidence. Run unit and component tests yourself.
 ## Result
 
 `procedure`: `verify-ticket`. `artifacts`: `[{"path": "verification.md", "kind": "verification"}]`.
-One `evidence` entry per criterion (`met`, `not_met`, `unverified`). Every command you ran
+One `evidence` entry per criterion (`met`, `not_met`, `unverified`, `deviates`). Every command you ran
 goes in `worker_checks` with its real result. Defects go in `findings`. `outcome` is
 `completed` when you could verify, even if criteria are not met.

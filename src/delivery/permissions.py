@@ -27,7 +27,7 @@ from typing import Any
 
 
 class Role(StrEnum):
-    AUTHOR = "author"  # refine, plan, prepare-release: write documents to the output dir
+    AUTHOR = "author"  # refine, plan, prepare-release, amend-spec: write documents to the output dir
     IMPLEMENTER = "implementer"  # implement: edit the feature worktree, run tests
     REVIEWER = "reviewer"  # review: read-only code access, report to output dir
     VERIFIER = "verifier"  # verify, verify-release: run commands in a disposable worktree
@@ -41,6 +41,7 @@ PROCEDURE_ROLES: dict[str, Role] = {
     "review-ticket": Role.REVIEWER,
     "verify-ticket": Role.VERIFIER,
     "verify-release": Role.VERIFIER,
+    "amend-spec": Role.AUTHOR,
 }
 
 # Paths in the application worktree that an implementation must never change.

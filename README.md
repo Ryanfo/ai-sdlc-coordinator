@@ -106,7 +106,7 @@ in `~/.delivery-platform` and the `delivery` and `coordinator` commands on your 
 |---|---|
 | Your Jira site (or paste any link from it) and Atlassian email | Your Jira account ID, from the token |
 | A Jira API token, once (stored in your Keychain, never in the file) | The issue types that carry the delivery workflow |
-| The project key, and the approvers by name | Every workflow status ID and the resume stage field |
+| The project key, and the approvers by name (or `anyone`) | Every workflow status ID and the resume stage field |
 | The application's GitHub repository, and your clone of it (it offers to clone) | The base branch and the CI checks it requires |
 | Who may approve PRs | The check commands, from the application's `package.json` |
 | Claude model, session windows (and with them, opening the app in your browser when development finishes), and an optional Figma token | Whether you are signed in to GitHub and Claude (it offers to sign you in); the app's `dev` script for the preview |
@@ -481,6 +481,16 @@ picked up straight away and published as the next revision.
 - **Code review**: an independent human approves the PR on GitHub at the current head with
   CI passing, then `APPROVE CODE <token>` and **Approve code**. Any new commit supersedes
   the approval.
+- **Deviations from the specification**: when something changed during development (for
+  example you asked for it in the open session), the review lists it as a deviation (`D1`…),
+  says whether you asked for it, and asks whether it is acceptable. It never fails
+  verification. If it is acceptable, comment `ACCEPT DEVIATIONS <code token>`
+  and chooses **Submit follow-up changes**: Claude rewrites the specification to include it,
+  publishes that as the approved revision (no new refinement or planning round) and the
+  ticket comes back to Code review with the same tokens. If not, name it in `CHANGE CODE
+  <token>` (`D1: keep to the specification`), choose **Request code changes** and then
+  **Submit implementation changes**: a development session changes the code back and the new
+  candidate is verified. Release preparation waits until every deviation is decided.
 - **Acceptance** (product decision): `ACCEPT DELIVERY <token>`, then **Accept delivery**.
 - **Release**: approve the proposal, then merge the PR on GitHub. That merge is the release:
   the coordinator reads the merge commit from GitHub, chooses **Record release** itself and
@@ -738,7 +748,7 @@ delivery dispatch pause --reason "machine busy"
 | Claude keeps getting something wrong | Add a comment starting `FOR CLAUDE` (or `FOR CLAUDE development`) with the guidance, then Resume or Submit as usual: the next session gets it as input |
 | "It is in the Ready column" | Several statuses share a column; inspect the exact status |
 | Stays paused after answering | Check the round token and Q-IDs, then use the Submit answers action |
-| Approval rejected | Use the current token; the approver must make both the comment and the transition; for code, an independent GitHub review on the current head with CI green |
+| Approval rejected | Use the current token; if `[approvals] jira_account_ids` lists approvers, one of them must make both the comment and the transition (empty: anyone can); for code, an independent GitHub review on the current head with CI green when `require_independent_github_review` is on |
 | Blocked: maximum turns or time | The session was making progress but hit its limit: raise `[claude.turn_limits]` or `[claude.timeout_minutes]` for that procedure, restart, then Resume (it continues from the kept changes) |
 | Blocked: stopped by a guardrail | It repeated the same failing step or stalled. `delivery logs <KEY>` shows where; add guidance as a comment or adjust the plan, then Resume |
 | "Waiting for Claude" | Login expired: run `claude auth login`. Usage limit: wait for the reset. Either way the waiting tickets carry on by themselves; no paid fallback |

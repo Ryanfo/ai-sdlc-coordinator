@@ -44,6 +44,11 @@ DEFAULT_FILES = {
     "verify-ticket": ("verification.md", "verification", "# Verification\n\nObserved.\n"),
     "prepare-release": ("release.md", "release", "# Release\n\nSmoke: open the app.\n"),
     "verify-release": ("release-verification.md", "release_verification", "# Release verification\n"),
+    "amend-spec": (
+        "specification.md",
+        "specification",
+        "# Specification\n\n- **AC1**: search works\n- **AC2**: results are highlighted (amended)\n",
+    ),
 }
 
 
@@ -88,6 +93,7 @@ def build_result(
         "artifacts": artifacts,
         "questions": b.get("questions", []),
         "findings": b.get("findings", []),
+        "deviations": b.get("deviations", []),
         "evidence": b.get(
             "evidence",
             [
