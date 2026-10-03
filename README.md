@@ -376,7 +376,7 @@ What you will see in Jira:
    **Specification ready for review** comment linking the exact revision.
 2. Plan review, then development: a PR on `feature/<KEY>`.
 3. Independent review and verification reports, real check results, then **Code review**.
-4. Release proposal, then your merge and release record, then **Done**.
+4. Release proposal, then your merge of the PR, then **Done**.
 
 Every comment that waits for you starts with the status the ticket is ready to move into, for
 example **Ready to move into Ready for planning once the specification is approved**, and each
@@ -482,10 +482,12 @@ picked up straight away and published as the next revision.
   CI passing, then `APPROVE CODE <token>` and **Approve code**. Any new commit supersedes
   the approval.
 - **Acceptance** (product decision): `ACCEPT DELIVERY <token>`, then **Accept delivery**.
-- **Release**: approve the proposal; a human merges and releases; then comment
-  `RECORD RELEASE <token>` with `commit:` and `environment:` and choose **Record release**.
-  The coordinator verifies that the released commit contains exactly the approved candidate
-  (merge, squash or rebase) before **Done**.
+- **Release**: approve the proposal, then merge the PR on GitHub. That merge is the release:
+  the coordinator reads the merge commit from GitHub, chooses **Record release** itself and
+  verifies that the released commit contains exactly the approved candidate (merge, squash or
+  rebase) before **Done**. There is no release to record by hand. (A `RECORD RELEASE <token>`
+  comment with `commit:` and `environment:` is still accepted: if it is on the ticket when the
+  release is recorded, its commit is verified instead of the merge commit.)
 
 ## 10. Several tickets at once, overlaps and integration
 

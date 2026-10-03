@@ -20,6 +20,6 @@ User-facing summary of the change.
 ## Rollback
 1. ...
 
-## Recording the release (human)
-After merging and releasing, comment the RECORD RELEASE template from Jira with the released
-commit and environment, then choose **Record release**.
+## Recording the release
+A human merges the PR; that merge is the release. The coordinator reads the merge commit from
+GitHub, records it and runs release verification on it. Nothing is recorded by hand.

@@ -56,9 +56,8 @@ Open question: Should search include the description text as well as the title?
    below, not this ticket.
 7. The independent reviewer approves the PR on GitHub; the approver comments `APPROVE CODE …`
    and Approve code; then `ACCEPT DELIVERY …` and Accept delivery.
-8. Approve the release proposal. A human merges the PR, runs the local pilot release, comments
-   `RECORD RELEASE …` with the merged commit and environment `local-pilot`, and chooses Record
-   release.
+8. Approve the release proposal. A human merges the PR. Within a poll the coordinator reads the
+   merge commit from GitHub and chooses Record release itself (no `RECORD RELEASE` comment).
 9. Confirm release verification passes and the ticket is Done.
 
 ## 3. Concurrency

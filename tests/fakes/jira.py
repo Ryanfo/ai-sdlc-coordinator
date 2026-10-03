@@ -38,6 +38,7 @@ from delivery.workflow import (
     ROUTES,
     STATUS_CATEGORIES,
     STATUS_NAMES,
+    Action,
     Status,
 )
 
@@ -170,8 +171,13 @@ class FakeJira:
 
     def _available(self, issue: FakeIssue) -> list[JiraTransition]:
         out = []
+        seen: set[tuple[Action, Status]] = set()
         for r in ROUTES:
             if r.source is issue.status and (r.source, r.target) not in self.drop_routes:
+                # One Jira transition serves a route both humans and the coordinator may take.
+                if (r.action, r.target) in seen:
+                    continue
+                seen.add((r.action, r.target))
                 if r.resume_stage is not None and issue.fields.get("customfield_10050"):
                     want = issue.fields["customfield_10050"]
                     if isinstance(want, dict) and want.get("value") != r.resume_stage.value:

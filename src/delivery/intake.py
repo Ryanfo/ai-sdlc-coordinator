@@ -1079,12 +1079,8 @@ class IntakeEvaluator:
         )
         found = [cd for cd in found if cd.comment.author_account_id in self.humans]
         if not found:
-            return self._wait(
-                stage,
-                f"no `RECORD RELEASE {rel.token}` comment found",
-                "Comment the RECORD RELEASE template with commit and environment.",
-                e,
-            )
+            # Nothing recorded by hand: the release is the PR's merge, read from GitHub.
+            return await self._merged_release(stage, e, rec)
         cd = found[-1]
         if cd.comment.edited:
             return self._block(
@@ -1120,5 +1116,56 @@ class IntakeEvaluator:
             reason=f"release {commit[:12]} in {env}",
             record=rec,
             selected=[cd.comment],
+            release_record=record,
+        )
+
+    async def merged_release(self, ctx: TicketContext) -> Intake:
+        """A ticket in Ready for release: READY, with the release, once its PR is merged.
+
+        The supervisor then records the release (Record release). Release verification's intake
+        validates the release approval exactly as it does for a release recorded by hand.
+        """
+        entry = ctx.latest_entry(self.ids[Status.READY_RELEASE])
+        return await self._merged_release(Stage.RELEASE_VERIFICATION, entry, ctx.record)
+
+    async def _merged_release(
+        self, stage: Stage, e: StatusChange | None, rec: SharedExecutionRecord
+    ) -> Intake:
+        """The release read from GitHub: the merge commit of the ticket's PR. In the local pilot
+        profile the human merge is the release, so there is nothing else to wait for."""
+        if self.github is None or rec.pr_number is None:
+            return self._wait(
+                stage,
+                "no pull request is recorded, so the release cannot be read from GitHub",
+                "Comment `RECORD RELEASE <release token>` with `commit: <sha>` and "
+                f"`environment: {self.cfg.release.environment}`, then choose Record release.",
+                e,
+            )
+        pr = await self.github.get_pr(rec.pr_number)
+        if not pr.merged or not pr.merge_commit_sha:
+            return self._wait(
+                stage,
+                f"PR #{pr.number} is not merged yet",
+                f"Merge PR #{pr.number} on GitHub; the coordinator records the release when it "
+                "sees the merge.",
+                e,
+            )
+        env = self.cfg.release.environment
+        record = {
+            "commit": pr.merge_commit_sha,
+            "environment": env,
+            "merged_pr": str(pr.number),
+            "merged_by": pr.merged_by,
+            "merged_at": pr.merged_at.isoformat() if pr.merged_at else None,
+            "source": "github",
+        }
+        by = f" by {pr.merged_by}" if pr.merged_by else ""
+        return Intake(
+            IntakeKind.READY,
+            stage,
+            reason=f"release {pr.merge_commit_sha[:12]} in {env}: PR #{pr.number} merged{by} "
+            "(read from GitHub)",
+            entry=e,
+            record=rec,
             release_record=record,
         )

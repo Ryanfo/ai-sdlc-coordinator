@@ -95,7 +95,7 @@ config).
 | Ready for release preparation | Start release preparation | Preparing release | coordinator |
 | Preparing release | Complete release preparation | Release review | coordinator |
 | Release review | Approve release | Ready for release | release owner |
-| Ready for release | Record release | Ready for release verification | release owner |
+| Ready for release | Record release | Ready for release verification | coordinator, when the PR is merged (a release owner may still do it) |
 | Ready for release verification | Start release verification | Verifying release | coordinator |
 | Verifying release | Complete release verification | Done | coordinator |
 
@@ -161,8 +161,10 @@ Blocked with the correct resume stage and explains which action to use.
 
 ## 6. Conditions and validators (paid plans)
 
-- Approval transitions (Approve specification/plan/code, Accept delivery, Approve release,
-  Record release): restrict to the approver group or role.
+- Approval transitions (Approve specification/plan/code, Accept delivery, Approve release):
+  restrict to the approver group or role.
+- Record release: the coordinator chooses it once the PR is merged, so allow the worker
+  account (and approvers, who may still record a release by hand).
 - Submit/Resume transitions: assignee or approver.
 - Start/Complete/Ask questions/Block stage/Verification failed: if you use a separate worker
   account, restrict them to it. Do **not** add *Only assignee* to worker transitions when the

@@ -283,15 +283,6 @@ def approve_template(kind: DecisionKind, token: str) -> str:
     return f"{kind.value} {token}"
 
 
-def record_release_template(token: str, environment: str) -> str:
-    return (
-        f"{DecisionKind.RECORD_RELEASE.value} {token}\n"
-        "commit: <released commit SHA on the base branch>\n"
-        f"environment: {environment}\n"
-        "merged-pr: <PR number>"
-    )
-
-
 _NOTE = re.compile(
     r"^FOR\s+CLAUDE"
     r"(?:\s+(?P<stage>refinement|planning|development|verification|"

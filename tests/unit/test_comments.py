@@ -33,7 +33,10 @@ def test_review_gates_lead_with_the_next_status() -> None:
 
     release = comments.release_gate("K-1-RELEASE-v1", "u", 1, "sha", "approvers", "prod")
     assert "**Ready to move into Ready for release** once" in first_lines(release)
-    assert "**Record release** (moves into **Ready for release verification**)" in release
+    assert "the coordinator records the release and moves it into **Ready for release verification**" in (
+        first_lines(release)
+    )
+    assert "RECORD RELEASE" not in release  # read from GitHub, never typed in
     assert "Request release changes** (moves into **Ready for release preparation**)" in release
 
 

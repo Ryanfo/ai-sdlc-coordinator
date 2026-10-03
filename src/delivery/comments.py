@@ -16,7 +16,6 @@ from delivery.feedback import (
     answer_template,
     approve_template,
     change_template,
-    record_release_template,
 )
 from delivery.models import CheckResult, Finding, Question, Severity
 from delivery.overlap import OverlapFinding
@@ -475,7 +474,7 @@ def release_gate(
         [
             f"## Release proposal v{revision:03d} ready: {release_token}",
             _ready_to_move(Status.RELEASE_REVIEW, Action.APPROVE_RELEASE, "once the proposal is approved")
-            + " After the merge and release, **Record release** moves it into "
+            + " Once the PR is merged, the coordinator records the release and moves it into "
             f"**{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**.",
             f"[Read release proposal]({url}) · accepted candidate `{candidate}`",
             "",
@@ -490,11 +489,9 @@ def release_gate(
             "```",
             change_template(DecisionKind.CHANGE_RELEASE, release_token),
             "```",
-            "**After approval, a human merges the PR and performs the release.** Then record it and "
-            f"choose **Record release** {_moves(Status.READY_RELEASE, Action.RECORD_RELEASE)}:",
-            "```",
-            record_release_template(release_token, environment),
-            "```",
+            "**After approval, a human merges the PR.** That is the release: the coordinator reads "
+            f"the merge commit from GitHub, records it in `{environment}` (**Record release**) and "
+            "verifies it. There is nothing to record by hand.",
             "The coordinator never merges or deploys.",
         ]
     )
