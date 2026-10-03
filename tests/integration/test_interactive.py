@@ -382,16 +382,17 @@ async def test_change_requests_and_development_end_by_asking_what_else(world: Wo
         await step(sup)
         w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
         await step(sup)
+    ask = "Are there any further changes you'd like to make?"
     first, changed = _prompts(w, "refine-ticket")
-    assert "anything else" not in first, "a first draft is not a change request"
-    assert "how you addressed each requested change" in changed
-    assert "anything else they would like to change in the specification" in changed
-    assert "close this window" in changed and "next revision of the specification" in changed
-    assert "specification.md" in changed.split("Once the result file is written,")[1]
+    assert ask not in first, "a first draft is not a change request"
+    assert "change requests from Jira: F1" in changed and "have been actioned" in changed
+    assert ask in changed and "close this window" in changed
+    assert "next revision of the specification" in changed
+    assert "specification.md in place" in changed.split("After writing the result file")[1]
     (plan,) = _prompts(w, "plan-ticket")
-    assert "anything else" not in plan
+    assert ask not in plan
     (dev,) = _prompts(w, "implement-ticket")
-    assert "would like anything changed" in dev and "next candidate" in dev
+    assert ask in dev and "next candidate" in dev and "actioned" not in dev
     assert "starting the app" not in dev, "no app preview is configured"
 
 
@@ -463,3 +464,43 @@ async def test_the_app_runs_from_the_finished_development_worktree(app_world: Wo
         await _ticks(sup, lambda: _open(w, "implement-ticket") is None)
         assert not _alive(w, again.preview.name)
         assert _get(url) is None
+
+
+async def test_after_actioning_change_requests_the_session_is_brought_up(tmp_path: Path) -> None:
+    w = make_world(tmp_path, interactive=True, checks={"unit": ["sh", "-c", "! grep -rq bug src"]})
+    w.scenario(
+        {
+            "implement-ticket": [
+                {"edit": {"src/search.ts": "export const s = 1; // bug\n"}},
+                {"edit": {"src/search.ts": "export const s = 1;\n"}},
+            ]
+        }
+    )
+    opened: list[str] = []
+
+    async def opener(app: str, folder: Path, title: str, attach: list[str]) -> None:
+        opened.append(title)
+
+    try:
+        w.new_ticket(KEY)
+        w.submit(KEY)
+        async with Supervisor(w.deps) as sup:
+            assert sup.open is not None
+            sup.open.opener, sup.open.attach_wait = opener, 0
+            await _to_development(w, sup)
+            await step(sup)  # c1: no change requests, so nothing is brought up
+            await step(sup)  # verification fails: R1 for the failed check
+            assert w.jira.status_of(KEY) is Status.CHANGES_REQUESTED
+            assert opened == []
+            w.jira.human_move(KEY, Status.READY_DEVELOPMENT, DEV)
+            await step(sup)  # c2 actions R1, publishes, then the session is brought up
+            assert w.record(KEY).candidate_number == 2
+            assert opened == [f"{KEY} implement-ticket"]
+            dev = _open(w, "implement-ticket")
+            assert dev is not None and _alive(w, dev.name)
+        prompts = [i["argv"][0] for i in w.invocations() if i["procedure"] == "implement-ticket"]
+        assert "The changes requested in Jira have been actioned" not in prompts[0]
+        assert "change requests from Jira: R1" in prompts[1]
+        assert "Are there any further changes you'd like to make?" in prompts[1]
+    finally:
+        subprocess.run(["tmux", "-L", w.cfg.claude.interactive.socket, "kill-server"], capture_output=True)

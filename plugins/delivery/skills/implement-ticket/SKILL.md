@@ -34,8 +34,10 @@ acceptance criterion in the approved specification is met, following the approve
   unit/component tests yourself, and leave e2e execution to the coordinator's checks.
 - Use the ports in `envelope.ports` for anything that listens (dev server, e2e tests): set
   `PORT` from `ports.app`. Never assume a default port; other sessions run concurrently.
-- `selected_comments` may contain requested changes (`F1`...) or verification findings.
-  Address each one and say how in `evidence` or `summary`.
+- `feedback_items` lists the changes this run must make (`F1`... findings or requested
+  changes, `R1`... problems the coordinator found), and `selected_comments` may add the
+  human's notes on them. Address each item and say how in `summary`; if an item is not a
+  code problem (for example it reports missing inputs), say so instead of changing code.
 
 ## Steps
 

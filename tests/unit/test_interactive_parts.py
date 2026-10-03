@@ -349,7 +349,9 @@ def test_answers_only_when_something_listens() -> None:
     assert not answers(f"http://127.0.0.1:{port}/", timeout=0.5)
 
 
-def test_closing_message_is_added_only_to_sessions_kept_open(tmp_path: Path) -> None:
+def test_the_closing_message_ends_an_interactive_prompt(tmp_path: Path) -> None:
+    import dataclasses
+
     from delivery.claude import ClaudeInvocation
     from delivery.config import InteractiveConfig
     from delivery.interactive import InteractiveRunner
@@ -371,12 +373,11 @@ def test_closing_message_is_added_only_to_sessions_kept_open(tmp_path: Path) -> 
         schema_path=tmp_path / "schema.json",
         closing="ask whether there is anything else.",
     )
-    kept = InteractiveRunner("claude", InteractiveConfig(enabled=True, window="none"), tmp_path, opener=None)
-    closed = InteractiveRunner(
-        "claude", InteractiveConfig(enabled=True, window="none", keep_open=False), tmp_path, opener=None
+    runner = InteractiveRunner(
+        "claude", InteractiveConfig(enabled=True, window="none"), tmp_path, opener=None
     )
-    assert kept.prompt(inv).endswith("Once the result file is written, ask whether there is anything else.")
-    assert "anything else" not in closed.prompt(inv)
+    assert runner.prompt(inv).endswith("that file.\n\nask whether there is anything else.")
+    assert runner.prompt(dataclasses.replace(inv, closing="")).endswith("that file.")
 
 
 def test_doctor_explains_the_app_preview(tmp_path: Path) -> None:
@@ -403,3 +404,27 @@ def test_doctor_explains_the_app_preview(tmp_path: Path) -> None:
     assert ok == "ok" and "sh -c serve in the session's worktree; opens http://localhost:<port>/" in detail
     missing = {"command": ["no-such-dev-server"]}
     assert level(preview=missing, **{"claude.interactive": interactive})[0] == "warn"
+
+
+def test_change_requests_and_development_get_a_closing_message() -> None:
+    from delivery.stages import change_ids, closing_note
+
+    assert change_ids({"Q1": "answer", "F10": "x", "F2": "y", "F2@123": "z", "R1": "check"}) == [
+        "F2",
+        "F10",
+        "R1",
+    ]
+    note = closing_note("implement-ticket", ["F1", "R1"])
+    assert "change requests from Jira: F1, R1" in note
+    assert "The changes requested in Jira have been actioned" in note
+    assert "pushes them as the next candidate" in note and "close this window" in note
+    spec = closing_note("refine-ticket", ["F1"], document=Path("/out/specification.md"))
+    assert "The changes requested in Jira have been actioned" in spec
+    assert "edit /out/specification.md in place" in spec and "next revision of the specification" in spec
+    assert closing_note("verify-ticket", ["F1"]) == ""
+    assert closing_note("refine-ticket", []) == "", "a first draft is not a change request"
+    # Development always asks, so further changes go to the session that made the candidate.
+    first = closing_note("implement-ticket", [])
+    assert "actioned" not in first and "Are there any further changes you'd like to make?" in first
+    assert "starting the app" not in first
+    assert "starting the app" in closing_note("implement-ticket", [], preview=True)

@@ -259,6 +259,10 @@ What you will see in Jira:
 3. Independent review and verification reports, real check results, then **Code review**.
 4. Release proposal, then your merge and release record, then **Done**.
 
+Every comment that waits for you starts with the status the ticket is ready to move into, for
+example **Ready to move into Ready for planning once the specification is approved**, and each
+action it offers says which status it moves the ticket into.
+
 Specifications, plans, footprints, reviews and release documents are versioned on the
 `delivery/<KEY>` branch of the application repository. The Jira comments link to exact
 commits.
@@ -332,6 +336,20 @@ then choose **Request specification changes**. The next revision is written from
 current draft plus your numbered items. All templates are in
 [docs/human-templates.md](docs/human-templates.md).
 
+To tell Claude something (why the last run went wrong, an approach to take or avoid), add a
+comment whose first line is `FOR CLAUDE`, or `FOR CLAUDE development` (any stage name) to aim
+it at one stage, then choose the usual action. Every later session of that stage gets the note:
+
+```text
+FOR CLAUDE development
+The e2e failure is the date picker's timezone; use the fixed clock in tests/clock.ts.
+```
+
+**What Claude sees from the ticket**: the description (the brief), its attachments and linked
+Figma frames, the decision comments for the current step (`ANSWERS`, `CHANGE …`,
+`SUBMIT CHANGES …`), the findings or change items it must address, and `FOR CLAUDE` notes from
+the assignee or an approver. Other comments, including the coordinator's own, are never sent.
+
 With [interactive sessions](#watching-claude-work-and-typing-to-it), the session that makes
 the changes opens in a window and, once done, tells you how it addressed each item and asks
 whether there is anything else. If not, close the window; anything else you type there is
@@ -356,11 +374,15 @@ picked up straight away and published as the next revision.
   temporary directory, logs and Claude session.
 - Each plan publishes a **change footprint** (files, components, shared interfaces). The
   supervisor compares footprints of every in-flight ticket in the project, **including other
-  developers'**, and posts one warning per overlap on both tickets. A shared interface,
-  schema, migration or declared dependency pauses the later ticket until a human comments
-  `OVERLAP <id> PROCEED`, `WAIT <KEY>` or `RESCOPE` and resumes it.
+  developers'**, and posts one warning per overlap on both tickets. Overlaps never pause work.
+  A shared interface, schema, migration or declared dependency ("is blocked by" link) is
+  flagged as higher risk so you can agree which ticket merges first.
 - Verification tests your candidate alone **and** merged with the latest base and other
   interacting candidates, so behavioural conflicts show up even when Git merges cleanly.
+- A textual merge conflict (with the base or another ticket's candidate) is **flagged, never a
+  failure**: the comments name the files and the integration checks run without the conflicting
+  change. Resolve it in the PR when you merge; release verification accepts the approved
+  candidate plus that merge and lists the files the resolution changed.
 
 Overlap detection is advisory: it cannot see unpublished work on other laptops.
 
@@ -443,13 +465,14 @@ comment, and the revision that was under review no longer counts. The ticket sta
 is, so no Jira transitions are needed. This happens while the ticket is in that review status
 (Specification review, Plan review or Release review) with the session's revision under review.
 
-**After a change request, Claude asks what else.** When you request changes at a review gate
-(`CHANGE SPEC`, `CHANGE PLAN`, `CHANGE RELEASE`, **Submit implementation changes**, **Revise
-scope**), the session that makes them ends by telling you how it addressed each item and asking
-whether there is anything else. If not, close the window (that only detaches it; `delivery
-attach` reopens it). Anything else you type is picked up straight away as above. Every
-development session ends this way too. A change request still needs both the comment and the
-Jira action; a comment alone never starts work.
+**After acting on changes you asked for in Jira** (`CHANGE …`, `SUBMIT CHANGES …`, `REVISE
+SCOPE …` or verification findings), Claude ends the session by listing each item and what it did
+("The changes requested in Jira have been actioned: …") and asks whether you would like any
+further changes. If not, close the window (that only detaches it; `delivery attach` reopens it).
+Anything else you ask for there is picked up straight away as above. Once the coordinator has
+published the result, it brings that session up: a terminal window opens on it if none is
+attached, with a note on the status line. Every development session ends by asking too. A change
+request still needs both the comment and the Jira action; a comment alone never starts work.
 
 A session closes when you type `/exit` (or `delivery close <ticket>`), after `idle_close_hours`
 with nothing happening, when a new run of the same stage starts for the ticket, or when the
@@ -533,7 +556,7 @@ delivery dispatch pause --reason "machine busy" --config ~/delivery.local.toml
 | `logs` | Readable Claude session log for a ticket; `--follow` to watch live |
 | `attach` / `sessions` / `close` | Interactive sessions in tmux: open one, list them, end one left open |
 | `status` | Every session: ticket, stage, run/session ID, state, start time, next action |
-| `inspect` | Why a ticket is (not) eligible, its gates, pause, candidate, overlaps, local runs; read-only |
+| `inspect` | Why a ticket is (not) eligible, its gates and candidate, and the latest run explained: reasons, findings in full, failed check output, merge conflicts, log locations and the Jira actions available now; read-only |
 | `stop` | Stops one ticket's session and keeps its work; other sessions continue |
 | `recover` | Reconciles one ticket against Jira/GitHub before any retry; `--resume` continues held work |
 | `handover` | Stops and checkpoints one ticket and moves it to Blocked so it can be reassigned |
@@ -557,6 +580,8 @@ delivery dispatch pause --reason "machine busy" --config ~/delivery.local.toml
 | Symptom | What to do |
 |---|---|
 | Ticket not picked up | `delivery inspect <KEY>`: assignee, status, type, label, waiting input or an existing attempt |
+| Verification failed or a stage blocked, next step unclear | `delivery inspect <KEY>`: every reason and finding in full, failed check output, Claude logs, and what each Jira action offered now does |
+| Claude keeps getting something wrong | Add a comment starting `FOR CLAUDE` (or `FOR CLAUDE development`) with the guidance, then Resume or Submit as usual: the next session gets it as input |
 | "It is in the Ready column" | Several statuses share a column; inspect the exact status |
 | Stays paused after answering | Check the round token and Q-IDs, then use the Submit answers action |
 | Approval rejected | Use the current token; the approver must make both the comment and the transition; for code, an independent GitHub review on the current head with CI green |

@@ -316,6 +316,7 @@ async def _status(args: argparse.Namespace) -> int:
 
 
 async def _inspect(args: argparse.Namespace) -> int:
+    from delivery.explain import jira_actions, latest_outcome
     from delivery.intake import IntakeEvaluator, load_context
     from delivery.jira import JiraClient
     from delivery.ownership import evaluate_eligibility
@@ -330,9 +331,11 @@ async def _inspect(args: argparse.Namespace) -> int:
             from delivery.github import GhClient
 
             intake = await IntakeEvaluator(cfg, GhClient(cfg.repository.slug)).evaluate(ctx, elig.stage)
+        transitions = [(t.name, t.to_status_name) for t in await jira.transitions(args.ticket)]
     finally:
         await jira.close()
     store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
+    entries = store.runs_for_ticket(args.ticket)
     runs = [
         {
             "run_id": e.run_id,
@@ -340,8 +343,9 @@ async def _inspect(args: argparse.Namespace) -> int:
             "stage": e.record.stage.value if e.record else None,
             "reason": e.record.reason if e.record else (e.error.detail if e.error else ""),
             "pending_ops": [o.op_type for o in e.journal.pending_ops()] if e.record else [],
+            "dir": str(e.journal.dir),
         }
-        for e in store.runs_for_ticket(args.ticket)
+        for e in entries
     ]
     rec = ctx.record
     data = {
@@ -360,6 +364,8 @@ async def _inspect(args: argparse.Namespace) -> int:
         "overlap_warnings": rec.overlap_warnings,
         "overlap_decisions": rec.overlap_decisions,
         "release": rec.release,
+        "pending_feedback": rec.pending_feedback,
+        "jira_actions": [{"name": n, "to": t} for n, t in transitions],
         "local_runs": runs,
     }
     lines = [
@@ -380,14 +386,18 @@ async def _inspect(args: argparse.Namespace) -> int:
             f"{rec.pause.round_token or rec.pause.reason}"
         )
     lines.append(f"candidate: {rec.candidate_sha or '-'} PR #{rec.pr_number or '-'}")
-    lines.append(
-        f"overlap warnings: {rec.overlap_warnings or 'none'} decisions: {rec.overlap_decisions or 'none'}"
-    )
-    lines += [
-        f"run {r['run_id']}: {r['state']} {r['reason']}"
-        + (f" pending {r['pending_ops']}" if r["pending_ops"] else "")
-        for r in runs
-    ]
+    lines.append(f"overlap warnings: {', '.join(rec.overlap_warnings) or 'none'}")
+    if entries:
+        lines += ["", *latest_outcome(cfg, entries[-1])]
+    actions = jira_actions(cfg, transitions)
+    if actions:
+        lines += ["", *actions]
+    if runs:
+        lines += ["", "Runs on this machine (oldest first):"]
+        lines += [
+            f"  {r['run_id']}  {r['state']}" + (f"  pending {r['pending_ops']}" if r["pending_ops"] else "")
+            for r in runs
+        ]
     _print(data, args.json, "\n".join(lines))
     return EXIT_OK
 

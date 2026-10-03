@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from conftest import APPROVER, DEV, OTHER_DEV, STATUS_IDS
+from conftest import DEV, OTHER_DEV, STATUS_IDS
+from delivery.ports import IssueLink
 from delivery.supervisor import Supervisor
 from delivery.workflow import Status
 from fakes.github import FakeGitHub
@@ -76,7 +77,7 @@ async def test_overlapping_plans_from_two_developers_get_linked_deduplicated_war
         assert len(ids) == len(set(ids))
 
 
-async def test_shared_interface_blocks_dependent_ticket_until_human_decides(tmp_path: Path) -> None:
+async def test_shared_interface_and_declared_dependency_are_flagged_never_paused(tmp_path: Path) -> None:
     a, b = two_developers(tmp_path)
     fp_a = {"paths": ["src/a.ts"], "interfaces": ["SearchResult"]}
     fp_b = {"paths": ["src/b.ts"], "interfaces": ["searchresult"]}
@@ -84,29 +85,21 @@ async def test_shared_interface_blocks_dependent_ticket_until_human_decides(tmp_
     b.scenario({"plan-ticket": [{"footprint": fp_b}]})
     a.new_ticket("PILOT-1", assignee=DEV)
     a.submit("PILOT-1")
-    b.new_ticket("PILOT-2", assignee=OTHER_DEV)
+    link = IssueLink("Blocks", "inward", "is blocked by", "PILOT-1")
+    b.new_ticket("PILOT-2", assignee=OTHER_DEV, links=[link])
     b.submit("PILOT-2", author=OTHER_DEV)
     async with Supervisor(a.deps) as sa, Supervisor(b.deps) as sb:
         await _plan(a, sa, "PILOT-1")
         await _plan(b, sb, "PILOT-2")
-        assert any("Sequencing decision needed" in c for c in b.comments("PILOT-2"))
+        warnings = [c for c in b.comments("PILOT-2") if "Overlap warning" in c]
+        assert any("shared_contract" in c and "higher risk" in c for c in warnings)
+        assert any("declared_dependency" in c and "PILOT-2 depends on PILOT-1" in c for c in warnings)
+        assert not any("OVERLAP OVL-" in c for c in b.comments("PILOT-2"))
+        # No decision is needed: development starts as soon as the plan is approved.
         b.decide("PILOT-2", f"APPROVE PLAN {b.token('PILOT-2', 'PLAN')}", Status.READY_DEVELOPMENT)
         await step(sb)
-        assert b.jira.status_of("PILOT-2") is Status.BLOCKED
-        assert "sequencing decision needed with PILOT-1" in b.last_comment("PILOT-2")
-        assert b.record("PILOT-2").pause.blocker_kind == "overlap_dependency"  # type: ignore[union-attr]
-        wid = [
-            line.split(": ", 1)[1]
-            for c in b.comments("PILOT-2")
-            for line in c.splitlines()
-            if line.startswith("Sequencing decision needed: ")
-        ][0]
-        # A human decides the changes are independent and resumes.
-        b.jira.human_comment("PILOT-2", APPROVER, f"OVERLAP {wid} PROCEED")
-        b.jira.human_move("PILOT-2", Status.READY_DEVELOPMENT, OTHER_DEV)
-        await step(sb)
-        assert b.jira.status_of("PILOT-2") is Status.READY_VERIFICATION
-        assert b.record("PILOT-2").overlap_decisions[wid] == "PROCEED"
+        assert b.jira.status_of("PILOT-2") is Status.READY_VERIFICATION, b.last_comment("PILOT-2")
+        assert b.record("PILOT-2").pause is None
 
 
 async def test_behavioural_overlap_caught_by_integration_tree_without_text_conflict(tmp_path: Path) -> None:
