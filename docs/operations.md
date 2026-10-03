@@ -101,7 +101,7 @@ All directories are created with mode 0700 and files 0600. Do not commit anythin
 | Verification failed and the next step is unclear | `delivery inspect <KEY>`: every reason and finding in full, failed check output, Claude logs and what each Jira action available now does |
 | Overlap warning | Work continues. For a higher-risk one (shared interface, schema, migration or dependency) agree which ticket merges first; Revise scope or a `FOR CLAUDE` note if one ticket should change approach |
 | Remote ticket branch diverged | The ticket blocks. Reconcile the branch by hand (never force-push), then Resume |
-| Jira offline | Polling backs off; nothing is mutated; publication resumes when Jira is back |
+| Jira or GitHub offline | Polling backs off; nothing is mutated; publication resumes when Jira is back. If the application repository cannot be cloned or fetched when the supervisor starts (no network, GitHub down, expired credentials), it keeps running and logs "could not reach the application repository (…); retrying in Ns", retrying with the same backoff (15s doubling to 10 minutes). Nothing is reconciled or started until it succeeds; Ctrl-C or SIGTERM still stops it. Fix credentials if the error names them; the next retry picks it up |
 
 ## Delivery branches and documentation consolidation
 
