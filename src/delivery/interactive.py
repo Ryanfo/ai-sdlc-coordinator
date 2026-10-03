@@ -310,7 +310,7 @@ class InteractiveRunner:
             f"{inv.prompt()}\n\nThis is an interactive session. When the procedure is complete, use "
             f"the Write tool to write the structured result as one JSON object to {inv.result_path}; "
             f"it must match the schema in {inv.schema_path}. The coordinator reads the result from "
-            "that file."
+            "that file." + (f"\n\n{inv.closing}" if inv.closing else "")
         )
 
     def argv(self, inv: ClaudeInvocation, title: str) -> list[str]:

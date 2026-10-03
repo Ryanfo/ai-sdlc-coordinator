@@ -230,3 +230,43 @@ async def test_a_new_development_run_closes_the_open_session_and_keeps_its_chang
     assert _show(w, f"feature/{KEY}:src/b.ts") == "done\n"
     events = (Path(dev.journal_dir) / "events.jsonl").read_text()
     assert "wip_refreshed" in events and json.loads(events.splitlines()[0])
+
+
+async def test_after_actioning_change_requests_the_session_is_brought_up(tmp_path: Path) -> None:
+    w = make_world(tmp_path, interactive=True, checks={"unit": ["sh", "-c", "! grep -rq bug src"]})
+    w.scenario(
+        {
+            "implement-ticket": [
+                {"edit": {"src/search.ts": "export const s = 1; // bug\n"}},
+                {"edit": {"src/search.ts": "export const s = 1;\n"}},
+            ]
+        }
+    )
+    opened: list[str] = []
+
+    async def opener(app: str, folder: Path, title: str, attach: list[str]) -> None:
+        opened.append(title)
+
+    try:
+        w.new_ticket(KEY)
+        w.submit(KEY)
+        async with Supervisor(w.deps) as sup:
+            assert sup.open is not None
+            sup.open.opener, sup.open.attach_wait = opener, 0
+            await _to_development(w, sup)
+            await step(sup)  # c1: no change requests, so nothing is brought up
+            await step(sup)  # verification fails: R1 for the failed check
+            assert w.jira.status_of(KEY) is Status.CHANGES_REQUESTED
+            assert opened == []
+            w.jira.human_move(KEY, Status.READY_DEVELOPMENT, DEV)
+            await step(sup)  # c2 actions R1, publishes, then the session is brought up
+            assert w.record(KEY).candidate_number == 2
+            assert opened == [f"{KEY} implement-ticket"]
+            dev = _open(w, "implement-ticket")
+            assert dev is not None and _alive(w, dev.name)
+        prompts = [i["argv"][0] for i in w.invocations() if i["procedure"] == "implement-ticket"]
+        assert "The changes requested in Jira have been actioned" not in prompts[0]
+        assert "change requests from Jira: R1" in prompts[1]
+        assert "Are there any further changes you'd like to make?" in prompts[1]
+    finally:
+        subprocess.run(["tmux", "-L", w.cfg.claude.interactive.socket, "kill-server"], capture_output=True)

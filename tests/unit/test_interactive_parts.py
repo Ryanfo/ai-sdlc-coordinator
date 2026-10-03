@@ -295,3 +295,20 @@ def test_coordinator_alone_starts_the_supervisor(argv: list[str], expected: list
 
     sub = next(a for a in parser()._actions if a.dest == "command")
     assert coordinator_args(argv, set(sub.choices)) == expected  # type: ignore[attr-defined]
+
+
+def test_only_change_requests_get_a_closing_message() -> None:
+    from delivery.stages import change_ids, closing_note
+
+    assert change_ids({"Q1": "answer", "F10": "x", "F2": "y", "F2@123": "z", "R1": "check"}) == [
+        "F2",
+        "F10",
+        "R1",
+    ]
+    note = closing_note("implement-ticket", ["F1", "R1"])
+    assert "change requests from Jira: F1, R1" in note
+    assert "The changes requested in Jira have been actioned" in note
+    assert "pushes them as the next candidate" in note
+    assert "requested in Jira" in closing_note("refine-ticket", ["F1"])
+    assert closing_note("verify-ticket", ["F1"]) == ""
+    assert closing_note("implement-ticket", []) == ""

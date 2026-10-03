@@ -50,6 +50,7 @@ from delivery.ports import IntegrationError
 from delivery.proc import pid_alive, process_start_marker, signal_group
 from delivery.publication import Publisher
 from delivery.runtime import Deps, RunContext
+from delivery.stages import change_ids
 from delivery.workflow import STAGES, STATUS_NAMES, Stage, Status, stage_for_active
 
 log = logging.getLogger("delivery")
@@ -370,8 +371,11 @@ class Supervisor:
         async def runner() -> RunRecord:
             try:
                 if publish_only:
-                    return await self.executor.resume_publication(rc)
-                return await self.executor.execute(rc)
+                    record = await self.executor.resume_publication(rc)
+                else:
+                    record = await self.executor.execute(rc)
+                await self._surface_changes(rc, record)
+                return record
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -402,6 +406,29 @@ class Supervisor:
                 self.cfg, rc.record, rc.ticket.issue.view.summary, resumed=resume, adopted=rc.record.adopted
             )
         )
+
+    async def _surface_changes(self, rc: RunContext, record: RunRecord) -> None:
+        """A run that actioned change requests from Jira has published: bring its open Claude
+        session up, where Claude has listed what it did and asked for anything further."""
+        if self.open is None or record.state not in (RunState.AWAITING_HUMAN, RunState.COMPLETED):
+            return
+        ids = change_ids(rc.record.outputs.get("feedback_items") or rc.intake.feedback_items)
+        if not ids:
+            return
+        text = (
+            f"{rc.key}: the changes requested in Jira ({', '.join(ids)}) are done and published. "
+            "Anything further? Type it here."
+        )
+        try:
+            if await self.open.surface(rc.run_id, text):
+                self.emit(
+                    console.line(
+                        f"{rc.key}: changes {', '.join(ids)} actioned; its Claude session is open for "
+                        f"anything further: delivery attach {rc.key}"
+                    )
+                )
+        except Exception as exc:  # a window must never fail a finished run
+            log.warning("could not bring up the session of %s: %s", rc.run_id, exc)
 
     def _on_child(self, key: str, proc: ChildHandle | None) -> None:
         if key in self.sessions:

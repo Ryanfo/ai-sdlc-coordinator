@@ -20,6 +20,7 @@ sessions in ``<state_dir>/open-sessions`` (so they survive a coordinator restart
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable
@@ -32,7 +33,7 @@ from pydantic import Field
 from delivery import comments, console
 from delivery.git import BranchDiverged, GitError, commit_url
 from delivery.intake import load_context
-from delivery.interactive import discard_transcript
+from delivery.interactive import discard_transcript, open_window
 from delivery.journal import RunJournal, atomic_write_json, ensure_private_dir
 from delivery.models import GateKind, Model, RunState, utcnow
 from delivery.ports import IntegrationError
@@ -149,6 +150,11 @@ class OpenSessions:
         self.busy = busy
         self.registry = SessionRegistry(self.cfg.runtime.state_dir)
         self.tmux = tmux_for(self.cfg.claude.interactive, self.cfg.runtime.state_dir)
+        # Opens a terminal window on a session (None: never open windows).
+        self.opener: Callable[[str, Path, str, list[str]], Any] | None = (
+            open_window if self.cfg.claude.interactive.window != "none" else None
+        )
+        self.attach_wait = 5.0  # seconds for a newly opened window to attach
         self._noted: set[str] = set()
         self._last_full: datetime | None = None
 
@@ -162,6 +168,31 @@ class OpenSessions:
             self.emit(
                 console.line(f"{rec.ticket_key}: changes in the open {rec.procedure} session wait: {reason}")
             )
+
+    async def surface(self, run_id: str, text: str) -> bool:
+        """Put a run's open session in front of the developer: open a terminal window on it
+        unless one is already attached, then show ``text`` on its status line."""
+        shown = False
+        for rec in self.registry.all():
+            if rec.run_id != run_id or not await self.tmux.alive(rec.name):
+                continue
+            if self.opener is not None and not await self.tmux.has_clients(rec.name):
+                title = f"{rec.ticket_key} {rec.procedure}"
+                problem = await self.opener(
+                    self.cfg.claude.interactive.window,
+                    Path(rec.session_dir),
+                    title,
+                    self.tmux.attach_argv(rec.name),
+                )
+                if problem:
+                    log.warning("could not open a window on %s: %s", rec.name, problem)
+                for _ in range(int(self.attach_wait * 10)):  # it attaches a moment after opening
+                    if await self.tmux.has_clients(rec.name):
+                        break
+                    await asyncio.sleep(0.1)
+            await self.tmux.message(rec.name, text)
+            shown = True
+        return shown
 
     # ------------------------------------------------------------------ polling
     async def tick(self) -> None:

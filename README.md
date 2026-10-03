@@ -452,6 +452,15 @@ otherwise the change waits and the terminal says why. It needs three transitions
 named **Submit follow-up changes**, from Code review, Acceptance review and Changes requested to
 Ready for verification (`delivery workflow verify --yes` checks them once they exist).
 
+**After acting on changes you asked for in Jira** (`CHANGE …`, `SUBMIT CHANGES …` or
+verification findings), Claude ends the session by listing each item and what it did ("The
+changes requested in Jira have been actioned: …") and asks whether you would like any further
+changes. Once the coordinator has published the result, it brings that session up: a terminal
+window opens on it if none is attached, with a note on the status line. In a development
+session, further changes you ask for there are pushed as the next candidate. For the
+specification, plan or release proposal, ask questions there; further changes to those go
+through Jira as a new change request.
+
 A session closes when you type `/exit` (or `delivery close <ticket>`), after `idle_close_hours`
 with nothing happening, when a new run of the same stage starts for the ticket, or when the
 ticket is done or cancelled. Its conversation is kept with the run's logs

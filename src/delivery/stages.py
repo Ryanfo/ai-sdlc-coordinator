@@ -145,6 +145,44 @@ def share_check_logs(ctx: RunContext, checks: list[CheckResult]) -> None:
             shutil.copy(c.log_path, dest / Path(c.log_path).name)
 
 
+# Procedures that action change requests, and what they change.
+CHANGES_BY_PROCEDURE = {
+    "refine-ticket": "specification",
+    "plan-ticket": "plan",
+    "implement-ticket": "code",
+    "prepare-release": "release proposal",
+}
+
+
+def change_ids(items: dict[str, str]) -> list[str]:
+    """Requested changes (F) and problems the coordinator found (R); answers (Q) are not changes."""
+    ids = {k.split("@")[0] for k in items if k[:1] in ("F", "R") and k.split("@")[0][1:].isdigit()}
+    return sorted(ids, key=lambda i: (i[0], int(i[1:])))
+
+
+def closing_note(procedure: str, ids: list[str]) -> str:
+    """Finish an interactive session that actioned Jira change requests by saying so, item by
+    item, and asking for anything further (the session stays open for the reply)."""
+    if procedure not in CHANGES_BY_PROCEDURE or not ids:
+        return ""
+    what = CHANGES_BY_PROCEDURE[procedure]
+    further = (
+        "If they ask for more, make those changes here too: the coordinator pushes them as the "
+        "next candidate, which is reviewed and verified again."
+        if procedure == "implement-ticket"
+        else f"Answer questions here. Further changes to the {what} are requested in Jira: a "
+        "comment with numbered items using the token in the coordinator's newest comment, then "
+        f"the Request {what} changes action."
+    )
+    return (
+        f"This run actions change requests from Jira: {', '.join(ids)} (`feedback_items` in the "
+        "envelope). After writing the result file, finish with a short message to the developer "
+        'that starts "The changes requested in Jira have been actioned:", gives one line per item '
+        'saying what you did (or why you did not), and ends by asking "Are there any further '
+        f"changes you'd like to make?\" {further}"
+    )
+
+
 def notes_for(ctx: RunContext) -> list[tuple[JiraComment, str]]:
     """`FOR CLAUDE` notes for this run's stage from the developer, assignee or approvers."""
     view = ctx.ticket.issue.view
@@ -381,6 +419,9 @@ class StageStrategy:
             session_dir=ctx.journal.dir / "sessions" / procedure,
             result_path=out_dir / RESULT_FILE,
             schema_path=schema_path,
+            closing=closing_note(procedure, change_ids(envelope.feedback_items))
+            if ctx.cfg.claude.interactive.keep_open
+            else "",
             expect={
                 "contract_id": ctx.deps.plugin.contracts[procedure],
                 "procedure": procedure,
