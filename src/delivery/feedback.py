@@ -41,6 +41,8 @@ class DecisionKind(StrEnum):
     REVISE_SCOPE = "REVISE SCOPE"
     SUBMIT_CHANGES = "SUBMIT CHANGES"
     ACCEPT_DEVIATIONS = "ACCEPT DEVIATIONS"
+    # Create the tickets a specification or a spike's findings proposed (S1, S2...).
+    CREATE_TICKETS = "CREATE TICKETS"
     ANSWERS = "ANSWERS"
 
 
@@ -62,14 +64,15 @@ _TOKEN_KIND: dict[DecisionKind, str] = {
 }
 
 _HEADER = re.compile(
-    r"^(?P<verb>APPROVE|CHANGE|ACCEPT|RECORD|REVISE|SUBMIT)\s+"
-    r"(?P<subject>SPEC|PLAN|CODE|DELIVERY|ACCEPTANCE|RELEASE|SCOPE|CHANGES|DEVIATIONS)\s+"
+    r"^(?P<verb>APPROVE|CHANGE|ACCEPT|RECORD|REVISE|SUBMIT|CREATE)\s+"
+    r"(?P<subject>SPEC|PLAN|CODE|DELIVERY|ACCEPTANCE|RELEASE|SCOPE|CHANGES|DEVIATIONS|TICKETS)\s+"
     r"(?P<token>\S+)\s*$"
 )
 _ANSWERS = re.compile(r"^ANSWERS\s+(?P<token>\S+)\s*$")
-_ITEM = re.compile(r"^(?P<id>[QFD]\d{1,3})\s*[:.)-]\s*(?P<text>.*)$")
-# Deviation IDs on their own, alone or as a list ("D1", "D1, D3"): accepting them needs no note.
-_D_LIST = re.compile(r"^D\d{1,3}(?:\s*[,;\s]\s*D\d{1,3})*\s*[.]?$")
+_ITEM = re.compile(r"^(?P<id>[QFDS]\d{1,3})\s*[:.)-]\s*(?P<text>.*)$")
+# Deviation or proposed-ticket IDs on their own, alone or as a list ("D1", "S1, S3"): accepting
+# them needs no note.
+_D_LIST = re.compile(r"^[DS]\d{1,3}(?:\s*[,;\s]\s*[DS]\d{1,3})*\s*[.]?$")
 _FIELD = re.compile(r"^(?P<name>commit|environment|merged-pr|pr)\s*:\s*(?P<value>\S+)\s*$", re.I)
 
 
@@ -89,6 +92,10 @@ def is_coordinator_comment(comment: JiraComment) -> bool:
 def token_matches_kind(kind: DecisionKind, token: str) -> bool:
     if kind is DecisionKind.ANSWERS:
         return bool(ROUND_TOKEN.match(token))
+    if kind is DecisionKind.CREATE_TICKETS:
+        # A specification's proposals, or a spike's findings (reviewed as its plan).
+        m = GATE_TOKEN.match(token)
+        return bool(m and m.group("kind") in ("SPEC", "PLAN"))
     expected = _TOKEN_KIND[kind]
     m = GATE_TOKEN.match(token) or CANDIDATE_TOKEN.match(token)
     return bool(m and m.group("kind") == expected)
@@ -123,7 +130,7 @@ def parse_decision(text: str) -> Decision | None:
         if MARKER_PREFIX in ln:
             continue
         if _D_LIST.match(ln):
-            for did in re.findall(r"D\d{1,3}", ln):
+            for did in re.findall(r"[DS]\d{1,3}", ln):
                 if did in items:
                     problems.append(f"{did} appears more than once")
                 items[did] = ""
@@ -261,9 +268,12 @@ def collect_feedback(
     kinds: set[DecisionKind],
     since: datetime | None,
     allowed_authors: Container[str],
+    allow_empty: bool = False,
 ) -> FeedbackSet:
     """Numbered feedback (F1, F2...) bound to one artefact or candidate token. Changes to a
-    candidate can also name deviations from the specification to change back (D1, D2...)."""
+    candidate can also name deviations from the specification to change back (D1, D2...).
+    ``allow_empty``: the request may have no items of its own (the PR's review comments are
+    the items, see delivery.pr_feedback)."""
     found = decisions(comments, token=token, kinds=kinds, since=since)
     prefixes = ("F", "D") if kinds & CANDIDATE_CHANGES else ("F",)
     items: dict[str, str] = {}
@@ -282,7 +292,7 @@ def collect_feedback(
                 key = fid if fid not in items else f"{fid}@{cd.comment.id}"
                 items[key] = text
         used.append(cd)
-    if used and not items:
+    if used and not items and not allow_empty:
         problems.append("change request has no numbered feedback items (F1: ...)")
     return FeedbackSet(token, items, tuple(used), tuple(unauthorised), tuple(problems))
 
@@ -311,6 +321,9 @@ _NOTE = re.compile(
 )
 
 
+_PROJECT_SCOPE = re.compile(r"^FOR\s+CLAUDE\s+project\b", re.I)
+
+
 def note_text(comment: JiraComment, stage: str) -> str | None:
     """The guidance in a ``FOR CLAUDE [stage]`` comment for this stage, or None.
 
@@ -321,6 +334,8 @@ def note_text(comment: JiraComment, stage: str) -> str | None:
     if is_coordinator_comment(comment):
         return None
     first, _, rest = comment.body_text.strip().partition("\n")
+    if _PROJECT_SCOPE.match(first.strip()):
+        return None  # project guidance (delivery.guidance), not a note for this ticket's sessions
     m = _NOTE.match(first.strip())
     if not m:
         return None

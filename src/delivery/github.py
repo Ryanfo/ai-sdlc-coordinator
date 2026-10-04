@@ -25,6 +25,8 @@ from delivery.ports import (
     PullRequest,
     RepoInfo,
     Review,
+    ReviewComment,
+    ReviewThread,
     UncertainResult,
 )
 from delivery.proc import ProcessStartError, run_process
@@ -169,6 +171,7 @@ class GhClient:
                 r.get("commit_id", ""),
                 _dt(r.get("submitted_at")),
                 (r.get("user") or {}).get("type", "User"),
+                r.get("body") or "",
             )
             for r in data or []
         ]
@@ -274,3 +277,89 @@ class GhClient:
     async def prs_for_commit(self, sha: str) -> list[PullRequest]:
         data = await self.api(f"repos/{self.slug}/commits/{sha}/pulls")
         return [self._pr(d) for d in data or []]
+
+    async def review_threads(self, number: int) -> list[ReviewThread]:
+        """Every review thread of a PR, with whether it is resolved (GraphQL only says that)."""
+        owner, name = self.slug.split("/", 1)
+        threads: list[ReviewThread] = []
+        cursor: str | None = None
+        for _ in range(20):  # 20 pages of 100 threads
+            data = await self.api(
+                "graphql",
+                method="POST",
+                body={
+                    "query": _THREADS_QUERY,
+                    "variables": {"owner": owner, "name": name, "number": number, "cursor": cursor},
+                },
+            )
+            page = (((data or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {}
+            found = page.get("reviewThreads") or {}
+            for t in found.get("nodes") or []:
+                threads.append(
+                    ReviewThread(
+                        str(t.get("id", "")),
+                        t.get("path") or "",
+                        t.get("line") or t.get("originalLine"),
+                        bool(t.get("isResolved")),
+                        bool(t.get("isOutdated")),
+                        tuple(
+                            ReviewComment(
+                                (c.get("author") or {}).get("login", ""),
+                                c.get("body") or "",
+                                _dt(c.get("createdAt")),
+                                c.get("url") or "",
+                            )
+                            for c in (t.get("comments") or {}).get("nodes") or []
+                        ),
+                    )
+                )
+            info = found.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                break
+            cursor = info.get("endCursor")
+        return threads
+
+    async def revert_pr(self, number: int, title: str, body: str) -> PullRequest:
+        """Open a pull request that reverts a merged one, as GitHub's Revert button does (it handles
+        merge, squash and rebase merges alike). Nothing is merged."""
+        node = (await self.api(f"repos/{self.slug}/pulls/{number}"))["node_id"]
+        data = await self.api(
+            "graphql",
+            method="POST",
+            body={
+                "query": _REVERT_MUTATION,
+                "variables": {"id": node, "title": title, "body": body},
+            },
+        )
+        errors = (data or {}).get("errors")
+        if errors:
+            raise IntegrationError(
+                f"GitHub could not revert PR #{number}: {errors[0].get('message', errors)}"
+            )
+        made = data["data"]["revertPullRequest"]["revertPullRequest"]
+        return await self.get_pr(int(made["number"]))
+
+
+_REVERT_MUTATION = """
+mutation($id: ID!, $title: String!, $body: String!) {
+  revertPullRequest(input: {pullRequestId: $id, title: $title, body: $body}) {
+    revertPullRequest { number url }
+  }
+}
+"""
+
+_THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isResolved isOutdated path line originalLine
+          comments(first: 50) { nodes { author { login } body createdAt url } }
+        }
+      }
+    }
+  }
+}
+"""

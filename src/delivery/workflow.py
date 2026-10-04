@@ -155,6 +155,9 @@ class Action(StrEnum):
     RESUME_RELEASE_PREPARATION = "resume_release_preparation"
     RESUME_RELEASE_VERIFICATION = "resume_release_verification"
     CANCEL = "cancel"
+    # Optional routes (OPTIONAL_ROUTES): each needs one more transition in Jira.
+    USE_APPROVED_PLAN = "use_approved_plan"
+    COMPLETE_SPIKE = "complete_spike"
 
 
 # Transition display names from the setup instructions. Configurable per site.
@@ -202,6 +205,8 @@ DEFAULT_ACTION_NAMES: dict[Action, str] = {
     Action.RESUME_RELEASE_PREPARATION: "Resume release preparation",
     Action.RESUME_RELEASE_VERIFICATION: "Resume release verification",
     Action.CANCEL: "Cancel",
+    Action.USE_APPROVED_PLAN: "Use approved plan",
+    Action.COMPLETE_SPIKE: "Complete spike",
 }
 
 
@@ -232,6 +237,7 @@ class Requirement(StrEnum):
     BLOCKER_RESOLVED = "blocker_resolved"
     CANCEL_REASON = "cancel_reason"
     STAGE_SUCCESS = "stage_success"
+    PLAN_WITH_SPECIFICATION = "plan_with_specification"
 
 
 @dataclass(frozen=True)
@@ -487,6 +493,23 @@ RECORD_RELEASE_ROUTE = Route(
     Requirement.RELEASE_RECORD,
 )
 
+# Optional routes for kinds of work, each needing one more transition in Jira (added only by
+# teams that use it; without it the coordinator takes the full route instead):
+# * a fast-track ticket's plan is written and approved with its specification, so planning
+#   publishes that plan as approved and goes straight on to development;
+# * a spike ends when its findings are approved: there is nothing to build or release.
+FAST_TRACK_ROUTE = Route(
+    Status.PLANNING,
+    Action.USE_APPROVED_PLAN,
+    Status.READY_DEVELOPMENT,
+    Actor.COORDINATOR,
+    Requirement.PLAN_WITH_SPECIFICATION,
+)
+SPIKE_ROUTE = Route(
+    Status.READY_DEVELOPMENT, Action.COMPLETE_SPIKE, Status.DONE, Actor.COORDINATOR, Requirement.PLAN_APPROVAL
+)
+OPTIONAL_ROUTES: tuple[Route, ...] = (FAST_TRACK_ROUTE, SPIKE_ROUTE)
+
 ROUTES: tuple[Route, ...] = (
     _HUMAN_MAIN
     + _HUMAN_RESUME
@@ -494,6 +517,7 @@ ROUTES: tuple[Route, ...] = (
     + _coordinator_routes()
     + FOLLOW_UP_ROUTES
     + (RECORD_RELEASE_ROUTE,)
+    + OPTIONAL_ROUTES
 )
 
 

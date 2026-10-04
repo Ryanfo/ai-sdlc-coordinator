@@ -407,6 +407,21 @@ async def _status(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+async def _team(args: argparse.Namespace) -> int:
+    """Every in-flight ticket in the project, any assignee, by what it waits on."""
+    from delivery import team
+    from delivery.jira import JiraClient
+
+    cfg = _load(args)
+    jira = JiraClient(cfg)
+    try:
+        rows = await team.board(cfg, jira)
+    finally:
+        await jira.close()
+    _print(team.as_json(rows), args.json, team.render(rows, cfg.jira.base_url))
+    return EXIT_OK
+
+
 async def _inspect(args: argparse.Namespace) -> int:
     from delivery.explain import jira_actions, latest_outcome
     from delivery.intake import IntakeEvaluator, load_context
@@ -817,14 +832,18 @@ def _tmux(cfg: Config) -> Any:
 
 
 def _ticket_sessions(cfg: Config, ticket: str, procedure: str | None) -> list[str]:
-    """The ticket's tmux sessions: Claude's, or with ``procedure`` "preview" its running app."""
-    from delivery.preview import PROCEDURE as PREVIEW
+    """The ticket's tmux sessions: Claude's, or with ``procedure`` "preview" (development) or
+    "acceptance" its running app."""
+    from delivery.preview import APP_PROCEDURES
     from delivery.tmux import session_name
 
     names = asyncio.run(_tmux(cfg).sessions())
     prefix = session_name(ticket, procedure) if procedure else session_name(ticket, "")
     found = [n for n in names if n.startswith(prefix)]
-    return found if procedure == PREVIEW else [n for n in found if n != session_name(ticket, PREVIEW)]
+    if procedure in APP_PROCEDURES:
+        return found
+    apps = {session_name(ticket, a) for a in APP_PROCEDURES}
+    return [n for n in found if n not in apps]
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
@@ -866,6 +885,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
 
 def cmd_sessions(args: argparse.Namespace) -> int:
     """Claude sessions in tmux: working now, or left open for questions; and running apps."""
+    from delivery.acceptance import AcceptanceStore
     from delivery.open_sessions import SessionRegistry
 
     cfg = _load(args)
@@ -873,6 +893,8 @@ def cmd_sessions(args: argparse.Namespace) -> int:
     registry = SessionRegistry(cfg.runtime.state_dir).all()
     kept = {r.name: r for r in registry}
     apps = {r.preview.name: (r.ticket_key, r.preview) for r in registry if r.preview}
+    accepting = AcceptanceStore(cfg.runtime.state_dir).all()
+    apps.update({st.preview.name: (st.ticket_key, st.preview) for st in accepting if st.preview})
     rows = []
     for n in names:
         if n in apps:
@@ -882,7 +904,7 @@ def cmd_sessions(args: argparse.Namespace) -> int:
                     "tmux_session": n,
                     "state": f"app {app.state} at {app.url}",
                     "ticket": ticket,
-                    "procedure": "preview",
+                    "procedure": n.removeprefix(f"{ticket}-"),
                     "since": app.started_at.isoformat(),
                     "follow_ups": [],
                     "waiting": "",
@@ -919,7 +941,9 @@ def cmd_sessions(args: argparse.Namespace) -> int:
 
 
 def cmd_preview(args: argparse.Namespace) -> int:
-    """Open the app running from a ticket's development session, or ask for it to start again."""
+    """Open the app running for a ticket (from its development session, or its candidate in
+    Acceptance review), or ask the coordinator to start it again."""
+    from delivery.acceptance import AcceptanceStore
     from delivery.open_sessions import SessionRegistry
     from delivery.preview import RESTART, answers, open_url
     from delivery.workflow import Stage
@@ -933,14 +957,17 @@ def cmd_preview(args: argparse.Namespace) -> int:
         for r in SessionRegistry(cfg.runtime.state_dir).for_ticket(args.ticket)
         if r.stage is Stage.DEVELOPMENT
     ]
-    if not found:
+    accepting = AcceptanceStore(cfg.runtime.state_dir).load(args.ticket)
+    host: Any = found[-1] if found else accepting
+    if host is None:
         print(
-            f"{args.ticket} has no development session open; the app runs from one while it is open.",
+            f"{args.ticket} has no app here: it runs while a development session is open, and while "
+            f"the ticket is in Acceptance review. To run its candidate now: delivery try {args.ticket}",
             file=sys.stderr,
         )
         return EXIT_FAIL
-    rec = found[-1]
-    p = rec.preview
+    procedure = "preview" if found else "acceptance"
+    p = host.preview
     if p and p.state == "ready" and answers(p.url):
         problem = asyncio.run(open_url(p.url))
         print(
@@ -951,13 +978,139 @@ def cmd_preview(args: argparse.Namespace) -> int:
     if p and p.state == "starting" and asyncio.run(_tmux(cfg).alive(p.name)):
         print(
             f"{args.ticket}: the app is still starting at {p.url}; your browser opens when it answers. "
-            f"Its output: delivery attach {args.ticket} --procedure preview"
+            f"Its output: delivery attach {args.ticket} --procedure {procedure}"
         )
         return EXIT_OK
-    (Path(rec.session_dir) / RESTART).touch()
+    Path(host.session_dir).mkdir(parents=True, exist_ok=True)
+    (Path(host.session_dir) / RESTART).touch()
     print(
         f"{args.ticket}: asked the coordinator to start the app again; your browser opens when it "
-        f"answers. Its output: delivery attach {args.ticket} --procedure preview"
+        f"answers. Its output: delivery attach {args.ticket} --procedure {procedure}"
+    )
+    return EXIT_OK
+
+
+def cmd_try(args: argparse.Namespace) -> int:
+    """Run a ticket's candidate on this machine and open it in the browser (Ctrl-C stops it)."""
+    from delivery.try_app import TryError, try_candidate
+
+    cfg = _load(args)
+    repo = build_repo(cfg)
+
+    async def go() -> int:
+        jira: Any = None
+        try:
+            from delivery.jira import JiraClient
+
+            jira = JiraClient(cfg)
+        except Exception as exc:  # no credentials on this machine: the branch head still works
+            print(f"Jira is not available here ({exc}); using the head of feature/{args.ticket}")
+        try:
+            return await try_candidate(cfg, args.ticket, repo=repo, jira=jira, ref=args.ref, keep=args.keep)
+        finally:
+            if jira is not None:
+                await jira.close()
+
+    try:
+        return asyncio.run(go())
+    except TryError as exc:
+        print(f"{args.ticket}: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    except KeyboardInterrupt:
+        return EXIT_OK
+
+
+def cmd_guidance(args: argparse.Namespace) -> int:
+    """Show the project's guidance for Claude, or add an entry to it."""
+    import uuid
+
+    from delivery import guidance
+    from delivery.models import utcnow
+
+    cfg = _load(args)
+    repo = build_repo(cfg)
+
+    async def go() -> int:
+        await repo.ensure()
+        if args.action == "add":
+            text = " ".join(args.text).strip()
+            if not text:
+                print('Nothing to add: delivery guidance add "<what Claude should know>"', file=sys.stderr)
+                return EXIT_FAIL
+            from delivery.jira import JiraClient
+
+            jira = JiraClient(cfg)
+            try:
+                g = guidance.Guidance(cfg, jira, None, repo)
+                entry = ("delivery guidance add", f"cli-{uuid.uuid4().hex[:12]}", text, utcnow(), "")
+                sha = await g.add([entry])
+            finally:
+                await jira.close()
+            print(f"Added. Every Claude session now reads {guidance.url(cfg, sha) if sha else guidance.PATH}")
+            return EXIT_OK
+        found = await guidance.current(repo)
+        if not found:
+            print(
+                "No project guidance yet. Add some with a Jira comment whose first line is "
+                '`FOR CLAUDE project`, or `delivery guidance add "<text>"`.'
+            )
+            return EXIT_OK
+        sha = await repo.remote_sha(guidance.BRANCH)
+        print(found.rstrip())
+        print(f"\nOn GitHub: {guidance.url(cfg, sha or guidance.BRANCH)}")
+        print(f"Edit it: {guidance.edit_url(cfg)}")
+        return EXIT_OK
+
+    return asyncio.run(go())
+
+
+def cmd_revert(args: argparse.Namespace) -> int:
+    """Open a pull request reverting a released ticket, and a Bug for the rework."""
+    from delivery.github import GhClient
+    from delivery.revert import RevertError, done_before, revert_release
+
+    cfg = _load(args)
+    earlier = done_before(cfg, args.ticket)
+    if earlier and not args.again:
+        print(
+            f"{args.ticket} was already reverted: {earlier.get('revert_pr')} (rework {earlier.get('bug')}). "
+            "--again opens another revert."
+        )
+        return EXIT_OK
+    if not args.yes:
+        if not _interactive_terminal():
+            print(
+                "Add --yes to confirm (it opens a pull request and creates a Jira ticket).", file=sys.stderr
+            )
+            return EXIT_FAIL
+        answer = input(
+            f"Open a pull request reverting {args.ticket}'s merged PR, and a Bug for the rework? [y/N] "
+        )
+        if answer.strip().lower() not in ("y", "yes"):
+            print("Nothing done.")
+            return EXIT_OK
+
+    async def go() -> dict[str, str]:
+        from delivery.jira import JiraClient
+
+        jira = JiraClient(cfg)
+        try:
+            return await revert_release(
+                cfg, jira, GhClient(cfg.repository.slug), args.ticket, args.reason or ""
+            )
+        finally:
+            await jira.close()
+
+    try:
+        done = asyncio.run(go())
+    except RevertError as exc:
+        print(f"{args.ticket}: {exc}", file=sys.stderr)
+        return EXIT_FAIL
+    _print(
+        done,
+        args.json,
+        f"Revert pull request: {done['revert_pr']} (review and merge it to take the change out)\n"
+        f"Rework: {done['bug']} in Backlog, linked to {args.ticket}",
     )
     return EXIT_OK
 
@@ -1272,6 +1425,10 @@ def parser(prog: str = "delivery") -> argparse.ArgumentParser:
     sp = with_config(sub.add_parser("status", help="sessions, states and next human actions"))
     sp.set_defaults(afunc=_status)
     sp = with_config(
+        sub.add_parser("team", help="every in-flight ticket in the project and what it waits on")
+    )
+    sp.set_defaults(afunc=_team)
+    sp = with_config(
         sub.add_parser("stop", help="stop the coordinator, or with a ticket only that ticket's session")
     )
     sp.add_argument("ticket", nargs="?")
@@ -1307,7 +1464,8 @@ def parser(prog: str = "delivery") -> argparse.ArgumentParser:
     sp.add_argument("ticket", nargs="?", help="without one: the coordinator itself")
     sp.add_argument(
         "--procedure",
-        help="which session, if the ticket has several (e.g. implement-ticket); preview: the running app",
+        help="which session, if the ticket has several (e.g. implement-ticket); preview or acceptance: "
+        "the running app",
     )
     sp.set_defaults(func=cmd_attach)
     sp = with_config(
@@ -1315,10 +1473,32 @@ def parser(prog: str = "delivery") -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_sessions)
     sp = with_config(
-        sub.add_parser("preview", help="open the app running from a ticket's development session")
+        sub.add_parser(
+            "preview",
+            help="open the app running for a ticket (its development session, or Acceptance review)",
+        )
     )
     sp.add_argument("ticket")
     sp.set_defaults(func=cmd_preview)
+    sp = with_config(
+        sub.add_parser("try", help="run a ticket's candidate on this machine and open it in your browser")
+    )
+    sp.add_argument("ticket")
+    sp.add_argument("--ref", help="run this commit or branch instead of the ticket's candidate")
+    sp.add_argument("--keep", action="store_true", help="keep the worktree afterwards")
+    sp.set_defaults(func=cmd_try)
+    sp = with_config(
+        sub.add_parser("revert", help="open a PR that reverts a released ticket, and a Bug for the rework")
+    )
+    sp.add_argument("ticket")
+    sp.add_argument("--reason", help="why it is being reverted (goes into the PR, the Bug and Jira)")
+    sp.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    sp.add_argument("--again", action="store_true", help="revert again even if it was reverted before")
+    sp.set_defaults(func=cmd_revert)
+    sp = with_config(sub.add_parser("guidance", help="show the project's guidance for Claude, or add to it"))
+    sp.add_argument("action", nargs="?", choices=["show", "add"], default="show")
+    sp.add_argument("text", nargs="*", help="add: what every Claude session should know")
+    sp.set_defaults(func=cmd_guidance)
     sp = with_config(sub.add_parser("close", help="end a ticket's Claude session left open for questions"))
     sp.add_argument("ticket")
     sp.add_argument("--procedure")

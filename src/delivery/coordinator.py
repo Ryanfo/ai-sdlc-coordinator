@@ -15,8 +15,10 @@ from delivery.attachments import ATTACHMENT_STAGES, fetch_attachments
 from delivery.claude import HUMAN_ACTION, ClaudeStatus
 from delivery.designs import fetch_designs, figma_links
 from delivery.git import BranchDiverged, GitError, WorktreeConflict
+from delivery.guidance import copy_for_run
 from delivery.intake import Intake, IntakeKind, TicketContext, brief_text, load_context
 from delivery.journal import RunJournal, new_run_id
+from delivery.linked import linked_tickets
 from delivery.models import Outcome, RunRecord, RunState, digest, utcnow
 from delivery.open_sessions import SessionRegistry
 from delivery.ports import IntegrationError, UncertainResult
@@ -124,6 +126,7 @@ class StageExecutor:
         strategy = STRATEGIES[stage](rc)
         try:
             await self._start(rc, sd.ready, sd.active)
+            rc.guidance = await copy_for_run(self.deps.repo, rc.inputs_dir / "project-guidance.md")
             await self._fetch_attachments(rc)
             decision = await self._decide(rc, strategy, sd.active)
             rc.record.outputs["decision"] = decision.model_dump(mode="json")
@@ -204,6 +207,7 @@ class StageExecutor:
         if rc.record.stage not in ATTACHMENT_STAGES:
             return
         await self._fetch_designs(rc)
+        await self._fetch_linked(rc)
         if not rc.ticket.issue.attachments:
             return
         rc.attachments, rc.attachments_skipped = await fetch_attachments(
@@ -218,6 +222,18 @@ class StageExecutor:
                 "given": [{"file": a.filename, "sha256": a.sha256, "size": a.size} for a in rc.attachments],
                 "skipped": [{"file": a.filename, "reason": a.reason} for a in rc.attachments_skipped],
             },
+        )
+
+    async def _fetch_linked(self, rc: RunContext) -> None:
+        """Linked tickets, with their approved documents (delivery.linked)."""
+        if not rc.ticket.issue.links:
+            return
+        rc.linked = await linked_tickets(
+            self.deps.jira, self.deps.repo, rc.cfg.repository.url, rc.ticket.issue, rc.inputs_dir / "linked"
+        )
+        rc.journal.events.append(
+            "linked",
+            {"tickets": [{"key": t.key, "documents": len(t.documents)} for t in rc.linked]},
         )
 
     async def _fetch_designs(self, rc: RunContext) -> None:

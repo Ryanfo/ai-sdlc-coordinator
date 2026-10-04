@@ -21,6 +21,7 @@ from delivery.config import Config
 from delivery.ports import IntegrationError, JiraPort, JiraTransition
 from delivery.workflow import (
     FOLLOW_UP_ROUTES,
+    OPTIONAL_ROUTES,
     PAUSED_STATUSES,
     ROUTES,
     STATUS_NAMES,
@@ -144,6 +145,7 @@ class _Walker:
             if r.source is status
             and r.resume_stage is None
             and (follow_ups or r.action is not Action.SUBMIT_FOLLOW_UP)
+            and r not in OPTIONAL_ROUTES
         }
 
     async def status_of(self, key: str) -> Status | None:
@@ -166,7 +168,7 @@ class _Walker:
         # Follow-up transitions are only required with interactive sessions kept open.
         optional |= {
             (self.cfg.workflow.action_name(r.action), r.target)
-            for r in FOLLOW_UP_ROUTES
+            for r in (*FOLLOW_UP_ROUTES, *OPTIONAL_ROUTES)
             if r.source is status
         }
         for t in offered:

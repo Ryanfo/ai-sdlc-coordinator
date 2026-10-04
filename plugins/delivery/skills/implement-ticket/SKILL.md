@@ -36,7 +36,10 @@ acceptance criterion in the approved specification is met, following the approve
   `PORT` from `ports.app`. Never assume a default port; other sessions run concurrently.
 - `feedback_items` lists the changes this run must make (`F1`... findings or requested
   changes, `R1`... problems the coordinator found, `D1`... deviations from the specification
-  that a human did not accept), and `selected_comments` may add the human's notes on them.
+  that a human did not accept, `G1`... review comments a reviewer left on the pull request,
+  naming the file and line they are about), and `selected_comments` may add the human's notes
+  on them. A `G` item is a reviewer's comment, not a decision: act on it where it fits the
+  approved specification, and say in `summary` if you did not and why.
   Address each item and say how in `summary`; if an item is not a code problem (for example
   it reports missing inputs), say so instead of changing code. For a `D` item, change the
   code so it follows the approved specification for that behaviour, as the human's note
@@ -54,6 +57,11 @@ acceptance criterion in the approved specification is met, following the approve
    and the specification disagree, follow the specification and note it.
 2. Implement in small steps. Run the relevant tests and type checks as you go using the
    project's scripts (for example `npm run test:unit`, `npm run typecheck`).
+   For `work_kind: bug`, reproduce it first: write the regression test the plan names, run it
+   and see it fail for the reason the bug report describes (record that run in `worker_checks`
+   as `reproduction`, result `failed`), then fix the cause and see it pass. Keep the test in a
+   test file: the coordinator runs the candidate's test files on the base branch without the
+   fix to show they catch the bug.
 3. Before finishing, run the configured checks listed in `configured_checks` that you can
    run locally and record what you ran in `worker_checks` honestly.
 4. Optionally write `implementation-notes.md` (kind `doc`) in `output.artifact_dir`.

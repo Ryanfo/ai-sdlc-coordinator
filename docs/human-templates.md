@@ -20,13 +20,15 @@ posts each template with the **current** token in Jira; copy it from there. Rule
 | Approve plan | `APPROVE PLAN PILOT-123-PLAN-v1` | Approve plan |
 | Change plan | `CHANGE PLAN PILOT-123-PLAN-v1 + F1:` | Request plan changes |
 | Approve code (after a GitHub review) | `APPROVE CODE PILOT-123-CODE-c2` | Approve code |
-| Request code changes | `CHANGE CODE PILOT-123-CODE-c2 + F1:` (and `D1:` for a deviation to change back) | Request code changes |
+| Request code changes | `CHANGE CODE PILOT-123-CODE-c2 + F1:` (and `D1:` for a deviation to change back; no items needed when the PR's review comments say it all) | Request code changes |
 | Accept deviations from the specification | `ACCEPT DEVIATIONS PILOT-123-CODE-c2` (+ `D1, D3` to accept only some) | Submit follow-up changes (from Code review), or the next action you choose |
 | Accept delivery | `ACCEPT DELIVERY PILOT-123-ACCEPT-c2` | Accept delivery |
 | Request behavioural changes | `CHANGE ACCEPTANCE PILOT-123-ACCEPT-c2 + F1:` | Request acceptance changes |
 | Select which findings to fix (optional; R-items are always fixed) | `SUBMIT CHANGES PILOT-123-CODE-c2 + F1:, F3:` (and `D2:` to change a deviation back) | Submit implementation changes |
 | Re-verify the same candidate (no code change) | none | Submit follow-up changes (from Changes requested) |
 | Tell Claude something for its next session | `FOR CLAUDE` or `FOR CLAUDE development` + your note | Resume, Submit … as usual |
+| Tell every Claude session on every ticket | `FOR CLAUDE project` + your note | nothing: it is added to the project guidance |
+| Create tickets Claude proposed (slices or a spike's follow-ups) | `CREATE TICKETS PILOT-123-SPEC-v2 + S1, S3` (or the findings' `PLAN` token) | nothing: they are created in Backlog |
 | Change scope after review | `REVISE SCOPE PILOT-123-SPEC-v3 + F1:` | Revise scope |
 | Approve release proposal | `APPROVE RELEASE PILOT-123-RELEASE-v1` | Approve release |
 | Change release proposal | `CHANGE RELEASE PILOT-123-RELEASE-v1 + F1:` | Request release changes |
@@ -89,6 +91,39 @@ Stage names: `refinement`, `planning`, `development`, `verification`, `release`.
 ```text
 FOR CLAUDE development
 The e2e failure is the date picker's timezone; use the fixed clock in tests/clock.ts.
+```
+
+Review comments on the pull request. When changes to a candidate are submitted, the PR's
+unresolved review conversations, and written reviews, from since the candidate was published
+reach development as `G1`, `G2`… items next to your `F` items. Resolve a conversation on GitHub
+to leave it out. A `CHANGE CODE` comment needs no items of its own when the PR comments say it
+all:
+
+```text
+CHANGE CODE PILOT-123-CODE-c2
+See the review comments on the pull request.
+```
+
+Guidance for every ticket. When the same correction keeps coming up, write it once: the
+coordinator adds it to the project's guidance file (the `delivery/guidance` branch of the
+application repository) and confirms on the ticket. Every Claude session on every ticket and
+every developer's machine reads it. Edit or remove entries there; `delivery guidance` shows it.
+
+```text
+FOR CLAUDE project
+Dates go through src/lib/dates.ts; never call new Date() in components.
+```
+
+Proposed tickets. A specification may propose slices of a ticket too big for one delivery,
+and a spike's findings may propose follow-up work, as `S1`, `S2`… in their review comment.
+Nothing is created until someone asks, with that revision's token and the IDs to create. A note
+after an ID goes into that ticket's description. They are created in Backlog, unassigned and
+linked to this ticket; this ticket carries on as it is.
+
+```text
+CREATE TICKETS PILOT-123-SPEC-v2
+S1
+S3: call it Export to CSV
 ```
 
 ## What is never accepted

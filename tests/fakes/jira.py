@@ -136,6 +136,8 @@ class FakeJira:
         t = self.tick()
         c = JiraComment(str(next(self.ids)), author, t, t, text, author, markdown_to_adf(text))
         self.comments_by_key[key].append(c)
+        if key in self.issues:
+            self.issues[key].updated = t  # as Jira does
         return c
 
     def edit_comment(self, key: str, cid: str, text: str) -> None:
@@ -292,6 +294,12 @@ class FakeJira:
         key = f"{project}-{next(self.ids)}"
         self.create(key, summary, adf_to_text(description), None, issue_type=issue_type, labels=tuple(labels))
         return key
+
+    async def link_issues(self, link_type: str, inward_key: str, outward_key: str) -> None:
+        self._guard("link_issues", inward_key)
+        a, b = self._issue(inward_key), self._issue(outward_key)
+        a.links.append(IssueLink(link_type, "outward", "relates to", b.key))
+        b.links.append(IssueLink(link_type, "inward", "relates to", a.key))
 
     async def add_comment(self, key: str, adf: dict[str, Any]) -> JiraComment:
         self._guard("add_comment", key)

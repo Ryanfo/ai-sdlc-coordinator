@@ -28,7 +28,14 @@ specification review, or ask the questions that block a usable specification.
    enough of the codebase to describe current behaviour accurately. Do not design the
    implementation; that is the plan stage.
 3. Write the specification to `output.artifact_dir/specification.md` using the template
-   `${CLAUDE_PLUGIN_ROOT}/templates/specification.md`. It must contain: problem/outcome,
+   `${CLAUDE_PLUGIN_ROOT}/templates/specification.md` (for `work_kind: bug`, use
+   `${CLAUDE_PLUGIN_ROOT}/templates/bug-specification.md` instead: steps to reproduce, actual and
+   expected behaviour, and an acceptance criterion that a regression test reproduces the bug;
+   read the code to confirm where the behaviour comes from, and use `linked_tickets` for what
+   was meant to happen; for `work_kind: spike`, use
+   `${CLAUDE_PLUGIN_ROOT}/templates/spike-specification.md`: the question to answer, why it
+   matters, what a useful answer contains as acceptance criteria, and the time box. A spike is
+   investigated, not built). It must contain: problem/outcome,
    scope and exclusions, numbered acceptance criteria (`AC1`, `AC2`...), non-functional
    needs, constraints, dependencies, assumptions, open questions and revision history.
    Preserve the original brief in the "Original brief" section verbatim. List every
@@ -48,8 +55,21 @@ specification review, or ask the questions that block a usable specification.
    - `blocked` only if the brief is unusable (for example empty) or inputs are inconsistent.
 5. Add one `evidence` entry per acceptance criterion with `status: defined` and the
    specification path.
+6. If the brief is too big for one delivery (several independent outcomes that could each ship
+   and be accepted on their own), still write the full specification, and propose slices in
+   `proposed_tickets` (`S1`, `S2`...): each a `summary` and a `description` that is a usable
+   brief (problem, scope, exclusions, numbered acceptance criteria). Say in the specification's
+   Scope section that slices were proposed. They are created only if someone asks for them, and
+   the reviewers may then narrow this ticket to the first slice.
+7. If `fast_track` is true (a small change), also write `output.artifact_dir/plan.md` from
+   `${CLAUDE_PLUGIN_ROOT}/templates/plan.md` and fill `footprint` in the result, exactly as the
+   `plan-ticket` procedure describes (`${CLAUDE_PLUGIN_ROOT}/skills/plan-ticket/SKILL.md`, steps
+   3 to 6). The specification's approval approves this plan too, so keep it to what the
+   specification asks. If the change turns out not to be small, write no plan and say so in
+   `summary`: planning then runs as usual.
 
 ## Result
 
-`procedure`: `refine-ticket`. `artifacts`: `[{"path": "specification.md", "kind": "specification"}]`.
+`procedure`: `refine-ticket`. `artifacts`: `[{"path": "specification.md", "kind": "specification"}]`,
+plus `{"path": "plan.md", "kind": "plan"}` on the fast track.
 Do not modify any file in the working directory.

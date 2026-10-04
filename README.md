@@ -464,10 +464,26 @@ FOR CLAUDE development
 The e2e failure is the date picker's timezone; use the fixed clock in tests/clock.ts.
 ```
 
+When the same correction keeps coming up across tickets, write it once as `FOR CLAUDE project`
+on any ticket. The coordinator adds it to the project's guidance file
+(`docs/delivery/guidance.md` on the `delivery/guidance` branch of the application repository),
+confirms on the ticket with a link, and every Claude session on every ticket, on every
+developer's machine, reads it from then on. Edit or remove entries on that branch;
+`delivery guidance` shows the file and `delivery guidance add "<text>"` adds to it.
+
+**Review comments on the pull request count.** When changes to a candidate are submitted
+(Submit implementation changes), the PR's unresolved review conversations and written reviews
+from since that candidate was published reach development as `G1`, `G2`… items next to your
+`F` items, with the file and line. Resolve a conversation on GitHub to leave it out. With PR
+comments, `CHANGE CODE <token>` needs no items of its own.
+
 **What Claude sees from the ticket**: the description (the brief), its attachments and linked
 Figma frames, the decision comments for the current step (`ANSWERS`, `CHANGE …`,
-`SUBMIT CHANGES …`), the findings or change items it must address, and `FOR CLAUDE` notes from
-the assignee or an approver. Other comments, including the coordinator's own, are never sent.
+`SUBMIT CHANGES …`), the findings or change items it must address, `FOR CLAUDE` notes from
+the assignee or an approver, and the project guidance. Tickets **linked** to this one in Jira
+(for example the story a bug was found in) come too: their summary, status and description and,
+when they went through delivery, their approved specification and plan, PR and released commit.
+Other comments, including the coordinator's own, are never sent.
 
 With [interactive sessions](#watching-claude-work-and-typing-to-it), the session that makes
 the changes opens in a window and, once done, tells you how it addressed each item and asks
@@ -491,7 +507,14 @@ picked up straight away and published as the next revision.
   <token>` (`D1: keep to the specification`), choose **Request code changes** and then
   **Submit implementation changes**: a development session changes the code back and the new
   candidate is verified. Release preparation waits until every deviation is decided.
-- **Acceptance** (product decision): `ACCEPT DELIVERY <token>`, then **Accept delivery**.
+- **Acceptance** (product decision): when the ticket enters Acceptance review, the coordinator
+  posts how to try the code-approved candidate and what to check: the **acceptance guide**
+  verification wrote (how to check each acceptance criterion by hand, in plain language), and
+  `delivery try <ticket>` for anyone with the delivery tools to run it on their own machine. With `[preview]`
+  configured, your coordinator also runs that exact candidate and opens it in your browser
+  until the ticket leaves Acceptance review ([Trying the change](#trying-the-change-in-your-browser)).
+  Then `ACCEPT DELIVERY <token>` and **Accept delivery**, or `CHANGE ACCEPTANCE <token>` with
+  numbered items and **Request acceptance changes**.
 - **Release**: approve the proposal, then merge the PR on GitHub. That merge is the release:
   the coordinator reads the merge commit from GitHub, chooses **Record release** itself and
   verifies that the released commit contains exactly the approved candidate (merge, squash or
@@ -514,6 +537,15 @@ picked up straight away and published as the next revision.
   failure**: the comments name the files and the integration checks run without the conflicting
   change. Resolve it in the PR when you merge; release verification accepts the approved
   candidate plus that merge and lists the files the resolution changed.
+- **Or have Claude resolve it**: every development run on an existing branch first merges the
+  latest base. When that conflicts, a short Claude session (`resolve-conflicts`) resolves the
+  conflicts before the rest of the work, and the coordinator commits the merge. If it cannot,
+  the merge is left out and the conflict stays flagged, as above. So any change request also
+  brings the branch up to date. `[flow] resolve_conflicts = false` turns this off.
+- **Out-of-date candidates**: while a candidate waits in Code review or Acceptance review, other
+  work merges into the base. When that work changes the same files, or the candidate no longer
+  merges cleanly, the coordinator says so once on the ticket, naming the tickets that merged,
+  and how to verify again on the latest base (Submit follow-up changes). Nothing waits for it.
 
 Overlap detection is advisory: it cannot see unpublished work on other laptops.
 
@@ -633,9 +665,8 @@ Set `keep_open = false` to close sessions as soon as the result is handed over.
 
 ### Trying the change in your browser
 
-Once a development session has handed over its candidate (and stays open), the coordinator
-can run the app from that session's worktree and open your browser on it, so you can inspect
-the change before anyone reviews it. Add to your config:
+The coordinator can run the app so people try a change before deciding on it. Add to your
+config (or the team's project file, so everyone has it):
 
 ```toml
 [preview]
@@ -646,15 +677,55 @@ command = ["npm", "run", "dev"]
 |---|---|
 | `command` | The app's dev server, as an argument list. `{port}` is replaced by a port of its own, which is also exported as `PORT` |
 | `setup` | Run first in the worktree (default: `checks.setup`, for example `npm ci`; `[]` for nothing) |
+| `seed` | Run after setup and before the app, for example to load demo data (`["npm", "run", "seed"]`) |
 | `url` | Where it answers (default `http://localhost:{port}/`); the browser opens once it does |
 | `open_browser` | `false` to only print the address |
+| `acceptance` | `false` to not run the candidate during Acceptance review |
 
-Then ask for changes in the development session that is still open: with a dev server that
-reloads, they show in the browser as Claude makes them, and each one is pushed as a new
-candidate as described above; verification starts once you `/exit` the session. The app stops when the session closes. `delivery preview
-PILOT-123` opens it again, or starts it again if it stopped, and `delivery attach PILOT-123
---procedure preview` shows its output. Like the coordinator's checks, it runs as you, outside
-Claude's sandbox, without your credentials ([security boundary](docs/security-boundary.md)).
+It runs in three places:
+
+- **While you develop.** Once a development session has handed over its candidate (and stays
+  open), the app runs from that session's worktree. Ask for changes in the session: with a dev
+  server that reloads, they show in the browser as Claude makes them, and each one is pushed as
+  a new candidate; verification starts once you `/exit` the session, which also stops the app.
+- **During Acceptance review.** When one of your tickets enters Acceptance review, your
+  coordinator runs the exact candidate that was code-approved, in a worktree of its own, and
+  opens your browser on it. It stops, and the worktree goes, once the ticket leaves Acceptance
+  review. The Jira comment it posts says how to try it and what to check (see
+  [section 9](#9-approve-review-accept-and-release)).
+- **On anyone's machine.** `delivery try PILOT-123` runs the ticket's current candidate in this
+  terminal (its output shows here) and opens the browser once it answers; Ctrl-C stops it and
+  removes its worktree. It needs no coordinator running, only the delivery tools and the team's
+  config, so the person accepting a ticket can try it themselves. `--ref <branch or commit>` runs
+  something else.
+
+`delivery preview PILOT-123` opens a running app again, or starts it again if it stopped, and
+`delivery attach PILOT-123 --procedure preview` (or `acceptance`) shows its output. Like the
+coordinator's checks, the app runs as you, outside Claude's sandbox, without your credentials
+([security boundary](docs/security-boundary.md)).
+
+### Other kinds of work
+
+Not every ticket is a feature. The coordinator handles a few other kinds differently, chosen by
+the ticket's issue type or a label (`[flow]` in the config):
+
+| Kind | How it differs |
+|---|---|
+| **Bug** (`bug_types`, default `Bug`) | The specification records the steps to reproduce, actual and expected behaviour. Development writes a failing regression test first, then fixes it. Verification then runs the candidate's test files on the base branch *without* the fix and says in the code review comment whether they fail there (**Bug reproduced**), pass anyway (**not reproduced**: the test may not catch the bug) or are missing. Reported, never a failure. |
+| **Spike** (`spike_types`, default `Spike`) | The specification is the question to answer. Instead of a plan, Claude investigates (it may run code) and writes **findings**: the answer, options compared, a recommendation, evidence. They are reviewed in Plan review (`APPROVE PLAN` accepts them); the coordinator then closes the ticket (Done), since there is nothing to build. Needs the **Complete spike** transition (see the Jira setup). |
+| **Fast track** (label `fast_track_label`, default `fast-track`) | For small changes: refinement writes the plan with the specification, and one approval covers both. Planning then publishes that plan as approved and development starts straight away, with no plan review. Needs the **Use approved plan** transition; without it the plan goes to Plan review as usual. If Claude finds the change is not small, it writes no plan and planning runs as usual. |
+
+**Proposed tickets.** When a brief is too big for one delivery, refinement still writes the
+full specification and proposes slices of it (`S1`, `S2`…, each a short brief) in its review
+comment. A spike's findings can propose follow-up work the same way. Nothing is created until
+someone comments `CREATE TICKETS <token>` with the IDs: the coordinator creates them in Backlog,
+unassigned, linked to the ticket that proposed them, and replies with their keys. The proposing
+ticket carries on as it is (narrow it with a change request, or cancel it).
+
+**Taking a release back out.** `delivery revert PILOT-123 --reason "<why>"` opens a pull request
+that reverts the ticket's merged PR (as GitHub's Revert button does, for any merge method),
+creates a Bug in Backlog linked to the ticket for the rework, and comments on the ticket with
+both. People review and merge the revert as usual; the coordinator never merges.
 
 ### Long sessions, guardrails and resuming
 
@@ -715,6 +786,11 @@ delivery dispatch pause --reason "machine busy"
 | `open` | Open a ticket's latest Claude log (`--folder`, `--jira`), or with no ticket the coordinator's log |
 | `attach` / `sessions` / `close` | Interactive sessions in tmux: open one, list them, end one left open. `attach` with no ticket shows the coordinator |
 | `status` | Whether the coordinator runs (and whether its code changed since), waiting for Claude, then every session: ticket, stage, run/session ID, state, start time, next action |
+| `team` | Every in-flight ticket in the project, any assignee, grouped by what it waits on (a decision, answers or a blocker, a merge, the coordinator) with the longest wait first; read-only |
+| `try <KEY>` | Run the ticket's candidate on this machine and open it in your browser (Ctrl-C stops it); `--ref` runs another branch or commit |
+| `preview <KEY>` | Open the app running for a ticket (its development session, or Acceptance review), or start it again |
+| `guidance` / `guidance add "<text>"` | Show the project's guidance for Claude (`FOR CLAUDE project` notes), or add to it |
+| `revert <KEY> --reason "<why>"` | Open a pull request that reverts a released ticket, and a linked Bug for the rework (asks first; `--yes` to skip) |
 | `clean` | Remove worktrees and folders that finished runs left (unpushed changes are saved as a patch first); `--older-than DAYS` also removes old local logs |
 | `inspect` | Why a ticket is (not) eligible, its gates and candidate, and the latest run explained: reasons, findings in full, failed check output, merge conflicts, log locations and the Jira actions available now; read-only |
 | `stop <KEY>` | Stops one ticket's session and keeps its work; other sessions continue |
@@ -725,12 +801,28 @@ delivery dispatch pause --reason "machine busy"
 | `workflow verify --yes` | Walk labelled test tickets through every Jira status (after workflow changes) |
 | `project export <file>` | Write your config's team settings as a shared project file |
 
+### Seeing the whole team, and reminders
+
+`delivery team` lists every in-flight ticket in the project, whoever it is assigned to, grouped
+by what moves it on next: a decision (anyone who may approve), answers or a blocker, the merge,
+or the coordinator and Claude. Within each group the longest wait comes first, so a review
+nobody has picked up stands out.
+
+Your coordinator also reminds people about your tickets that have waited long for a person.
+After `[reminders] after_hours` (default 24) in a review, answers, blocked or merge status, it
+comments on the ticket saying how long it has waited and what is needed next; Jira notifies the
+ticket's watchers, and listed approvers are mentioned. It repeats every `repeat_hours` (24), at
+most `max_reminders` (3) times per wait, sends nothing at weekends with `weekdays_only`, and
+with `webhook_env` naming an environment variable that holds a Slack incoming-webhook URL, posts
+the same reminder there. `after_hours = 0` turns reminders off.
+
 ## Where things live
 
 | Location | Content |
 |---|---|
 | Jira | Brief, questions and answers, feedback, decisions, status history, run summaries |
-| `delivery/<KEY>` branch | Spec, plan and footprint revisions, ADRs, reviews, verification, release documents, execution records |
+| `delivery/<KEY>` branch | Spec, plan (or a spike's findings) and footprint revisions, ADRs, proposed tickets, reviews, verification and the acceptance guide, release documents, execution records |
+| `delivery/guidance` branch | `docs/delivery/guidance.md`: the project's guidance every Claude session reads |
 | `feature/<KEY>` branch and PR | Implementation and tests |
 | GitHub checks | CI results for exact commits, plus integration provenance |
 | `runtime.state_dir` | Your local recovery journal, logs, envelopes and locks (private; never in Git). Each run's `inputs/` holds what Claude was given, including attachment and Figma snapshots; `logs/` holds each Claude session transcript |
@@ -762,6 +854,12 @@ delivery dispatch pause --reason "machine busy"
 | A Figma link was not used | The run's envelope lists it under `designs_skipped` with the reason: a whole-file link (use Copy link to selection), no access, no token (`delivery credentials set figma`), or over the frame limit |
 | "Design changed in Figma" comment | A linked frame changed after the spec was written; work continues on the approved version. Choose Revise scope to adopt the new design |
 | Figma token rejected | It expired or lacks a scope; create a new one and run `delivery credentials set figma` |
+| No app in Acceptance review | `[preview] command` is not set, tmux is missing (`brew install tmux`), or `acceptance = false`. The Jira comment still says how to try it; `delivery try <KEY>` runs it anywhere |
+| PR review comments did not reach development | Only unresolved conversations with a comment since the candidate was published count; resolved ones are left out on purpose |
+| A `FOR CLAUDE project` note was not added | Only notes from you or a listed approver count; the terminal says if adding failed (it retries on the next poll) |
+| `CREATE TICKETS` did nothing | Use the token of the revision that proposed them (the specification's, or the spike findings' `PLAN` token) and IDs it proposed; the reply comment says what was created |
+| A spike stays in Ready for development | Add the **Complete spike** transition (Ready for development to Done), or move it to Done by hand |
+| Fast-track plans still go to Plan review | Add the **Use approved plan** transition (Planning to Ready for development) |
 
 More detail: [operations](docs/operations.md), [security boundary](docs/security-boundary.md),
 [pilot runbook](docs/pilot-runbook.md), [design decisions](docs/design/Implementation_Decisions.md).

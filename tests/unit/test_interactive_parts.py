@@ -344,6 +344,11 @@ def test_preview_launcher_runs_setup_then_the_app_and_keeps_its_output(tmp_path:
     assert "app" not in subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True).stdout
     # Arguments are quoted, never run through the shell.
     assert "'$(rm -rf x)'" in launcher([], ["echo", "$(rm -rf x)"], wt, log)
+    # The seed runs after setup and before the app; a failing seed never starts it either.
+    script.write_text(launcher(["true"], ["echo", "app"], wt, log, seed=["sh", "-c", "echo seeded"]))
+    assert subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True).stdout == "seeded\napp\n"
+    script.write_text(launcher([], ["echo", "app"], wt, log, seed=["false"]))
+    assert "app" not in subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True).stdout
 
 
 def test_answers_only_when_something_listens() -> None:
@@ -400,16 +405,22 @@ def test_doctor_explains_the_app_preview(tmp_path: Path) -> None:
         (tmp_path / "c.toml").write_text(render_config({**sections, **sec}, {"config_version": 1}))
         report = Report()
         check_preview(load_config(tmp_path / "c.toml"), report)
-        (check,) = report.checks
+        check = report.checks[0]  # a second one warns when tmux is missing
         return check.level, check.detail
 
     assert level()[0] == "info"
     app = {"command": ["sh", "-c", "serve"], "setup": []}
-    warn, detail = level(preview=app)
-    assert warn == "warn" and "not kept open" in detail
+    # Without sessions kept open it still runs during Acceptance review and with `delivery try`.
+    ok, detail = level(preview=app)
+    assert ok == "ok" and "after development" not in detail
+    assert "sh -c serve during Acceptance review, from the approved candidate; with `delivery try`" in detail
     interactive = {"enabled": True, "window": "none"}
     ok, detail = level(preview=app, **{"claude.interactive": interactive})
-    assert ok == "ok" and "sh -c serve in the session's worktree; opens http://localhost:<port>/" in detail
+    assert ok == "ok" and "sh -c serve after development, in the open session's worktree;" in detail
+    assert detail.endswith("opens http://localhost:<port>/")
+    seeded = {**app, "seed": ["make", "seed"], "acceptance": False}
+    ok, detail = level(preview=seeded)
+    assert detail.startswith("make seed then sh -c serve with `delivery try`")
     missing = {"command": ["no-such-dev-server"]}
     assert level(preview=missing, **{"claude.interactive": interactive})[0] == "warn"
 

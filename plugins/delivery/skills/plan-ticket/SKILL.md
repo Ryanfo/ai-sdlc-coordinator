@@ -29,7 +29,10 @@ specification, plus a change footprint the coordinator uses to detect overlappin
    scripts. Follow the application's standards in `CLAUDE.md` and `docs/`.
 4. Write `output.artifact_dir/plan.md` using `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:
    affected files, interfaces, ordered implementation steps, a criterion-to-test mapping
-   (every `AC` maps to at least one named test), risks, rollback implications.
+   (every `AC` maps to at least one named test), risks, rollback implications. For
+   `work_kind: bug`, the first step is the regression test that reproduces the bug (named, and
+   failing before the fix), then the root cause as far as you can tell from the code, then the
+   fix.
 5. If an architectural decision is needed, also write `adr-001.md` (kind `architecture`)
    from `${CLAUDE_PLUGIN_ROOT}/templates/adr.md`.
 6. Fill `footprint` in the result:

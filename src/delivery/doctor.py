@@ -36,6 +36,7 @@ from delivery.ports import AuthError, GitHubPort, IntegrationError, JiraPort, No
 from delivery.workflow import (
     DEFAULT_ACTION_NAMES,
     FOLLOW_UP_ROUTES,
+    OPTIONAL_ROUTES,
     ROUTES,
     STATUS_CATEGORIES,
     STATUS_NAMES,
@@ -150,9 +151,15 @@ async def inspect_workflow(cfg: Config, jira: JiraPort) -> WorkflowReport:
             if r.source is st
             and r.action is not Action.CANCEL
             and (follow_ups or r.action is not Action.SUBMIT_FOLLOW_UP)
+            and r not in OPTIONAL_ROUTES
         }
-        # Follow-up transitions are only needed with interactive sessions kept open.
-        allowed = {(cfg.workflow.action_name(r.action), r.target) for r in FOLLOW_UP_ROUTES if r.source is st}
+        # Follow-up transitions are only needed with interactive sessions kept open; the
+        # optional routes (fast track, spikes) only by teams that use them.
+        allowed = {
+            (cfg.workflow.action_name(r.action), r.target)
+            for r in (*FOLLOW_UP_ROUTES, *OPTIONAL_ROUTES)
+            if r.source is st
+        }
         names = {(t.name, by_id.get(t.to_status_id)) for t in offered}
         want = {(cfg.workflow.action_name(a), tgt) for a, tgt in expected}
         missing_routes = sorted(f"{n} -> {t.value}" for n, t in want - names if t)
@@ -369,17 +376,7 @@ def check_preview(cfg: Config, report: Report) -> None:
             "app preview",
             "info",
             "off; set [preview] command (for example npm run dev) to run the app from each finished "
-            "development session and open it in your browser",
-        )
-        return
-    if not cfg.claude.interactive.follow_ups:
-        report.add(
-            "claude",
-            "app preview",
-            "warn",
-            "[preview] is set but development sessions are not kept open, so there is no worktree to "
-            "run the app from",
-            "Set [claude.interactive] enabled = true (with keep_open = true).",
+            "development session, during Acceptance review and with `delivery try`",
         )
         return
     if shutil.which(pc.command[0]) is None and not Path(pc.command[0]).exists():
@@ -392,16 +389,31 @@ def check_preview(cfg: Config, report: Report) -> None:
         )
         return
     setup = cfg.checks.setup if pc.setup is None else pc.setup
+    steps = (f"{' '.join(setup)} then " if setup else "") + (f"{' '.join(pc.seed)} then " if pc.seed else "")
+    where = []
+    if cfg.claude.interactive.follow_ups:
+        where.append("after development, in the open session's worktree")
+    if pc.acceptance:
+        where.append("during Acceptance review, from the approved candidate")
+    where.append("with `delivery try`")
     report.add(
         "claude",
         "app preview",
         "ok",
-        "after development, "
-        + (f"{' '.join(setup)} then " if setup else "")
-        + f"{' '.join(pc.command)} in the session's worktree; "
+        f"{steps}{' '.join(pc.command)} {'; '.join(where)}; "
         + ("opens " if pc.open_browser else "serves ")
         + pc.url.replace("{port}", "<port>"),
     )
+    if (cfg.claude.interactive.follow_ups or pc.acceptance) and shutil.which(
+        cfg.claude.interactive.tmux
+    ) is None:
+        report.add(
+            "claude",
+            "app preview",
+            "warn",
+            "the coordinator runs the app in tmux, which is not installed (`delivery try` still works)",
+            "brew install tmux",
+        )
 
 
 async def check_claude(cfg: Config, report: Report) -> None:

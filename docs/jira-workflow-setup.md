@@ -122,6 +122,20 @@ needs three more transitions, all to Ready for verification and performed by the
 | Acceptance review | Submit follow-up changes | Ready for verification |
 | Changes requested | Submit follow-up changes | Ready for verification |
 
+### Optional: spikes and the fast track
+
+Two more coordinator transitions, each needed only by teams that use that kind of work (see the
+README's *Other kinds of work*). `workflow verify` and `doctor` accept them but never require them.
+
+| From | Name | To | Used for |
+|---|---|---|---|
+| Ready for development | Complete spike | Done | A spike whose findings were accepted is closed (nothing to build). Without it, the coordinator asks for the spike to be moved to Done by hand. |
+| Planning | Use approved plan | Ready for development | A fast-track ticket's plan, written and approved with its specification, goes straight to development. Without it, the plan goes to Plan review. |
+
+For spikes, also give the project an issue type **Spike** with the delivery workflow (in a
+team-managed project each type has its own workflow) and add it to each developer's
+`jira.supported_issue_types`. The fast track only needs a label (`fast-track` by default).
+
 ### Pausing and resuming
 
 From **each of the six agent-active statuses** add `Ask questions → Needs clarification` and

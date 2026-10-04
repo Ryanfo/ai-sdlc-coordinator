@@ -266,10 +266,11 @@ class InteractiveConfig(StrictModel):
 
 
 class PreviewConfig(StrictModel):
-    """Run the app from a finished development session's worktree so you can try the change.
+    """Run the app so people can try a change (see delivery.preview and delivery.acceptance).
 
-    Needs [claude.interactive] with keep_open: the worktree stays while that session is open,
-    and changes you ask for there show up in the running app (see delivery.preview).
+    From a finished development session's worktree (needs [claude.interactive] with keep_open:
+    changes you ask for there show up in the running app), from the code-approved candidate
+    when a ticket enters Acceptance review, and with `delivery try <ticket>` on anyone's machine.
     """
 
     # Argument list, never a shell string. "{port}" is replaced by the preview's own port,
@@ -277,12 +278,16 @@ class PreviewConfig(StrictModel):
     command: list[str] = Field(default_factory=list)
     # Run first in the worktree. None: checks.setup; [] for nothing.
     setup: list[str] | None = None
+    # Run after setup and before the app, for example to load demo data (["npm", "run", "seed"]).
+    seed: list[str] = Field(default_factory=list)
     url: str = "http://localhost:{port}/"
     open_browser: bool = True
     # Mention it in the terminal if the app has not answered by then (it keeps waiting).
     ready_timeout_seconds: int = Field(default=180, ge=10, le=3600)
+    # Run the code-approved candidate when one of your tickets enters Acceptance review.
+    acceptance: bool = True
 
-    @field_validator("command", "setup")
+    @field_validator("command", "setup", "seed")
     @classmethod
     def _argv(cls, v: list[str] | None) -> list[str] | None:
         if v is not None and not all(isinstance(a, str) and a for a in v):
@@ -299,6 +304,82 @@ class PreviewConfig(StrictModel):
     @property
     def enabled(self) -> bool:
         return bool(self.command)
+
+
+class FlowConfig(StrictModel):
+    """How different kinds of work move through the stages."""
+
+    # Development on a ticket's existing branch first merges the latest base branch. When they
+    # conflict, a short Claude session (resolve-conflicts) resolves the conflicts; if it cannot,
+    # the merge is abandoned and the conflict is flagged to resolve when merging, as before.
+    resolve_conflicts: bool = True
+    # Issue types handled as bugs: the specification records how to reproduce it, development
+    # writes a failing test first, and verification shows that test failing on the base branch.
+    bug_types: list[str] = Field(default_factory=lambda: ["Bug"])
+    # Issue types handled as spikes: the question to answer is specified, Claude investigates
+    # and writes findings (reviewed in Plan review), and approving them completes the ticket.
+    # Needs the "Complete spike" transition (Ready for development -> Done) in Jira.
+    spike_types: list[str] = Field(default_factory=lambda: ["Spike"])
+    # Tickets with this label take the fast track: refinement writes the plan with the
+    # specification, one approval covers both, and development starts after it. Needs the
+    # "Use approved plan" transition (Planning -> Ready for development) in Jira. "" turns it off.
+    fast_track_label: str = "fast-track"
+    # How tickets created with CREATE TICKETS are linked to the ticket that proposed them.
+    link_type: str = "Relates"
+    # The check that proves a bug's regression test fails without the fix (default: "unit" if
+    # it exists, otherwise the first of checks.commands).
+    reproduce_check: str = ""
+    # Files that count as tests (fnmatch patterns on the path, or on the file name).
+    test_files: list[str] = Field(
+        default_factory=lambda: [
+            "*.test.*",
+            "*.spec.*",
+            "*_test.*",
+            "test_*.py",
+            "tests/*",
+            "test/*",
+            "*/tests/*",
+            "*/test/*",
+            "*/__tests__/*",
+        ]
+    )
+
+    def is_test(self, path: str) -> bool:
+        import fnmatch
+
+        name = path.rsplit("/", 1)[-1]
+        return any(fnmatch.fnmatch(path, p) or fnmatch.fnmatch(name, p) for p in self.test_files)
+
+    def kind_of(self, issue_type: str) -> str:
+        """How a ticket of this issue type moves through the stages: feature, bug or spike."""
+        if issue_type in self.spike_types:
+            return "spike"
+        return "bug" if issue_type in self.bug_types else "feature"
+
+    def fast_track(self, labels: Iterable[str]) -> bool:
+        return bool(self.fast_track_label) and self.fast_track_label in labels
+
+
+class RemindersConfig(StrictModel):
+    """Remind people about your tickets that have waited long for them (delivery.reminders)."""
+
+    # Hours a ticket waits for a person (a review, answers, a blocker, the merge) before the
+    # first reminder comment. 0: no reminders.
+    after_hours: int = Field(default=24, ge=0, le=720)
+    repeat_hours: int = Field(default=24, ge=1, le=720)
+    max_reminders: int = Field(default=3, ge=1, le=20)
+    # Saturdays and Sundays (this machine's time) send nothing; the wait still counts.
+    weekdays_only: bool = True
+    # Name of an environment variable holding a Slack (or compatible) incoming-webhook URL:
+    # reminders are posted there too. The URL is a secret: never put it in this file.
+    webhook_env: str = ""
+
+    @field_validator("webhook_env")
+    @classmethod
+    def _env(cls, v: str) -> str:
+        if v and not ENV_NAME.match(v):
+            raise ValueError("must be an environment variable name, not the webhook URL")
+        return v
 
 
 def bundled_plugin_path() -> Path:
@@ -554,6 +635,8 @@ class Config(StrictModel):
     overlap: OverlapConfig = OverlapConfig()
     figma: FigmaConfig = FigmaConfig()
     preview: PreviewConfig = PreviewConfig()
+    flow: FlowConfig = FlowConfig()
+    reminders: RemindersConfig = RemindersConfig()
 
     # Set by load_config; not part of the file.
     source_path: Path | None = Field(default=None, exclude=True)

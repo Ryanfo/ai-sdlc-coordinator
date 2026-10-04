@@ -15,13 +15,14 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from delivery import comments, deviations
 from delivery.checks import all_passed, run_checks
 from delivery.claude import ChildHandle, ClaudeInvocation, ClaudeOutcome, ClaudeStatus, OpenSession
 from delivery.feedback import DecisionKind, claude_notes, parse_decision
 from delivery.gates import (
+    approved_gate,
     current_gate,
     evaluate_ci,
     gate_token,
@@ -59,17 +60,19 @@ from delivery.models import (
     utcnow,
 )
 from delivery.open_sessions import (
-    DOCUMENTS,
     FollowUp,
     FollowUpRefused,
     OpenRecord,
     SessionRegistry,
     document_digest,
+    document_for,
 )
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
 from delivery.permissions import PROCEDURE_ROLES, PROTECTED_WORKTREE_PATHS, build_profile
 from delivery.ports import JiraComment
+from delivery.proposals import dump as dump_proposals
+from delivery.proposals import proposals_path
 from delivery.publication import Posted
 from delivery.resources import port_env
 from delivery.results import OutputInvalid, validate_result
@@ -77,9 +80,11 @@ from delivery.runtime import Decision, RunContext
 from delivery.session_hook import read_events
 from delivery.tmux import for_config as tmux_for
 from delivery.transcript import write_transcript
-from delivery.workflow import Action, Stage, Status
+from delivery.workflow import Action, Requirement, Stage, Status
 
 MAX_OUTPUT_FILE_BYTES = 2_000_000
+# Written by verify-ticket next to its report: how a person checks each criterion by hand.
+ACCEPTANCE_GUIDE = "acceptance-guide.md"
 
 
 class WorkerFailure(Exception):
@@ -160,6 +165,7 @@ def share_check_logs(ctx: RunContext, checks: list[CheckResult]) -> None:
 CHANGES_BY_PROCEDURE = {
     "refine-ticket": "specification",
     "plan-ticket": "plan",
+    "investigate-ticket": "findings",
     "implement-ticket": "code",
     "prepare-release": "release proposal",
 }
@@ -167,13 +173,13 @@ CHANGES_BY_PROCEDURE = {
 
 # Procedures whose interactive session closes once it has handed over its result: the stage
 # carries on with another procedure (a development session must not be mistaken for it).
-CLOSED_AT_HAND_OFF = frozenset({"amend-spec"})
+CLOSED_AT_HAND_OFF = frozenset({"amend-spec", "resolve-conflicts"})
 
 
 def change_ids(items: dict[str, str]) -> list[str]:
-    """Requested changes (F), problems the coordinator found (R) and deviations to change back
-    (D); answers (Q) are not changes."""
-    ids = {k.split("@")[0] for k in items if k[:1] in ("F", "R", "D") and k.split("@")[0][1:].isdigit()}
+    """Requested changes (F), problems the coordinator found (R), deviations to change back (D)
+    and the PR's review comments (G); answers (Q) are not changes."""
+    ids = {k.split("@")[0] for k in items if k[:1] in ("F", "R", "D", "G") and k.split("@")[0][1:].isdigit()}
     return sorted(ids, key=lambda i: (i[0], int(i[1:])))
 
 
@@ -223,6 +229,20 @@ def closing_note(
         )
     ask = '"Are there any further changes you\'d like to make?"'
     return f"{opening} End by asking {ask} and saying {close} {further}"
+
+
+def work_kind(ctx: RunContext) -> Literal["feature", "bug", "spike"]:
+    kind = ctx.cfg.flow.kind_of(ctx.ticket.issue.view.issue_type)
+    return "spike" if kind == "spike" else "bug" if kind == "bug" else "feature"
+
+
+def _has_markers(path: Path) -> bool:
+    """A file still holding Git conflict markers."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return False
+    return any(ln.startswith(("<<<<<<< ", ">>>>>>> ")) for ln in text.splitlines())
 
 
 def notes_for(ctx: RunContext) -> list[tuple[JiraComment, str]]:
@@ -364,17 +384,21 @@ class StageStrategy:
             stage=self.stage,
             procedure=procedure,
             input_revision=ctx.record.input_revision or "",
+            work_kind=work_kind(ctx),
+            fast_track=ctx.cfg.flow.fast_track(issue.view.labels),
             brief=brief,
             selected_comments=selected,
             attachments=ctx.attachments,
             attachments_skipped=ctx.attachments_skipped,
             designs=ctx.designs,
             designs_skipped=ctx.designs_skipped,
+            linked_tickets=ctx.linked,
             prior_work=prior_work,
             clarification_round=ctx.intake.round_token,
             feedback_token=ctx.intake.feedback_token,
             feedback_items=dict(ctx.intake.feedback_items if feedback is None else feedback),
             notes=self.notes(),
+            project_guidance=str(ctx.guidance) if ctx.guidance else None,
             approved_artefacts=approved or [],
             prior_drafts=prior or [],
             source=source or self.source_refs(),
@@ -470,7 +494,7 @@ class StageStrategy:
             closing=closing_note(
                 procedure,
                 change_ids(envelope.feedback_items),
-                document=out_dir / DOCUMENTS[self.stage].filename if self.stage in DOCUMENTS else None,
+                document=out_dir / doc.filename if (doc := document_for(self.stage, procedure)) else None,
                 preview=ctx.cfg.preview.enabled,
             )
             if ctx.cfg.claude.interactive.follow_ups
@@ -611,7 +635,7 @@ class StageStrategy:
                 mirrored_lines=session.mirrored_lines,
                 events_seen=events,
                 out_dir=str(out_dir),
-                document=document_digest(out_dir, self.stage),
+                document=document_digest(out_dir, self.stage, procedure),
             )
         )
         ctx.journal.events.append(
@@ -1013,12 +1037,38 @@ class RefinementStage(StageStrategy):
             return d
         require_artifact(result, out, ArtifactKind.SPECIFICATION, "specification.md")
         outcome = "clarification" if result.outcome is Outcome.NEEDS_CLARIFICATION else "success"
+        extra: dict[str, Any] = {"revision": nxt}
+        if outcome == "success" and ctx.cfg.flow.fast_track(ctx.ticket.issue.view.labels):
+            extra.update(await self._fast_track_plan(result, out))
         return Decision(
             outcome=outcome,
             reason=result.summary,
             result=result.model_dump(mode="json"),
-            extra={"revision": nxt},
+            extra=extra,
         )
+
+    async def _fast_track_plan(self, result: StageResult, out: Path) -> dict[str, Any]:
+        """Fast track: the plan Claude wrote with the specification, published with it as the next
+        plan revision and approved by the specification's approval (see PlanningStage)."""
+        if not (out / "plan.md").is_file() or result.footprint is None:
+            return {
+                "fast_track_skipped": "no plan was written with the specification, so planning runs as usual"
+            }
+        revs = await self.revisions("plan")
+        return {
+            "fast_track_plan": max([*revs, self.ctx.shared.plan_revision, 0]) + 1,
+            "base": await self.deps.repo.remote_sha(self.ctx.cfg.repository.base_branch),
+        }
+
+    async def follow_up_decision(self, d: Decision, rev: int) -> Decision:
+        """A specification edited in its open session: a fast-track plan goes out as the next plan
+        revision with it (the earlier one keeps its number)."""
+        d = await super().follow_up_decision(d, rev)
+        if "fast_track_plan" not in d.extra:
+            return d
+        revs = await self.revisions("plan")
+        nxt = max([*revs, self.ctx.shared.plan_revision, int(d.extra["fast_track_plan"]) - 1, 0]) + 1
+        return d.model_copy(update={"extra": {**d.extra, "fast_track_plan": nxt}})
 
     async def publish(self, d: Decision) -> None:
         ctx = self.ctx
@@ -1041,13 +1091,28 @@ class RefinementStage(StageStrategy):
             files[f"{ctx.doc_root}/executions/{ctx.run_id}.json"] = self.execution_summary(
                 d, {"artefact": spec_rel, "questions": [q.id for q in result.questions]}
             )
+        if result.proposed_tickets:
+            files[proposals_path(ctx.doc_root, "specification", rev)] = dump_proposals(
+                result.proposed_tickets
+            )
+        plan_rel = None
+        if d.outcome == "success" and d.extra.get("fast_track_plan"):
+            plan_rel = self._fast_track_files(
+                files, result, rev, int(d.extra["fast_track_plan"]), d.extra.get("base")
+            )
         sha = await self.publish_files(files, "spec", f"v{rev}", f"{ctx.key}: specification v{rev:03d}")
         url = blob_url(ctx.cfg.repository.url, sha, spec_rel)
         pub = ctx.publisher()
+        artefacts = {
+            k: v for k, v in ctx.shared.artefacts.items() if k not in ("fast_track_plan", "fast_track_spec")
+        }
+        artefacts["specification"] = f"{spec_rel}@{sha}"
+        if plan_rel:
+            artefacts.update({"fast_track_plan": f"{plan_rel}@{sha}", "fast_track_spec": f"v{rev}"})
         shared = ctx.shared.model_copy(
             update={
                 "spec_revision": rev,
-                "artefacts": {**ctx.shared.artefacts, "specification": f"{spec_rel}@{sha}"},
+                "artefacts": artefacts,
                 "current_run_id": ctx.run_id,
                 "current_stage": self.stage,
                 "updated_at": utcnow(),
@@ -1103,7 +1168,21 @@ class RefinementStage(StageStrategy):
         )
         await self.announce(
             "spec-gate",
-            comments.spec_gate(token, url, rev, self.gate_summary(result.summary), ctx.cfg.approvals.who),
+            comments.spec_gate(
+                token,
+                url,
+                rev,
+                self.gate_summary(result.summary),
+                ctx.cfg.approvals.who,
+                plan=(
+                    int(d.extra["fast_track_plan"]),
+                    blob_url(ctx.cfg.repository.url, sha, plan_rel),
+                )
+                if plan_rel
+                else None,
+                fast_track_note=str(d.extra.get("fast_track_skipped", "")),
+                proposals=result.proposed_tickets,
+            ),
             f"v{rev}",
             gate_tokens=(token,),
         )
@@ -1114,16 +1193,63 @@ class RefinementStage(StageStrategy):
         await pub.set_resume_field(ctx.key, None, "clear")
         await pub.transition(ctx.key, Status.REFINING, Action.COMPLETE_REFINEMENT)
 
+    def _fast_track_files(
+        self, files: dict[str, str], result: StageResult, rev: int, plan_rev: int, base: str | None
+    ) -> str:
+        """Add the fast-track plan and its footprint to ``files``; returns the plan's path."""
+        ctx = self.ctx
+        assert result.footprint is not None
+        plan_rel = f"{ctx.doc_root}/plan/v{plan_rev:03d}.md"
+        header = provenance_header(
+            ctx, "plan", f"v{plan_rev:03d}", {"fast_track": f"written with specification v{rev:03d}"}
+        )
+        files[plan_rel] = header + (ctx.output_dir("refine-ticket") / "plan.md").read_text()
+        fp = Footprint(
+            ticket_key=ctx.key,
+            owner_account_id=ctx.cfg.identity.developer_jira_account_id,
+            stage=Stage.PLANNING,
+            plan_revision=plan_rev,
+            source_commit=base or "",
+            published_at=utcnow(),
+            **result.footprint.model_dump(),
+        )
+        files[plan_rel.removesuffix(".md") + ".footprint.json"] = (
+            json.dumps(fp.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+        )
+        return plan_rel
+
 
 # --------------------------------------------------------------------------- planning
 
 
 class PlanningStage(StageStrategy):
+    """The plan, or for a spike its findings (``investigate-ticket``, reviewed the same way). A
+    fast-track ticket's plan was written and approved with its specification: it is published as
+    approved, without a Claude session or a second review."""
+
     stage = Stage.PLANNING
+
+    @property
+    def spike(self) -> bool:
+        return work_kind(self.ctx) == "spike"
+
+    @property
+    def procedure(self) -> str:
+        return "investigate-ticket" if self.spike else "plan-ticket"
+
+    @property
+    def folder(self) -> str:
+        return "findings" if self.spike else "plan"
 
     async def work(self) -> Decision:
         ctx = self.ctx
-        wt = await self.delivery_worktree()
+        if not self.spike and (fast := await self._fast_track()) is not None:
+            return fast
+        wt = (
+            await self.detached_worktree("investigate", f"origin/{ctx.cfg.repository.base_branch}")
+            if self.spike
+            else await self.delivery_worktree()
+        )
         spec = await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION)
         if spec is None:
             return Decision(
@@ -1132,38 +1258,45 @@ class PlanningStage(StageStrategy):
                 action="Check the delivery branch and resume.",
                 blocker_kind="missing_input",
             )
-        revs = await self.revisions("plan")
+        revs = await self.revisions(self.folder)
         nxt = max([*revs, ctx.shared.plan_revision, 0]) + 1
         prior = []
         if revs:
-            path = f"{ctx.doc_root}/plan/v{max(revs):03d}.md"
+            path = f"{ctx.doc_root}/{self.folder}/v{max(revs):03d}.md"
             dest = await self.copy_input(f"origin/{ctx.delivery_branch}", path, f"prior/{Path(path).name}")
             if dest:
                 prior.append(ArtefactPointer(kind=ArtifactKind.PLAN, path=str(dest), revision=max(revs)))
         base = await self.deps.repo.remote_sha(ctx.cfg.repository.base_branch)
         related = await self.related_work()
-        out = ctx.output_dir("plan-ticket")
+        out = ctx.output_dir(self.procedure)
+        ports = None
+        if self.spike:
+            ports = ctx.record.ports or self.deps.ports.allocate(ctx.run_id)
+            ctx.record = ctx.record.model_copy(update={"ports": ports})
         env = self.envelope(
-            "plan-ticket",
+            self.procedure,
             out,
             required=[ArtifactKind.PLAN],
             next_revision=nxt,
             approved=[spec],
             prior=prior,
             related=related,
+            ports=ports,
             source=self.source_refs(base_commit=base),
         )
-        result = await self.run_procedure("plan-ticket", wt, env)
+        result = await self.run_procedure(self.procedure, wt, env, ports=ports)
         if (d := self.worker_decision(result)) is not None:
             return d
-        require_artifact(result, out, ArtifactKind.PLAN, "plan.md")
-        if result.outcome is Outcome.COMPLETED and result.footprint is None:
+        require_artifact(result, out, ArtifactKind.PLAN, f"{self.folder}.md")
+        if not self.spike and result.outcome is Outcome.COMPLETED and result.footprint is None:
             raise WorkerFailure("plan-ticket", None, "completed plan has no change footprint")
         for adr in [a for a in result.artifacts if a.kind is ArtifactKind.ARCHITECTURE]:
             safe_output_file(out, adr.path)
         outcome = "clarification" if result.outcome is Outcome.NEEDS_CLARIFICATION else "success"
         extra: dict[str, Any] = {"revision": nxt, "base": base}
-        if result.footprint:
+        if self.spike:
+            extra["findings"] = True
+        elif result.footprint:
             extra.update(await self.footprint(result, nxt, base))
         return Decision(
             outcome=outcome,
@@ -1196,7 +1329,7 @@ class PlanningStage(StageStrategy):
         result = StageResult.model_validate(d.result)
         try:
             rewritten = StageResult.model_validate_json(
-                (self.ctx.output_dir("plan-ticket") / RESULT_FILE).read_text()
+                (self.ctx.output_dir(self.procedure) / RESULT_FILE).read_text()
             )
         except (OSError, ValueError):
             rewritten = None
@@ -1217,10 +1350,13 @@ class PlanningStage(StageStrategy):
         if d.outcome == "blocked":
             await self.publish_block(d, Status.PLANNING)
             return
+        if d.outcome == "fast_track":
+            await self._publish_fast_track(d)
+            return
         result = StageResult.model_validate(d.result)
         rev = int(d.extra["revision"])
-        out = ctx.output_dir("plan-ticket")
-        plan_rel = f"{ctx.doc_root}/plan/v{rev:03d}.md"
+        out = ctx.output_dir(self.procedure)
+        plan_rel = f"{ctx.doc_root}/{self.folder}/v{rev:03d}.md"
         fp_rel = f"{ctx.doc_root}/plan/v{rev:03d}.footprint.json"
         spec_gate = current_gate(ctx.shared.gates, GateKind.SPEC)
         extra = {
@@ -1229,8 +1365,10 @@ class PlanningStage(StageStrategy):
         }
         if self.follow_up:
             extra["follow_up_of"] = self.follow_up.replaces
-        header = provenance_header(ctx, "plan", f"v{rev:03d}", extra)
-        files = {plan_rel: header + (out / "plan.md").read_text()}
+        header = provenance_header(ctx, self.folder, f"v{rev:03d}", extra)
+        files = {plan_rel: header + (out / f"{self.folder}.md").read_text()}
+        if self.spike and result.proposed_tickets:
+            files[proposals_path(ctx.doc_root, "findings", rev)] = dump_proposals(result.proposed_tickets)
         for i, adr in enumerate([a for a in result.artifacts if a.kind is ArtifactKind.ARCHITECTURE], 1):
             files[f"{ctx.doc_root}/architecture/adr-{rev:03d}-{i}.md"] = (
                 provenance_header(ctx, "architecture", f"v{rev:03d}", {}) + (out / adr.path).read_text()
@@ -1241,7 +1379,7 @@ class PlanningStage(StageStrategy):
             files[f"{ctx.doc_root}/executions/{ctx.run_id}.json"] = self.execution_summary(
                 d, {"artefact": plan_rel, "overlap": d.extra.get("overlap", [])}
             )
-        sha = await self.publish_files(files, "plan", f"v{rev}", f"{ctx.key}: plan v{rev:03d}")
+        sha = await self.publish_files(files, "plan", f"v{rev}", f"{ctx.key}: {self.folder} v{rev:03d}")
         url = blob_url(ctx.cfg.repository.url, sha, plan_rel)
         pub = ctx.publisher()
         shared = ctx.shared.model_copy(
@@ -1318,7 +1456,16 @@ class PlanningStage(StageStrategy):
         await Coordinator(self.deps).publish_warnings(ctx, overlap)
         await self.announce(
             "plan-gate",
-            comments.plan_gate(
+            comments.findings_gate(
+                token,
+                url,
+                rev,
+                self.gate_summary(result.summary),
+                ctx.cfg.approvals.who,
+                result.proposed_tickets,
+            )
+            if self.spike
+            else comments.plan_gate(
                 token,
                 url,
                 blob_url(ctx.cfg.repository.url, sha, fp_rel),
@@ -1334,6 +1481,124 @@ class PlanningStage(StageStrategy):
         if self.follow_up:
             return
         SessionRegistry(ctx.cfg.runtime.state_dir).published(ctx.run_id, revision=rev)
+        await pub.set_resume_field(ctx.key, None, "clear")
+        await pub.transition(ctx.key, Status.PLANNING, Action.COMPLETE_PLANNING)
+
+    # ------------------------------------------------------------------ fast track
+    async def _fast_track(self) -> Decision | None:
+        """The plan written with the approved specification, when the ticket takes the fast track."""
+        ctx = self.ctx
+        spec = approved_gate(ctx.shared.gates, GateKind.SPEC)
+        ref = ctx.shared.artefacts.get("fast_track_plan")
+        if spec is None or not ref or ctx.shared.artefacts.get("fast_track_spec") != f"v{spec.revision}":
+            return None
+        if not ctx.cfg.flow.fast_track(ctx.ticket.issue.view.labels):
+            return None  # the label was removed: plan as usual
+        if ctx.intake.requirement is not Requirement.SPEC_APPROVAL:
+            return None  # plan changes were asked for, or planning resumes: plan as usual
+        plan_rel, commit = ref.rsplit("@", 1)
+        m = re.search(r"/v(\d{3,4})\.md$", plan_rel)
+        raw = await self.deps.repo.show_file(commit, plan_rel.removesuffix(".md") + ".footprint.json")
+        if m is None or raw is None:
+            return None
+        from delivery.coordination import Coordinator
+
+        fp = Footprint.model_validate_json(raw)
+        overlap = await Coordinator(self.deps).check(fp, ctx.shared, checkpoint="plan")
+        name = ctx.cfg.workflow.action_name(Action.USE_APPROVED_PLAN)
+        target = ctx.cfg.status_id(Status.READY_DEVELOPMENT)
+        offered = any(
+            t.name == name and t.to_status_id == target for t in await self.deps.jira.transitions(ctx.key)
+        )
+        return Decision(
+            outcome="fast_track",
+            reason=f"plan v{int(m.group(1)):03d} was approved with specification v{spec.revision:03d}",
+            extra={
+                "revision": int(m.group(1)),
+                "plan": ref,
+                "overlap": findings_json(overlap),
+                "route": "fast" if offered else "review",
+                "spec_token": spec.token,
+            },
+        )
+
+    async def _publish_fast_track(self, d: Decision) -> None:
+        ctx = self.ctx
+        rev = int(d.extra["revision"])
+        plan_rel, sha = str(d.extra["plan"]).rsplit("@", 1)
+        fp_rel = plan_rel.removesuffix(".md") + ".footprint.json"
+        fast = d.extra.get("route") == "fast"
+        spec = approved_gate(ctx.shared.gates, GateKind.SPEC)
+        token = gate_token(ctx.key, GateKind.PLAN, rev)
+        gate = GateRecord(
+            token=token,
+            kind=GateKind.PLAN,
+            ticket_key=ctx.key,
+            revision=rev,
+            artefact_path=plan_rel,
+            artefact_commit=sha,
+            published_at=utcnow(),
+            approvers=ctx.cfg.approvals.jira_account_ids,
+            state=GateState.APPROVED if fast else GateState.PENDING,
+            decided_at=spec.decided_at if fast and spec else None,
+            evidence=spec.evidence if fast and spec else None,
+        )
+        ctx.shared = ctx.shared.model_copy(
+            update={
+                "plan_revision": rev,
+                "artefacts": {**ctx.shared.artefacts, "plan": f"{plan_rel}@{sha}"},
+                "footprint_ref": {
+                    "path": fp_rel,
+                    "commit": sha,
+                    "revision": rev,
+                    "actual_paths": [],
+                    "candidate_sha": None,
+                },
+                "gates": supersede_for_new_revision(ctx.shared.gates, GateKind.PLAN, token) + [gate],
+                "pause": None,
+                "current_run_id": ctx.run_id,
+                "current_stage": self.stage,
+                "current_state": RunState.COMPLETED if fast else RunState.AWAITING_HUMAN,
+                "updated_at": utcnow(),
+            }
+        )
+        overlap = [_finding(o) for o in d.extra.get("overlap", [])]
+        from delivery.coordination import Coordinator
+
+        await Coordinator(self.deps).publish_warnings(ctx, overlap)
+        url = blob_url(ctx.cfg.repository.url, sha, plan_rel)
+        pub = ctx.publisher()
+        if fast:
+            await self.announce(
+                "fast-track",
+                comments.fast_track_plan(token, url, rev, str(d.extra.get("spec_token", ""))),
+                f"v{rev}",
+                gate_tokens=(token,),
+            )
+            await pub.save_record(ctx.key, ctx.shared, "fast-track")
+            await pub.set_resume_field(ctx.key, None, "clear")
+            await pub.transition(ctx.key, Status.PLANNING, Action.USE_APPROVED_PLAN)
+            return
+        note = (
+            "This plan was written with the specification (fast track), but this Jira workflow has no "
+            f"**{ctx.cfg.workflow.action_name(Action.USE_APPROVED_PLAN)}** transition (Planning to Ready "
+            "for development), so it needs its own approval."
+        )
+        await self.announce(
+            "plan-gate",
+            comments.plan_gate(
+                token,
+                url,
+                blob_url(ctx.cfg.repository.url, sha, fp_rel),
+                rev,
+                note,
+                ctx.cfg.approvals.who,
+                overlap,
+            ),
+            f"v{rev}",
+            gate_tokens=(token,),
+        )
+        await pub.save_record(ctx.key, ctx.shared, "plan-gate")
         await pub.set_resume_field(ctx.key, None, "clear")
         await pub.transition(ctx.key, Status.PLANNING, Action.COMPLETE_PLANNING)
 
@@ -1397,7 +1662,7 @@ class DevelopmentStage(StageStrategy):
             base_sha = await repo.remote_sha(base)
             if exists and base_sha and not await repo.is_ancestor(base_sha, await repo.worktree_head(wt)):
                 merged = await repo.merge(wt, f"origin/{base}", f"{ctx.key}: merge {base} into candidate")
-                if not merged.ok:
+                if not merged.ok and not await self._resolve_conflicts(wt, base_sha, list(merged.conflicts)):
                     # Resolved when the PR is merged; development carries on without it.
                     ctx.record.outputs["merge_conflicts"] = [
                         {"with": base, "sha": base_sha, "paths": list(merged.conflicts)}
@@ -1496,6 +1761,72 @@ class DevelopmentStage(StageStrategy):
             result=result.model_dump(mode="json"),
             extra={"changed": changed, "start_sha": start_sha},
         )
+
+    async def _resolve_conflicts(self, wt: Path, base_sha: str, paths: list[str]) -> bool:
+        """Merge the base again, leaving its conflicts for a short Claude session to resolve.
+        True when the merge was resolved and committed; otherwise the merge is abandoned (the
+        branch is as it was) and the conflict is flagged to resolve when merging, as before."""
+        ctx, repo = self.ctx, self.deps.repo
+        base = ctx.cfg.repository.base_branch
+        if not ctx.cfg.flow.resolve_conflicts:
+            return False
+        head = await repo.worktree_head(wt)
+        message = f"{ctx.key}: merge {base} into candidate"
+        res = await repo.git(
+            "merge", "--no-ff", "--no-edit", "-m", message, f"origin/{base}", cwd=wt, check=False
+        )
+        if res.returncode == 0:
+            return True  # merged cleanly this time (the base moved on meanwhile)
+        approved = [
+            a
+            for a in (
+                await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION),
+                await self.approved_input(GateKind.PLAN, ArtifactKind.PLAN),
+            )
+            if a
+        ]
+        ports = ctx.record.ports or self.deps.ports.allocate(ctx.run_id)
+        ctx.record = ctx.record.model_copy(update={"ports": ports})
+        out = ctx.output_dir("resolve-conflicts")
+        item = (
+            f"Merging the latest {base} ({base_sha[:12]}) into this branch conflicts in: {', '.join(paths)}. "
+            "Resolve every conflict, keeping the intent of both sides, and change nothing else."
+        )
+        env = self.envelope(
+            "resolve-conflicts",
+            out,
+            required=[],
+            approved=approved,
+            ports=ports,
+            source=self.source_refs(base_commit=base_sha, feature_commit=head),
+            write_globs=[f"{wt}/**", f"{out}/**"],
+            feedback={"R1": item},
+        )
+        ctx.save("resolving_conflicts", paths=paths)
+        try:
+            result = await self.run_procedure("resolve-conflicts", wt, env, ports=ports)
+        except WorkerFailure as exc:
+            await repo.git("merge", "--abort", cwd=wt, check=False)
+            if exc.blocker_kind.startswith("provider_"):
+                raise  # Claude cannot be used: the run waits for it (with the branch as it was)
+            ctx.journal.events.append("conflicts_not_resolved", {"reason": exc.detail[:300]})
+            return False
+        # Still unmerged in the index until staged: a file is resolved when its markers are gone.
+        unmerged = await repo.git("diff", "--name-only", "--diff-filter=U", cwd=wt, check=False)
+        conflicted = set(paths) | {n for n in unmerged.stdout.splitlines() if n}
+        left = sorted(p for p in conflicted if _has_markers(wt / p))
+        if result.outcome is not Outcome.COMPLETED or left:
+            await repo.git("merge", "--abort", cwd=wt, check=False)
+            ctx.journal.events.append(
+                "conflicts_not_resolved",
+                {"outcome": result.outcome.value, "left": left, "reason": result.blocker_reason},
+            )
+            return False
+        await repo.git("add", "-A", cwd=wt)
+        await repo.git("commit", "--no-verify", "-q", "--no-edit", cwd=wt)
+        ctx.record.outputs["conflicts_resolved"] = {"with": base, "sha": base_sha, "paths": paths}
+        ctx.save("conflicts_resolved", paths=paths)
+        return True
 
     async def _save_unfinished(
         self, wt: Path, start_sha: str, spec: ArtefactPointer, plan: ArtefactPointer
@@ -1742,6 +2073,7 @@ class DevelopmentStage(StageStrategy):
                 pr.url,
                 result.summary,
                 merge_conflicts=ctx.record.outputs.get("merge_conflicts", []),
+                resolved=ctx.record.outputs.get("conflicts_resolved"),
                 base=ctx.cfg.repository.base_branch,
                 session_open=SessionRegistry(ctx.cfg.runtime.state_dir).development(ctx.key) is not None,
             ),
@@ -1873,6 +2205,12 @@ class VerificationStage(StageStrategy):
         share_check_logs(ctx, all_checks)
         if await repo.tracked_changes(verify_wt):
             await repo.git("checkout", "--", ".", cwd=verify_wt)
+        # A bug's regression tests should fail on the base branch without the fix. Reported for
+        # the reviewers, never a reason to fail verification.
+        reproduction = None
+        if ctx.cfg.flow.kind_of(ctx.ticket.issue.view.issue_type) == "bug":
+            reproduction = await self.reproduction(base_sha, candidate, ports)
+            atomic_write_json(ctx.inputs_dir / "reproduction.json", reproduction)
 
         # 3. Fresh executable verification (separate process), reading the review.
         out_v = ctx.output_dir("verify-ticket")
@@ -1962,6 +2300,7 @@ class VerificationStage(StageStrategy):
             "overlap": findings_json(overlap),
             "review": review.model_dump(mode="json"),
             "verify": verify.model_dump(mode="json"),
+            "reproduction": reproduction,
         }
         outcome = "verification_failed" if reasons else "success"
         passed = "verification passed" + (
@@ -1979,6 +2318,30 @@ class VerificationStage(StageStrategy):
             result=verify.model_dump(mode="json"),
             extra=extra,
         )
+
+    async def reproduction(self, base_sha: str, candidate: str, ports: dict[str, int]) -> dict[str, Any]:
+        """Run the check on the base branch with only the candidate's test files: a regression test
+        for a bug fails there, because the fix is not."""
+        ctx, repo, flow = self.ctx, self.deps.repo, self.ctx.cfg.flow
+        names = list(ctx.cfg.checks.commands)
+        check = flow.reproduce_check or ("unit" if "unit" in names else (names[0] if names else ""))
+        tests = [p for p in await repo.diff_names(base_sha, candidate) if flow.is_test(p)]
+        out: dict[str, Any] = {"state": "no_tests", "tests": tests, "check": check, "base": base_sha}
+        if not tests:
+            return out
+        if not check:
+            return {**out, "state": "error", "detail": "no check is configured to run the tests"}
+        wt = await self.detached_worktree("reproduce", base_sha)
+        present = await repo.git("ls-tree", "-r", "--name-only", candidate, "--", *tests, check=False)
+        files = [ln for ln in present.stdout.splitlines() if ln]
+        if files:
+            await repo.git("checkout", candidate, "--", *files, cwd=wt)
+        results = await self.setup_and_check(wt, "reproduction", base_sha, ports, [check], base_sha=base_sha)
+        res = next((c for c in results if c.name == check), None)
+        if res is None:
+            return {**out, "state": "error", "detail": "setup failed on the base branch"}
+        state = {"failed": "reproduced", "passed": "not_reproduced"}.get(res.conclusion, "error")
+        return {**out, "state": state, "result": res.model_dump(mode="json")}
 
     def verified_before(self, candidate: str) -> bool:
         """The candidate passed review and verification: its code gate is the current one."""
@@ -2123,6 +2486,7 @@ class VerificationStage(StageStrategy):
                 {
                     "coordinator": [c.model_dump(mode="json") for c in ctx.record.checks],
                     "ci": d.extra.get("ci", []),
+                    "reproduction": d.extra.get("reproduction"),
                     **meta,
                 },
                 indent=2,
@@ -2135,6 +2499,11 @@ class VerificationStage(StageStrategy):
             files[f"{rdir}/deviations.json"] = (
                 json.dumps([x.model_dump(mode="json") for x in found], indent=2, sort_keys=True) + "\n"
             )
+        guide = ctx.output_dir("verify-ticket") / ACCEPTANCE_GUIDE
+        if guide.is_file() and guide.stat().st_size <= MAX_OUTPUT_FILE_BYTES:
+            files[f"{rdir}/{ACCEPTANCE_GUIDE}"] = provenance_header(
+                ctx, "acceptance_guide", ctx.run_id, {"candidate_sha": candidate}
+            ) + guide.read_text(errors="replace")
         sha = await self.publish_files(files, "reports", ctx.run_id, f"{ctx.key}: verification {ctx.run_id}")
         repo_url = ctx.cfg.repository.url
         review_url = blob_url(repo_url, sha, f"{rdir}/review.md")
@@ -2145,9 +2514,13 @@ class VerificationStage(StageStrategy):
         pr_url = f"{repo_url.removesuffix('.git')}/pull/{ctx.shared.pr_number}"
         code_token = gate_token(ctx.key, GateKind.CODE, n)
         accept_token = gate_token(ctx.key, GateKind.ACCEPT, n)
-        artefacts = {k: v for k, v in ctx.shared.artefacts.items() if k != "deviations"}
+        artefacts = {
+            k: v for k, v in ctx.shared.artefacts.items() if k not in ("deviations", "acceptance_guide")
+        }
         if found:
             artefacts["deviations"] = f"{rdir}/deviations.json@{sha}"
+        if f"{rdir}/{ACCEPTANCE_GUIDE}" in files:
+            artefacts["acceptance_guide"] = f"{rdir}/{ACCEPTANCE_GUIDE}@{sha}"
         records = deviations.to_records(found, n)
         base = {
             "current_run_id": ctx.run_id,
@@ -2190,6 +2563,7 @@ class VerificationStage(StageStrategy):
                     key=ctx.key,
                     base=base_branch,
                     merge_conflicts=conflicts,
+                    claude_resolves=ctx.cfg.flow.resolve_conflicts,
                     deviations=records,
                     approvers_only=not ctx.cfg.approvals.anyone,
                 ),
@@ -2254,6 +2628,8 @@ class VerificationStage(StageStrategy):
                 merge_conflicts=conflicts,
                 deviations=records,
                 approvers_only=not ctx.cfg.approvals.anyone,
+                claude_resolves=ctx.cfg.flow.resolve_conflicts,
+                reproduction=d.extra.get("reproduction"),
             ),
             f"c{n}",
             gate_tokens=(code_token, accept_token),

@@ -311,6 +311,42 @@
       "title": "Outcome",
       "type": "string"
     },
+    "ProposedTicket": {
+      "additionalProperties": false,
+      "description": "A ticket Claude proposes (a slice of a ticket too big for one delivery, or a spike's\nfollow-up). Created in Jira only when a person asks for it with ``CREATE TICKETS``.",
+      "properties": {
+        "id": {
+          "pattern": "^S\\d{1,2}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 8000,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "issue_type": {
+          "default": "",
+          "maxLength": 60,
+          "title": "Issue Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "summary",
+        "description"
+      ],
+      "title": "ProposedTicket",
+      "type": "object"
+    },
     "Question": {
       "additionalProperties": false,
       "properties": {
@@ -550,6 +586,14 @@
         }
       ],
       "default": null
+    },
+    "proposed_tickets": {
+      "items": {
+        "$ref": "#/$defs/ProposedTicket"
+      },
+      "maxItems": 20,
+      "title": "Proposed Tickets",
+      "type": "array"
     },
     "blocker_reason": {
       "default": "",

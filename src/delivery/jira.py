@@ -369,7 +369,8 @@ class JiraClient:
     async def create_issue(
         self, project: str, issue_type: str, summary: str, description: dict[str, Any], labels: list[str]
     ) -> str:
-        """Setup and checks only (``workflow verify``); the coordinator never creates tickets."""
+        """``workflow verify``'s test tickets, and tickets a person asked for with ``CREATE TICKETS``
+        (delivery.proposals). The coordinator never creates tickets on its own."""
         fields = {
             "project": {"key": project},
             "issuetype": {"name": issue_type},
@@ -379,6 +380,18 @@ class JiraClient:
         }
         r = await self._write("POST", "/rest/api/3/issue", json={"fields": fields})
         return str(r.json()["key"])
+
+    async def link_issues(self, link_type: str, inward_key: str, outward_key: str) -> None:
+        """Link two issues with a link type by name (for example "Relates")."""
+        await self._write(
+            "POST",
+            "/rest/api/3/issueLink",
+            json={
+                "type": {"name": link_type},
+                "inwardIssue": {"key": inward_key},
+                "outwardIssue": {"key": outward_key},
+            },
+        )
 
     async def add_comment(self, key: str, adf: dict[str, Any]) -> JiraComment:
         r = await self._write("POST", f"/rest/api/3/issue/{key}/comment", json={"body": adf})

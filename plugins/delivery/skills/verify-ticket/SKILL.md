@@ -25,7 +25,11 @@ an integration tree; its results are authoritative.
 ## Steps
 
 1. Read the brief, approved specification, the review report at `review_report_path`
-   and `coordinator_checks.json` in the inputs (the coordinator's own check results).
+   and `coordinator_checks.json` in the inputs (the coordinator's own check results). For
+   `work_kind: bug`, also read `reproduction.json` in the inputs: the coordinator ran the
+   candidate's test files on the base branch without the fix (`reproduced` means they failed
+   there, as a regression test should). Follow the specification's steps to reproduce against
+   the candidate and record what you observed.
    Open the designs in `attachments` and `designs` that acceptance criteria refer to.
 2. Install dependencies if needed using the project's lockfile (`npm ci`). Use
    `ports.app` (and other entries in `ports`) for anything that listens.
@@ -39,6 +43,14 @@ an integration tree; its results are authoritative.
    checks the tracked diff afterwards.
 5. Write `verification.md` in `output.artifact_dir` from
    `${CLAUDE_PLUGIN_ROOT}/templates/verification.md`.
+6. Write `acceptance-guide.md` in `output.artifact_dir` from
+   `${CLAUDE_PLUGIN_ROOT}/templates/acceptance-guide.md`: how a person who has not read the
+   code checks each acceptance criterion by hand in the running app (where to go, what to do,
+   what they should see), in plain language. The coordinator posts it in Jira when the ticket
+   reaches Acceptance review, where a product owner tries the candidate before accepting it.
+   Mention data the steps need (an empty list, an existing item) and how to get it. For a
+   criterion that cannot be seen in the app (a log line, a performance limit), say how it was
+   verified instead. Keep it short: one numbered list of steps per criterion.
 
 ## Browser tests
 
@@ -49,7 +61,8 @@ them as the e2e evidence. Run unit and component tests yourself.
 
 ## Result
 
-`procedure`: `verify-ticket`. `artifacts`: `[{"path": "verification.md", "kind": "verification"}]`.
+`procedure`: `verify-ticket`. `artifacts`: `[{"path": "verification.md", "kind": "verification"},
+{"path": "acceptance-guide.md", "kind": "doc"}]`.
 One `evidence` entry per criterion (`met`, `not_met`, `unverified`, `deviates`). Every command you ran
 goes in `worker_checks` with its real result. Defects go in `findings`. `outcome` is
 `completed` when you could verify, even if criteria are not met.

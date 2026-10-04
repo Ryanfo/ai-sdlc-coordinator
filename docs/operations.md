@@ -101,10 +101,18 @@ session, publishes nothing further and marks the run cancelled. Other sessions a
     settings-<procedure>.json             the generated permission profile
     leftover-<worktree>.patch             unpushed changes `coordinator clean` saved
   intake/<KEY>/                           one-off explanation comments for waiting tickets
+  acceptance/<KEY>.json, acceptance/<KEY>/ the app running for a ticket in Acceptance review
+  guidance/                               project guidance notes added from this machine
+  proposals/<KEY>.json                    tickets created with CREATE TICKETS
+  stale/, reminders/                      out-of-date and reminder comments already posted
+  reverts/<KEY>.json                      `delivery revert` results
+  try/<KEY>-<pid>/                        the script and log of a `delivery try`
   locks/                                  supervisor, ticket and repository locks
 <worktree_root>/<KEY>/<run-id>/           worktrees (removed when a run finishes;
                                           `coordinator clean` removes any left behind)
+<worktree_root>/<KEY>/acceptance-c<n>/    the approved candidate during Acceptance review
 <worktree_root>/_repo.git                 the coordinator's own clone
+<worktree_root>/_guidance/                short-lived worktree for the guidance branch
 ```
 
 All directories are created with mode 0700 and files 0600. Do not commit anything from here.
@@ -118,7 +126,10 @@ All directories are created with mode 0700 and files 0600. Do not commit anythin
 | The coordinator stopped unexpectedly | `coordinator status` says so; `coordinator logs` has the error; `coordinator` starts it again |
 | Worktrees and logs pile up | `coordinator clean` lists what finished runs left and removes it (`--older-than DAYS` for old logs) |
 | Base branch moved after code approval | The code gate blocks (head or CI no longer current). Request code changes → Submit implementation changes merges the base into the candidate (no rebase) and re-verifies |
-| Merge conflict with the base or another ticket | Flagged in the candidate, code-review and verification comments, never a failure. Resolve it in the PR when merging (for example GitHub's Resolve conflicts); release verification accepts the approved candidate plus merges of the base and lists the files the resolution changed. Any other commit added to the PR is still refused |
+| Merge conflict with the base or another ticket | Flagged in the candidate, code-review and verification comments, never a failure. Resolve it in the PR when merging (for example GitHub's Resolve conflicts); release verification accepts the approved candidate plus merges of the base and lists the files the resolution changed. Any other commit added to the PR is still refused. Or request code changes: the next development run merges the latest base and a short Claude session resolves a conflict with it (left out and still flagged if it cannot) |
+| Main moved on while a candidate waits for review | The ticket gets one "may be out of date" comment when the new commits touch the same files or conflict. Submit follow-up changes verifies the same candidate again on the latest base |
+| A released change must come out | `delivery revert <KEY> --reason "…"`: a revert PR to review and merge, and a linked Bug for the rework |
+| Reviews wait too long | `delivery team` shows every ticket by what it waits on; reminders comment after `[reminders] after_hours` |
 | Verification failed and the next step is unclear | `delivery inspect <KEY>`: every reason and finding in full, failed check output, Claude logs and what each Jira action available now does |
 | Overlap warning | Work continues. For a higher-risk one (shared interface, schema, migration or dependency) agree which ticket merges first; Revise scope or a `FOR CLAUDE` note if one ticket should change approach |
 | Remote ticket branch diverged | The ticket blocks. Reconcile the branch by hand (never force-push), then Resume |

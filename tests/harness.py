@@ -109,6 +109,8 @@ def make_world(
     sections["checks.commands"] = checks or {"unit": ["true"]}
     sections["checks.ci"] = {"required_names": ["unit"]}
     sections["approvals"] = {"jira_account_ids": [APPROVER], "github_logins": [REVIEWER]}
+    # The fake Jira's clock is not real time: reminders are tested on their own.
+    sections["reminders"] = {"after_hours": 0}
     if interactive:
         # A private tmux server per test; no terminal windows.
         sections["claude.interactive"] = {
