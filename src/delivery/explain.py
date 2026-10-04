@@ -4,13 +4,18 @@ where the evidence is on this machine, and what can be done next in Jira."""
 from __future__ import annotations
 
 import textwrap
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from delivery.config import Config
-from delivery.journal import RunEntry
+from delivery.journal import JournalStore, RunEntry
 from delivery.models import CheckResult, RunState
 from delivery.workflow import Action
+
+if TYPE_CHECKING:
+    from delivery.intake import TicketContext
+    from delivery.ports import GitHubPort, JiraPort
 
 WIDTH = 100
 INDENT = "    "
@@ -171,3 +176,90 @@ def jira_actions(cfg: Config, transitions: list[tuple[str, str]]) -> list[str]:
         effect = ACTION_EFFECTS.get(action) if action else None
         lines += _wrap(f"{name} -> {target}" + (f": {effect}" if effect else ""), "  ")
     return lines
+
+
+@dataclass
+class Inspection:
+    """What `delivery inspect` found: data for --json, lines for people, and the ticket context."""
+
+    data: dict[str, Any]
+    lines: list[str]
+    ctx: TicketContext
+
+
+async def inspect_ticket(cfg: Config, jira: JiraPort, github: GitHubPort, ticket: str) -> Inspection:
+    """Explain one ticket without changing anything: Jira status, eligibility, what intake waits
+    for, gates, the latest run here and the Jira actions available now."""
+    from delivery.intake import IntakeEvaluator, load_context
+    from delivery.ownership import evaluate_eligibility
+
+    ctx = await load_context(jira, cfg, ticket)
+    elig = evaluate_eligibility(ctx.issue.view, cfg)
+    intake = await IntakeEvaluator(cfg, github).evaluate(ctx, elig.stage) if elig.stage else None
+    transitions = [(t.name, t.to_status_name) for t in await jira.transitions(ticket)]
+    store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
+    entries = store.runs_for_ticket(ticket)
+    runs = [
+        {
+            "run_id": e.run_id,
+            "state": e.record.state.value if e.record else "CORRUPT",
+            "stage": e.record.stage.value if e.record else None,
+            "reason": e.record.reason if e.record else (e.error.detail if e.error else ""),
+            "pending_ops": [o.op_type for o in e.journal.pending_ops()] if e.record else [],
+            "dir": str(e.journal.dir),
+        }
+        for e in entries
+    ]
+    rec = ctx.record
+    data = {
+        "ticket": ticket,
+        "status": ctx.status.value if ctx.status else ctx.issue.view.status_name,
+        "assignee": ctx.issue.view.assignee_account_id,
+        "eligible": elig.eligible,
+        "eligibility_reasons": list(elig.reasons),
+        "intake": intake.persisted() if intake else None,
+        "gates": [g.model_dump(mode="json") for g in rec.gates],
+        "pause": rec.pause.model_dump(mode="json") if rec.pause else None,
+        "candidate": rec.candidate_sha,
+        "pr": rec.pr_number,
+        "artefacts": rec.artefacts,
+        "footprint": rec.footprint_ref,
+        "overlap_warnings": rec.overlap_warnings,
+        "overlap_decisions": rec.overlap_decisions,
+        "release": rec.release,
+        "pending_feedback": rec.pending_feedback,
+        "jira_actions": [{"name": n, "to": t} for n, t in transitions],
+        "local_runs": runs,
+    }
+    lines = [
+        f"{ticket}: {data['status']} (assignee {data['assignee']})",
+        f"eligible: {elig.eligible}" + (f" ({'; '.join(elig.reasons)})" if elig.reasons else ""),
+    ]
+    if intake:
+        lines.append(
+            f"intake: {intake.kind.value} - {intake.reason}"
+            + (f" -> {intake.next_action}" if intake.next_action else "")
+        )
+    lines.append(
+        "gates: " + ", ".join(f"{g.token}={g.state.value}" for g in rec.gates) if rec.gates else "gates: none"
+    )
+    if rec.pause:
+        lines.append(
+            f"paused: {rec.pause.kind} resume={rec.pause.resume_stage.value} "
+            f"{rec.pause.round_token or rec.pause.reason}"
+        )
+    lines.append(f"candidate: {rec.candidate_sha or '-'} PR #{rec.pr_number or '-'}")
+    lines.append(f"overlap warnings: {', '.join(rec.overlap_warnings) or 'none'}")
+    if entries:
+        lines += ["", *latest_outcome(cfg, entries[-1])]
+    actions = jira_actions(cfg, transitions)
+    if actions:
+        lines += ["", *actions]
+    if runs:
+        lines += ["", "Runs on this machine (oldest first):"]
+        lines += [
+            f"  {r['run_id']}  {r['state']}" + (f"  pending {r['pending_ops']}" if r["pending_ops"] else "")
+            for r in runs
+        ]
+    lines += ["", f"Ask Claude what is wrong and how to fix it: coordinator help {ticket}"]
+    return Inspection(data, lines, ctx)

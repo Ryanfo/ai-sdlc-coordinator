@@ -423,90 +423,73 @@ async def _team(args: argparse.Namespace) -> int:
 
 
 async def _inspect(args: argparse.Namespace) -> int:
-    from delivery.explain import jira_actions, latest_outcome
-    from delivery.intake import IntakeEvaluator, load_context
+    from delivery.explain import inspect_ticket
+    from delivery.github import GhClient
     from delivery.jira import JiraClient
-    from delivery.ownership import evaluate_eligibility
 
     cfg = _load(args)
     jira = JiraClient(cfg)
     try:
-        ctx = await load_context(jira, cfg, args.ticket)
-        elig = evaluate_eligibility(ctx.issue.view, cfg)
-        intake = None
-        if elig.stage:
-            from delivery.github import GhClient
-
-            intake = await IntakeEvaluator(cfg, GhClient(cfg.repository.slug)).evaluate(ctx, elig.stage)
-        transitions = [(t.name, t.to_status_name) for t in await jira.transitions(args.ticket)]
+        found = await inspect_ticket(cfg, jira, GhClient(cfg.repository.slug), args.ticket)
     finally:
         await jira.close()
-    store = JournalStore(cfg.runtime.state_dir, cfg.identity_key)
-    entries = store.runs_for_ticket(args.ticket)
-    runs = [
-        {
-            "run_id": e.run_id,
-            "state": e.record.state.value if e.record else "CORRUPT",
-            "stage": e.record.stage.value if e.record else None,
-            "reason": e.record.reason if e.record else (e.error.detail if e.error else ""),
-            "pending_ops": [o.op_type for o in e.journal.pending_ops()] if e.record else [],
-            "dir": str(e.journal.dir),
-        }
-        for e in entries
-    ]
-    rec = ctx.record
-    data = {
-        "ticket": args.ticket,
-        "status": ctx.status.value if ctx.status else ctx.issue.view.status_name,
-        "assignee": ctx.issue.view.assignee_account_id,
-        "eligible": elig.eligible,
-        "eligibility_reasons": list(elig.reasons),
-        "intake": intake.persisted() if intake else None,
-        "gates": [g.model_dump(mode="json") for g in rec.gates],
-        "pause": rec.pause.model_dump(mode="json") if rec.pause else None,
-        "candidate": rec.candidate_sha,
-        "pr": rec.pr_number,
-        "artefacts": rec.artefacts,
-        "footprint": rec.footprint_ref,
-        "overlap_warnings": rec.overlap_warnings,
-        "overlap_decisions": rec.overlap_decisions,
-        "release": rec.release,
-        "pending_feedback": rec.pending_feedback,
-        "jira_actions": [{"name": n, "to": t} for n, t in transitions],
-        "local_runs": runs,
-    }
-    lines = [
-        f"{args.ticket}: {data['status']} (assignee {data['assignee']})",
-        f"eligible: {elig.eligible}" + (f" ({'; '.join(elig.reasons)})" if elig.reasons else ""),
-    ]
-    if intake:
-        lines.append(
-            f"intake: {intake.kind.value} - {intake.reason}"
-            + (f" -> {intake.next_action}" if intake.next_action else "")
-        )
-    lines.append(
-        "gates: " + ", ".join(f"{g.token}={g.state.value}" for g in rec.gates) if rec.gates else "gates: none"
-    )
-    if rec.pause:
-        lines.append(
-            f"paused: {rec.pause.kind} resume={rec.pause.resume_stage.value} "
-            f"{rec.pause.round_token or rec.pause.reason}"
-        )
-    lines.append(f"candidate: {rec.candidate_sha or '-'} PR #{rec.pr_number or '-'}")
-    lines.append(f"overlap warnings: {', '.join(rec.overlap_warnings) or 'none'}")
-    if entries:
-        lines += ["", *latest_outcome(cfg, entries[-1])]
-    actions = jira_actions(cfg, transitions)
-    if actions:
-        lines += ["", *actions]
-    if runs:
-        lines += ["", "Runs on this machine (oldest first):"]
-        lines += [
-            f"  {r['run_id']}  {r['state']}" + (f"  pending {r['pending_ops']}" if r["pending_ops"] else "")
-            for r in runs
-        ]
-    _print(data, args.json, "\n".join(lines))
+    _print(found.data, args.json, "\n".join(found.lines))
     return EXIT_OK
+
+
+def cmd_help(args: argparse.Namespace, prog: str = "delivery") -> int:
+    """`help <KEY>`: gather a briefing on the ticket and open Claude to work out what is wrong.
+    Without a ticket: the usual help."""
+    from delivery import diagnose
+
+    if not args.ticket:
+        parser(prog).print_help()
+        return EXIT_OK
+    cfg = _load(args)
+    print(f"Gathering what is known about {args.ticket}…")
+    briefing = asyncio.run(_help_briefing(cfg, args.ticket, " ".join(args.question)))
+    for problem in briefing.problems:
+        print(f"  could not gather {problem}")
+    print(f"Briefing: {briefing.path}")
+    if args.briefing_only:
+        return EXIT_OK
+    argv = diagnose.session_argv(cfg, briefing)
+    if not _interactive_terminal():
+        print("Not a terminal, so Claude was not opened. Read the briefing, or run this in a terminal.")
+        return EXIT_OK
+    if not shutil.which(argv[0]):
+        print(f"Claude Code ({argv[0]!r}) not found: install it or set claude.executable.", file=sys.stderr)
+        return EXIT_FAIL
+    print(f"Opening Claude ({diagnose.help_model(cfg)}). Exit it with /exit or Ctrl-D.\n")
+    env = diagnose.session_env(cfg)
+    return subprocess.run(argv, cwd=diagnose.install_root(cfg), env=env, check=False).returncode
+
+
+async def _help_briefing(cfg: Config, ticket: str, question: str) -> Any:
+    from delivery import diagnose
+    from delivery.github import GhClient
+    from delivery.jira import JiraClient
+
+    live = await _control(cfg, {"cmd": "status"})
+    jira = None
+    problem = ""
+    try:
+        jira = JiraClient(cfg)
+    except Exception as exc:  # e.g. no token on this machine: still gather everything else
+        problem = str(exc)
+    try:
+        return await diagnose.write_briefing(
+            cfg,
+            ticket,
+            question,
+            jira=jira,
+            github=GhClient(cfg.repository.slug),
+            live=live,
+            jira_problem=problem,
+        )
+    finally:
+        if jira is not None:
+            await jira.close()
 
 
 async def _ticket_command(args: argparse.Namespace, cmd: str) -> int:
@@ -1446,6 +1429,13 @@ def parser(prog: str = "delivery") -> argparse.ArgumentParser:
             sp.set_defaults(afunc=_inspect)
         else:
             sp.set_defaults(afunc=lambda a, n=name: _ticket_command(a, n))
+    sp = with_config(sub.add_parser("help", help="ask Claude what is wrong with a ticket and how to fix it"))
+    sp.add_argument("ticket", nargs="?", help="without one: this help")
+    sp.add_argument("question", nargs="*", help="optional: what you want to know, in your own words")
+    sp.add_argument(
+        "--briefing-only", action="store_true", help="only gather the briefing and print where it is"
+    )
+    sp.set_defaults(func=lambda a, prog=prog: cmd_help(a, prog))
     sp = with_config(
         sub.add_parser("logs", help="a ticket's readable Claude session log, or the coordinator's own log")
     )

@@ -90,6 +90,10 @@ permission_profile = "local_pilot"
 # Aliases ("opus", "sonnet") or full names ("claude-opus-5-5") both work.
 # model = "sonnet"
 
+# Model for `coordinator help <KEY>`, the Claude session that works out what is wrong with a
+# ticket. Default: "opus".
+# help_model = "opus"
+
 # Optional per-procedure overrides; anything not listed uses `model` above.
 # Procedures: refine-ticket, plan-ticket, implement-ticket, review-ticket,
 # verify-ticket, prepare-release, verify-release, amend-spec (rewrites the
