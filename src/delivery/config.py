@@ -405,9 +405,11 @@ class ClaudeConfig(StrictModel):
     model: str | None = None
     # Per-procedure overrides, e.g. {"implement-ticket": "opus"} (TOML table [claude.models]).
     models: dict[str, str] = Field(default_factory=dict)
+    # Model for `coordinator help <KEY>` sessions; None means opus.
+    help_model: str | None = None
     supported_versions: str = ">=2.1.0,<3"
 
-    @field_validator("model")
+    @field_validator("model", "help_model")
     @classmethod
     def _model(cls, v: str | None) -> str | None:
         if v is not None and not MODEL_NAME.match(v):

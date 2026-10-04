@@ -60,6 +60,7 @@ refinement** ([step 7](#7-submit-a-ticket)).
 | `coordinator status` | Is it running, and what every ticket is doing |
 | `coordinator logs` | The coordinator's own log; `coordinator logs PILOT-7` is one ticket's Claude log |
 | `coordinator open PILOT-7` | Open that ticket's latest Claude log (`--folder`: its run folder, `--jira`: the ticket) |
+| `coordinator help PILOT-7` | Ask Claude what is wrong with that ticket and how to fix it |
 | `coordinator stop` / `restart` | Stop it cleanly (sessions are saved and resume) / stop and start, to use new code |
 | `coordinator clean` | Remove what finished runs left on disk |
 
@@ -581,6 +582,34 @@ steps and what to do.
 `coordinator logs` without a ticket shows the coordinator's own log: everything its terminal
 showed, plus warnings and errors with their details (`--follow`, `-n 200` for more lines).
 
+### Asking Claude what is wrong with a ticket
+
+When a ticket is stuck, failed, or doing something you do not understand, ask Claude:
+
+```bash
+coordinator help PILOT-123
+```
+
+```bash
+coordinator help PILOT-123 "I approved the plan an hour ago, why hasn't development started?"
+```
+
+The coordinator first gathers everything about the ticket into one briefing: what
+`coordinator inspect` explains, the ticket's recent Jira comments and status history, what the
+running coordinator is doing, this machine's runs (results, transcripts, check logs, journals)
+and the coordinator log lines about it. Then it opens Claude in this terminal with that
+briefing. Claude says what is happening, why (with the evidence), and what to do: the exact Jira
+comment to paste and the action to choose, or the `coordinator` command to run. Ask it follow-up
+questions; `/exit` or Ctrl-D ends it.
+
+It is your own Claude session, not a sandboxed stage: it can read the run folders, the docs and
+the coordinator's code, and runs read-only commands (`coordinator inspect`, `status`, `logs`,
+`team`, `gh pr view`, `git log`) without asking. Anything that changes something, such as
+`coordinator recover --resume`, it only proposes; Claude Code asks you before it runs. It never
+posts to Jira or moves tickets, and never gets your Jira token. It uses Opus unless you set
+`claude.help_model`. `--briefing-only` just writes the briefing and prints where it is. When a
+stage ends Blocked or Failed, its finish block shows the command.
+
 ### Watching Claude work and typing to it
 
 Turn on interactive sessions and each Claude session runs as a normal interactive `claude`
@@ -792,6 +821,7 @@ delivery dispatch pause --reason "machine busy"
 | `guidance` / `guidance add "<text>"` | Show the project's guidance for Claude (`FOR CLAUDE project` notes), or add to it |
 | `revert <KEY> --reason "<why>"` | Open a pull request that reverts a released ticket, and a linked Bug for the rework (asks first; `--yes` to skip) |
 | `clean` | Remove worktrees and folders that finished runs left (unpushed changes are saved as a patch first); `--older-than DAYS` also removes old local logs |
+| `help <KEY> ["question"]` | Ask Claude what is wrong with a ticket and how to fix it: gathers a briefing, then opens Claude in this terminal ([Asking Claude](#asking-claude-what-is-wrong-with-a-ticket)) |
 | `inspect` | Why a ticket is (not) eligible, its gates and candidate, and the latest run explained: reasons, findings in full, failed check output, merge conflicts, log locations and the Jira actions available now; read-only |
 | `stop <KEY>` | Stops one ticket's session and keeps its work; other sessions continue |
 | `recover` | Reconciles one ticket against Jira/GitHub before any retry; `--resume` continues held work |

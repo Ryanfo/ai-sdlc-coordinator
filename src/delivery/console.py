@@ -255,6 +255,7 @@ def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path
             ("Jira", ticket_url(cfg, record.ticket_key)),
             ("Logs", f"coordinator logs {record.ticket_key}  or  coordinator open {record.ticket_key}"),
             ("Log file", log_file.as_uri() if log_file else ""),
+            ("Help", f"coordinator help {record.ticket_key}  (asks Claude what is wrong)" if trouble else ""),
             (
                 "Claude",
                 f"{', '.join(still_open)} still open for questions: delivery attach {record.ticket_key}"
