@@ -21,6 +21,8 @@ from delivery.ports import (
     PullRequest,
     RepoInfo,
     Review,
+    ReviewComment,
+    ReviewThread,
     UncertainResult,
 )
 
@@ -44,6 +46,7 @@ class FakeGitHub:
             allow_deletions=False,
         )
     )
+    threads: dict[int, list[ReviewThread]] = field(default_factory=dict)
     lose_next_create: bool = False
     auto_ci: dict[str, str] = field(default_factory=dict)  # check name -> conclusion for every head
     ids: itertools.count[int] = field(default_factory=lambda: itertools.count(1))
@@ -70,6 +73,40 @@ class FakeGitHub:
         self.reviews_by_pr.setdefault(number, []).append(
             Review(next(self.ids), login, "APPROVED", commit or pr.head_sha, datetime.now(UTC))
         )
+
+    def comment_on_line(
+        self,
+        number: int,
+        path: str,
+        line: int,
+        body: str,
+        login: str = "reviewer",
+        *,
+        replies: tuple[tuple[str, str], ...] = (),
+        resolved: bool = False,
+        at: datetime | None = None,
+    ) -> ReviewThread:
+        """A reviewer starts a conversation on a line of the PR (with optional replies)."""
+        when = at or datetime.now(UTC)
+        n = next(self.ids)
+        thread = ReviewThread(
+            f"T{n}",
+            path,
+            line,
+            resolved,
+            False,
+            (
+                ReviewComment(login, body, when, f"https://github.com/example/app/pull/{number}#r{n}"),
+                *(ReviewComment(who, text, when) for who, text in replies),
+            ),
+        )
+        self.threads.setdefault(number, []).append(thread)
+        return thread
+
+    def resolve(self, number: int, thread_id: str) -> None:
+        self.threads[number] = [
+            replace(t, resolved=True) if t.id == thread_id else t for t in self.threads.get(number, [])
+        ]
 
     def add_ci(self, sha: str, name: str, conclusion: str | None, app: str = "github-actions") -> None:
         status = "completed" if conclusion else "in_progress"
@@ -189,3 +226,32 @@ class FakeGitHub:
 
     async def prs_for_commit(self, sha: str) -> list[PullRequest]:
         return [p for p in self.prs.values() if p.head_sha == sha or p.merge_commit_sha == sha]
+
+    async def revert_pr(self, number: int, title: str, body: str) -> PullRequest:
+        """Like GitHub: a new branch off the base that reverts the merged PR, and a PR for it."""
+        pr = self.prs[number]
+        assert pr.merged and pr.merge_commit_sha
+        work = self.origin.parent / f"revert-{number}"
+        g = ["git", "-c", "user.name=h", "-c", "user.email=h@h", "-c", "commit.gpgsign=false"]
+        if not work.exists():
+            subprocess.run(["git", "clone", "-q", str(self.origin), str(work)], check=True)
+        subprocess.run([*g, "fetch", "-q", "origin"], cwd=work, check=True)
+        branch = f"revert-{number}-{pr.head_ref.replace('/', '-')}"
+        subprocess.run([*g, "checkout", "-q", "-B", branch, f"origin/{pr.base_ref}"], cwd=work, check=True)
+        parents = self._parents(pr.merge_commit_sha)
+        mainline = ["-m", "1"] if len(parents) > 1 else []
+        subprocess.run([*g, "revert", "--no-edit", *mainline, pr.merge_commit_sha], cwd=work, check=True)
+        subprocess.run([*g, "push", "-q", "origin", f"HEAD:refs/heads/{branch}"], cwd=work, check=True)
+        return await self.create_pr(branch, pr.base_ref, title, body)
+
+    def _parents(self, sha: str) -> list[str]:
+        out = subprocess.run(
+            ["git", "--git-dir", str(self.origin), "show", "-s", "--format=%P", sha],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return out.stdout.split()
+
+    async def review_threads(self, number: int) -> list[ReviewThread]:
+        return list(self.threads.get(number, []))

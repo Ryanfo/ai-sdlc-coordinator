@@ -21,11 +21,14 @@ ACTION_EFFECTS: dict[Action, str] = {
     Action.SUBMIT_FOLLOW_UP: "verifies the same candidate again (no code change); after ACCEPT "
     "DEVIATIONS from Code review, rewrites the specification instead",
     Action.REVISE_SCOPE: "back to refinement to change what is being built",
-    Action.REQUEST_CODE_CHANGES: "needs a CHANGE CODE comment; then Submit implementation changes",
+    Action.REQUEST_CODE_CHANGES: "needs a CHANGE CODE comment (no items needed when the PR's review "
+    "comments say it all); then Submit implementation changes",
     Action.REQUEST_ACCEPTANCE_CHANGES: "needs a CHANGE ACCEPTANCE comment",
     Action.APPROVE_CODE: "needs APPROVE CODE and an independent GitHub approval at the current head",
     Action.ACCEPT_DELIVERY: "needs an ACCEPT DELIVERY comment after code approval",
     Action.CANCEL: "stops all work on the ticket",
+    Action.USE_APPROVED_PLAN: "the coordinator's: a fast-track plan approved with the specification",
+    Action.COMPLETE_SPIKE: "the coordinator's: closes a spike whose findings were accepted",
 }
 
 STATE_WORDS = {

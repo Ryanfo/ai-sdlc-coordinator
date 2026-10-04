@@ -28,11 +28,14 @@ from typing import Any
 
 from delivery import __version__, console
 from delivery import comments as comment_text
+from delivery.acceptance import Acceptance
 from delivery.claude import ChildHandle, claude_works
 from delivery.codestamp import code_mtime
 from delivery.control import ControlServer, socket_path
 from delivery.coordinator import WAITING_FOR_CLAUDE, StageExecutor
-from delivery.git import GitError
+from delivery.gates import approved_gate
+from delivery.git import GitError, blob_url
+from delivery.guidance import Guidance
 from delivery.intake import (
     Intake,
     IntakeEvaluator,
@@ -43,7 +46,7 @@ from delivery.intake import (
     load_context,
 )
 from delivery.journal import JournalCorrupt, RunJournal, SupervisorRecord
-from delivery.models import ACTIVE_RUN_STATES, RunRecord, RunState, digest, utcnow
+from delivery.models import ACTIVE_RUN_STATES, GateKind, RunRecord, RunState, digest, utcnow
 from delivery.open_sessions import OpenSessions
 from delivery.ownership import (
     FileLock,
@@ -51,15 +54,20 @@ from delivery.ownership import (
     TicketClaims,
     active_jql,
     evaluate_eligibility,
+    mine_jql,
     ready_jql,
     release_jql,
     supervisor_lock,
 )
 from delivery.ports import IntegrationError
 from delivery.proc import ProcessStartError, pid_alive, process_start_marker, signal_group
+from delivery.proposals import Proposals
+from delivery.proposals import load as load_proposals
 from delivery.publication import PublicationError, PublicationUncertain, Publisher, TicketMoved
+from delivery.reminders import Reminders
 from delivery.runtime import Deps, RunContext
 from delivery.stages import change_ids
+from delivery.staleness import Staleness
 from delivery.workflow import STAGES, STATUS_NAMES, Action, Stage, Status, stage_for_active
 
 log = logging.getLogger("delivery")
@@ -115,6 +123,19 @@ class Supervisor:
             else None
         )
         self._open_task: asyncio.Task[None] | None = None
+        # Tickets in Acceptance review: how to try the candidate, and the app (delivery.acceptance).
+        self.acceptance = Acceptance(deps, self.emit)
+        self._acceptance_task: asyncio.Task[None] | None = None
+        # `FOR CLAUDE project` notes on the developer's tickets (delivery.guidance).
+        self.guidance = Guidance(self.cfg, deps.jira, deps.github, deps.repo)
+        # CREATE TICKETS comments: tickets Claude proposed, created when asked (delivery.proposals).
+        self.proposals = Proposals(self.cfg, deps.jira, deps.repo)
+        self._comments_seen: dict[str, str] = {}
+        self._spikes_done: set[str] = set()
+        # Candidates under review that the base branch has moved past (delivery.staleness).
+        self.staleness = Staleness(self.cfg, deps.jira, deps.repo, self.emit)
+        # Tickets that have waited long for a person (delivery.reminders).
+        self.reminders = Reminders(self.cfg, deps.jira, self.emit)
         self._code_noted = False
         # Claude unavailable: seconds between probes (doubling) and when the next one is due.
         self._claude_wait = 0.0
@@ -170,10 +191,11 @@ class Supervisor:
 
         Sessions left open for questions keep running in tmux; they are watched again on restart.
         """
-        if self._open_task:
-            self._open_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._open_task
+        for watcher in (self._open_task, self._acceptance_task):
+            if watcher:
+                watcher.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await watcher
         if self.open and (left := self.open.registry.all()):
             names = ", ".join(f"{r.ticket_key} {r.procedure}" for r in left)
             self.emit(console.line(f"still open in tmux (watched again on restart): {names}"))
@@ -203,6 +225,8 @@ class Supervisor:
         await self.reconcile()
         if self.open and not self.dry_run and not once:
             self._open_task = asyncio.create_task(self._watch_open(), name="open-sessions")
+        if not self.dry_run and not once:
+            self._acceptance_task = asyncio.create_task(self._watch_acceptance(), name="acceptance")
         while not self.stop_event.is_set():
             self._check_code()
             if self.record.claude_unavailable is not None:
@@ -268,12 +292,34 @@ class Supervisor:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.stop_event.wait(), timeout=OPEN_SESSION_TICK_SECONDS)
 
+    async def _watch_acceptance(self) -> None:
+        """Tickets in Acceptance review: Jira every poll, the running apps every few seconds."""
+        while not self.stop_event.is_set():
+            try:
+                await self.acceptance.tick()
+            except Exception:
+                log.exception("acceptance check failed")
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self.stop_event.wait(), timeout=OPEN_SESSION_TICK_SECONDS)
+
     # ------------------------------------------------------------------ discovery
     async def poll_once(self) -> PollReport:
         report = PollReport()
         loop = asyncio.get_running_loop()
         if loop.time() < self.backoff_until:
             return report
+        if not self.dry_run:
+            # First, so that runs starting in this poll already read the new guidance. None of
+            # these may ever stop the poll.
+            for name, check in (
+                ("comments", self._sweep_comments),
+                ("out-of-date candidates", self.staleness.tick),
+                ("reminders", self.reminders.tick),
+            ):
+                try:
+                    await check()
+                except Exception:
+                    log.exception("%s check failed", name)
         try:
             # First, so that a release recorded now starts its verification in this same poll.
             await self._record_merged_releases(report)
@@ -361,6 +407,51 @@ class Supervisor:
                     "choose Record release in Jira",
                 )
 
+    async def _sweep_comments(self) -> None:
+        """Comments on the developer's tickets that ask for something outside any stage:
+        `FOR CLAUDE project` notes go to the project guidance (delivery.guidance) and
+        `CREATE TICKETS` creates proposed tickets (delivery.proposals).
+
+        Only tickets changed since the last look are read again. A failure is retried on the
+        next poll and never holds anything else up.
+        """
+        try:
+            issues = await self.deps.jira.search(mine_jql(self.cfg))
+        except IntegrationError:
+            return
+        notes_from = {self.cfg.identity.developer_jira_account_id, *self.cfg.approvals.jira_account_ids}
+        deciders = self.cfg.approvals.approvers() | {self.cfg.identity.developer_jira_account_id}
+        recent = utcnow() - timedelta(days=COMMENTS_DONE_DAYS)
+        for issue in issues:
+            stamp = issue.updated.isoformat() if issue.updated else ""
+            if stamp and self._comments_seen.get(issue.key) == stamp:
+                continue
+            done = self.cfg.status_by_id().get(issue.view.status_id) is Status.DONE
+            if done and (issue.updated is None or issue.updated < recent):
+                continue
+            try:
+                found = await self.deps.jira.comments(issue.key)
+                added = await self.guidance.collect(issue.key, found, notes_from)
+                created = await self.proposals.collect(issue, found, deciders)
+            except Exception as exc:  # never let these hold up the poll
+                log.warning("comments on %s not acted on: %s", issue.key, exc)
+                self._note_once(
+                    f"{issue.key}:comments:{exc}",
+                    f"{issue.key}: a FOR CLAUDE project or CREATE TICKETS comment was not acted on yet "
+                    f"({exc}); retrying",
+                )
+                continue
+            self._comments_seen[issue.key] = stamp
+            if added:
+                self.emit(
+                    console.line(
+                        f"{issue.key}: added {len(added)} FOR CLAUDE project note"
+                        f"{'s' if len(added) != 1 else ''} to the project guidance; every session reads it"
+                    )
+                )
+            if created:
+                self.emit(console.line(f"{issue.key}: created {', '.join(created)} in Backlog, as asked"))
+
     async def _check_moved_by_hand(self, key: str, status_id: str, report: PollReport) -> None:
         """A ticket of ours in an "agent working" status with no session behind it.
 
@@ -446,6 +537,13 @@ class Supervisor:
             if not self.dry_run:
                 await self._explain_wait(ctx, intake)
             return
+        if (
+            stage is Stage.DEVELOPMENT
+            and intake.kind is IntakeKind.READY
+            and self.cfg.flow.kind_of(ctx.issue.view.issue_type) == "spike"
+        ):
+            await self._complete_spike(ctx, intake, report)
+            return
         executor = self.executor
         brief_digest = digest(brief_text(ctx.issue))
         attempt = f"{key}:{stage.value}:{digest(intake.material(brief_digest))}"
@@ -483,6 +581,60 @@ class Supervisor:
         finally:
             self.busy.discard(key)
         report.started.append(key)
+
+    async def _complete_spike(self, ctx: TicketContext, intake: Intake, report: PollReport) -> None:
+        """A spike's findings were accepted: there is nothing to build, so close it (Complete spike)
+        instead of starting development. Without that transition in Jira, say so once."""
+        key = ctx.key
+        entry = intake.entry.history_id if intake.entry else "-"
+        if self.dry_run:
+            report.started.append(key)
+            self.emit(f"[dry-run] would complete spike {key}: {intake.reason}")
+            return
+        if f"{key}:{entry}" in self._spikes_done:
+            return
+        rec = intake.record or ctx.record
+        plan = approved_gate(rec.gates, GateKind.PLAN)
+        if plan is None:
+            return
+        path, _, commit = rec.artefacts.get("plan", "").rpartition("@")
+        url = blob_url(self.cfg.repository.url, commit, path) if path else self.cfg.repository.url
+        journal = RunJournal(self.cfg.runtime.state_dir / "intake" / key)
+        pub = Publisher(self.cfg, self.deps.jira, None, None, journal, f"spike-{entry}")
+        try:
+            name = self.cfg.workflow.action_name(Action.COMPLETE_SPIKE)
+            done = self.cfg.status_id(Status.DONE)
+            offered = any(
+                t.name == name and t.to_status_id == done for t in await self.deps.jira.transitions(key)
+            )
+            proposals = await load_proposals(self.deps.repo, key, plan.token)
+            shared = rec.model_copy(
+                update={
+                    "current_state": RunState.COMPLETED,
+                    "current_stage": Stage.PLANNING,
+                    "updated_at": utcnow(),
+                }
+            )
+            await pub.save_record(key, shared, "spike-done")
+            await pub.comment(
+                key,
+                "spike-done",
+                comment_text.spike_done(plan.revision, url, plan.token, proposals, offered),
+                plan.token,
+            )
+            if offered:
+                await pub.transition(key, Status.READY_DEVELOPMENT, Action.COMPLETE_SPIKE)
+        except (IntegrationError, PublicationError, PublicationUncertain, TicketMoved) as exc:
+            report.skipped.append({"ticket": key, "reason": f"spike not completed yet: {exc}"})
+            return
+        self._spikes_done.add(f"{key}:{entry}")
+        report.started.append(key)
+        self.emit(
+            console.line(
+                f"{key}: spike complete (findings v{plan.revision:03d} accepted)"
+                + ("" if offered else "; move it to Done by hand (no Complete spike transition in Jira)")
+            )
+        )
 
     def _launch(self, rc: RunContext, resume: bool = False, publish_only: bool = False) -> None:
         async def runner() -> RunRecord:
@@ -919,6 +1071,8 @@ def _backoff(seconds: float) -> float:
 
 TERMINAL = frozenset({RunState.AWAITING_HUMAN, RunState.COMPLETED, RunState.FAILED, RunState.BLOCKED})
 OPEN_SESSION_TICK_SECONDS = 3.0
+# Done tickets changed within this many days are still read for CREATE TICKETS comments.
+COMMENTS_DONE_DAYS = 30
 VERIFY_AFTER_CLOSE = "its development session is still open; verification starts once it is closed"
 BACKOFF_MIN_SECONDS = 15.0
 BACKOFF_MAX_SECONDS = 600.0

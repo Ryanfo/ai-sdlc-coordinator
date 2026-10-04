@@ -42,6 +42,8 @@ PROCEDURE_ROLES: dict[str, Role] = {
     "verify-ticket": Role.VERIFIER,
     "verify-release": Role.VERIFIER,
     "amend-spec": Role.AUTHOR,
+    "resolve-conflicts": Role.IMPLEMENTER,
+    "investigate-ticket": Role.VERIFIER,
 }
 
 # Paths in the application worktree that an implementation must never change.

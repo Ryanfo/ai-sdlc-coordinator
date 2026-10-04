@@ -44,6 +44,7 @@ DEFAULT_FILES = {
     "verify-ticket": ("verification.md", "verification", "# Verification\n\nObserved.\n"),
     "prepare-release": ("release.md", "release", "# Release\n\nSmoke: open the app.\n"),
     "verify-release": ("release-verification.md", "release_verification", "# Release verification\n"),
+    "investigate-ticket": ("findings.md", "plan", "# Findings\n\n## Answer\nUse the existing index.\n"),
     "amend-spec": (
         "specification.md",
         "specification",
@@ -60,6 +61,13 @@ def write_outputs(b: dict, procedure: str, ticket: str, envelope: dict) -> list[
         name, kind, text = DEFAULT_FILES[procedure]
         (out_dir / name).write_text(b.get("content", text))
         artifacts.append({"path": b.get("artifact_path", name), "kind": kind})
+    if procedure == "refine-ticket" and envelope.get("fast_track") and not b.get("no_plan"):
+        (out_dir / "plan.md").write_text("# Plan\n\nWritten with the specification.\n")
+        artifacts.append({"path": "plan.md", "kind": "plan"})
+    for name, text in (b.get("outputs") or {}).items():
+        # Extra documents in the output directory (for example verify-ticket's acceptance guide).
+        (out_dir / name).write_text(text)
+        artifacts.append({"path": name, "kind": "doc"})
     for rel, text in (b.get("edit") or {}).items():
         p = Path(os.getcwd()) / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -105,9 +113,11 @@ def build_result(
             ],
         ),
         "worker_checks": b.get("worker_checks", []),
+        "proposed_tickets": b.get("proposed_tickets", []),
         "blocker_reason": b.get("blocker_reason", ""),
     }
-    if procedure == "plan-ticket":
+    fast_plan = procedure == "refine-ticket" and envelope.get("fast_track") and not b.get("no_plan")
+    if procedure == "plan-ticket" or fast_plan:
         result["footprint"] = b.get(
             "footprint", {"paths": [f"src/{ticket.lower()}.ts"], "components": [f"comp-{ticket}"]}
         )

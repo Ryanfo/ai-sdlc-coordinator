@@ -117,9 +117,22 @@ DOCUMENTS: dict[Stage, Document] = {
 }
 
 
-def document_digest(out_dir: Path, stage: Stage) -> str:
+# A spike's planning stage writes findings instead of a plan; they are reviewed the same way.
+FINDINGS = Document(
+    "investigate-ticket", "findings", "findings.md", GateKind.PLAN, Status.PLAN_REVIEW, "plan_revision"
+)
+
+
+def document_for(stage: Stage, procedure: str | None = None) -> Document | None:
+    """The document a stage's procedure publishes for review (None: it publishes none)."""
+    if procedure == FINDINGS.procedure:
+        return FINDINGS
+    return DOCUMENTS.get(stage)
+
+
+def document_digest(out_dir: Path, stage: Stage, procedure: str | None = None) -> str:
     """Fingerprint of the stage's document in an output directory ("" if there is none)."""
-    doc = DOCUMENTS.get(stage)
+    doc = document_for(stage, procedure)
     if doc is None:
         return ""
     try:
@@ -372,7 +385,9 @@ class OpenSessions:
         if (
             rec.stage is Stage.DEVELOPMENT
             and self.cfg.preview.enabled
-            and await self.previews.tick(rec, lambda: self._run_ended(rec))
+            and await self.previews.tick(
+                rec, lambda: self._run_ended(rec), lambda text: self.tmux.message(rec.name, text)
+            )
         ):
             self.registry.save(rec)
 
@@ -387,7 +402,7 @@ class OpenSessions:
     async def _follow_up(self, rec: OpenRecord, ended: bool = False) -> None:
         if rec.stage is Stage.DEVELOPMENT:
             await self.follow_up(rec, ended)
-        elif rec.stage in DOCUMENTS:
+        elif document_for(rec.stage, rec.procedure) is not None:
             await self.follow_up_document(rec)
 
     async def follow_up(self, rec: OpenRecord, ended: bool = False) -> None:
@@ -533,8 +548,9 @@ class OpenSessions:
         key = rec.ticket_key
         if self.is_running(key) or key in self.busy:
             return
-        doc = DOCUMENTS[rec.stage]
-        current = document_digest(Path(rec.out_dir), rec.stage)
+        doc = document_for(rec.stage, rec.procedure)
+        assert doc is not None
+        current = document_digest(Path(rec.out_dir), rec.stage, rec.procedure)
         if not current or current == rec.document:
             rec.unchecked_stops, rec.pending_prompts, rec.held = 0, [], ""
             self.registry.save(rec)
@@ -588,7 +604,8 @@ class OpenSessions:
         """
         from delivery.stages import STRATEGIES
 
-        key, doc = rec.ticket_key, DOCUMENTS[rec.stage]
+        key, doc = rec.ticket_key, document_for(rec.stage, rec.procedure)
+        assert doc is not None
         entry = next((e for e in self.deps.store.runs_for_ticket(key) if e.run_id == rec.run_id), None)
         raw = entry.record.outputs.get("decision") if entry and entry.record else None
         if entry is None or entry.record is None or not raw:
@@ -601,7 +618,7 @@ class OpenSessions:
         ensure_private_dir(journal.dir)
         out = journal.dir / "output" / doc.procedure
         shutil.copytree(rec.out_dir, out, dirs_exist_ok=True)
-        current = document_digest(out, rec.stage)
+        current = document_digest(out, rec.stage, rec.procedure)
         record = entry.record.model_copy(update={"run_id": fid, "worktrees": {}, "outputs": {}})
         intake = Intake.restore(entry.record.outputs.get("intake") or {"stage": rec.stage.value}, ctx)
         rc = RunContext(self.deps, ctx, intake, record, journal, ctx.record)

@@ -136,3 +136,70 @@ async def test_latest_base_merged_cleanly_is_published_when_nothing_else_changes
         assert rec.candidate_sha == sh("rev-parse", "refs/heads/feature/PILOT-1", cwd=w.origin)
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.CODE_REVIEW, w.last_comment("PILOT-1")
+
+
+async def test_claude_resolves_a_conflict_with_the_base_when_changes_are_requested(tmp_path: Path) -> None:
+    w = make_world(tmp_path, checks={"unit": ["sh", "-c", "! grep -rq bug src"]})
+    w.scenario(
+        {
+            "plan-ticket": [{"footprint": {"paths": ["src/app.ts"]}}],
+            "implement-ticket": [
+                {"edit": {"src/app.ts": "export const x = 2; // bug\n"}},
+                {"edit": {"src/extra.ts": "export const extra = 1;\n"}},
+            ],
+            # Keeps main's value and this ticket's intent, without the conflict markers.
+            "resolve-conflicts": [{"edit": {"src/app.ts": "export const x = 9;\n"}}],
+        }
+    )
+    async with Supervisor(w.deps) as sup:
+        await _to_development(w, sup, "PILOT-1")
+        await step(sup)  # candidate c1
+        main = external_commit(tmp_path, w.origin, "main", "src/app.ts", "export const x = 9;\n", "other")
+        await step(sup)  # verification fails on the check; the conflict with main is flagged
+        assert w.jira.status_of("PILOT-1") is Status.CHANGES_REQUESTED
+        assert "Or have Claude do it" in w.last_comment("PILOT-1")
+        w.jira.human_move("PILOT-1", Status.READY_DEVELOPMENT, DEV)
+        await step(sup)  # merges main, Claude resolves the conflict, then makes the changes
+        rec = w.record("PILOT-1")
+        assert rec.candidate_number == 2, w.last_comment("PILOT-1")
+        ready = w.last_comment("PILOT-1")
+        assert "Claude resolved the conflicts in src/app.ts" in ready
+        assert "was not merged into this candidate" not in ready
+        head = rec.candidate_sha
+        assert head
+        assert sh("merge-base", "--is-ancestor", main, head, cwd=w.origin) == ""  # main is in it
+        assert sh("show", f"{head}:src/app.ts", cwd=w.origin) == "export const x = 9;"
+        assert sh("show", f"{head}:src/extra.ts", cwd=w.origin) == "export const extra = 1;"
+        resolve = json.loads(
+            _run_file(w, "PILOT-1", "development", "envelope-resolve-conflicts.json")[0].read_text()
+        )
+        assert list(resolve["feedback_items"]) == ["R1"] and "src/app.ts" in resolve["feedback_items"]["R1"]
+        await step(sup)
+        assert w.jira.status_of("PILOT-1") is Status.CODE_REVIEW, w.last_comment("PILOT-1")
+        assert "Merge conflicts to resolve when merging" not in w.last_comment("PILOT-1")
+
+
+async def test_conflict_help_can_be_turned_off(tmp_path: Path) -> None:
+    w = make_world(
+        tmp_path,
+        checks={"unit": ["sh", "-c", "! grep -rq bug src"]},
+        extra={"flow": {"resolve_conflicts": False}},
+    )
+    w.scenario(
+        {
+            "implement-ticket": [
+                {"edit": {"src/app.ts": "export const x = 2; // bug\n"}},
+                {"edit": {"src/extra.ts": "export const extra = 1;\n"}},
+            ]
+        }
+    )
+    async with Supervisor(w.deps) as sup:
+        await _to_development(w, sup, "PILOT-1")
+        await step(sup)
+        external_commit(tmp_path, w.origin, "main", "src/app.ts", "export const x = 9;\n", "other")
+        await step(sup)
+        assert "Or have Claude do it" not in w.last_comment("PILOT-1")
+        w.jira.human_move("PILOT-1", Status.READY_DEVELOPMENT, DEV)
+        await step(sup)
+        assert "was not merged into this candidate" in w.last_comment("PILOT-1")
+    assert not [i for i in w.invocations() if "/delivery:resolve-conflicts" in " ".join(i["argv"])]

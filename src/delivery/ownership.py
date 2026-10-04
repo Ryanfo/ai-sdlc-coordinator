@@ -244,6 +244,30 @@ def release_jql(cfg: Config) -> str:
     return _assigned_jql(cfg, (Status.READY_RELEASE,))
 
 
+def mine_jql(cfg: Config) -> str:
+    """Every ticket assigned to the developer that is not cancelled (Done ones too: a spike's
+    follow-up tickets can be created after it is done)."""
+    return _assigned_jql(cfg, [s for s in Status if s is not Status.CANCELLED])
+
+
+def waiting_jql(cfg: Config) -> str:
+    """The developer's tickets waiting for a person: a review or decision, answers, a blocker
+    to be resolved, or the merge."""
+    from delivery.workflow import HUMAN_REVIEW_STATUSES, PAUSED_STATUSES
+
+    return _assigned_jql(cfg, [*HUMAN_REVIEW_STATUSES, *PAUSED_STATUSES, Status.READY_RELEASE])
+
+
+def review_jql(cfg: Config) -> str:
+    """The developer's tickets whose candidate is under review (Code or Acceptance review)."""
+    return _assigned_jql(cfg, (Status.CODE_REVIEW, Status.ACCEPTANCE_REVIEW))
+
+
+def acceptance_jql(cfg: Config) -> str:
+    """The developer's tickets in Acceptance review (the candidate is there to try)."""
+    return _assigned_jql(cfg, (Status.ACCEPTANCE_REVIEW,))
+
+
 def coordination_jql(cfg: Config) -> str:
     """All in-flight tickets in the project, any assignee, for overlap detection."""
     from delivery.workflow import TERMINAL_STATUSES

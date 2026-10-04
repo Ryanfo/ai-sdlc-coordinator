@@ -83,6 +83,9 @@ def plan(cfg: Config, live_sessions: set[str], older_than_days: int | None = Non
     runs = {e.run_id: e for e in store.iter_runs()}
     open_records = SessionRegistry(cfg.runtime.state_dir).all()
     held = {w for r in open_records if r.name in live_sessions for w in r.worktrees}
+    from delivery.acceptance import AcceptanceStore
+
+    accepting = {st.worktree for st in AcceptanceStore(cfg.runtime.state_dir).all()}
     out = Plan(dead_sessions=[r for r in open_records if r.name not in live_sessions])
     dead_held = {w for r in out.dead_sessions for w in r.worktrees}
     root = cfg.repository.worktree_root
@@ -101,6 +104,9 @@ def plan(cfg: Config, live_sessions: set[str], older_than_days: int | None = Non
             item = Item(run_dir, size_of(run_dir), "", entry)
             if any(str(c) in held for c in children):
                 item.why = "kept for a Claude session open for questions"
+                out.kept.append(item)
+            elif any(str(c) in accepting for c in children):
+                item.why = "kept for the app of a ticket in Acceptance review"
                 out.kept.append(item)
             elif any(str(c) in dead_held for c in children):
                 item.why = "its open session has ended; tidied with that session"

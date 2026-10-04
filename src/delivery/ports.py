@@ -141,6 +141,10 @@ class JiraPort(Protocol):
         self, key: str, transition_id: str, fields: dict[str, Any] | None = None
     ) -> None: ...
     async def add_comment(self, key: str, adf: dict[str, Any]) -> JiraComment: ...
+    async def create_issue(
+        self, project: str, issue_type: str, summary: str, description: dict[str, Any], labels: list[str]
+    ) -> str: ...
+    async def link_issues(self, link_type: str, inward_key: str, outward_key: str) -> None: ...
     async def get_property(self, key: str, name: str) -> dict[str, Any] | None: ...
     async def set_property(self, key: str, name: str, value: dict[str, Any]) -> None: ...
     async def set_fields(self, key: str, fields: dict[str, Any]) -> None: ...
@@ -192,6 +196,27 @@ class Review:
     commit_id: str
     submitted_at: datetime | None
     user_type: str = "User"
+    body: str = ""
+
+
+@dataclass(frozen=True)
+class ReviewComment:
+    author_login: str
+    body: str
+    created_at: datetime | None
+    url: str = ""
+
+
+@dataclass(frozen=True)
+class ReviewThread:
+    """A conversation on a line of a pull request (GitHub's review thread)."""
+
+    id: str
+    path: str
+    line: int | None
+    resolved: bool
+    outdated: bool
+    comments: tuple[ReviewComment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -253,3 +278,5 @@ class GitHubPort(Protocol):
     async def branch_protection(self, branch: str) -> BranchProtection | None: ...
     async def commit(self, sha: str) -> CommitInfo: ...
     async def prs_for_commit(self, sha: str) -> list[PullRequest]: ...
+    async def review_threads(self, number: int) -> list[ReviewThread]: ...
+    async def revert_pr(self, number: int, title: str, body: str) -> PullRequest: ...

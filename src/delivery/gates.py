@@ -87,10 +87,12 @@ def evaluate_human_gate(
     change_kinds: set[DecisionKind],
     approvers: Container[str],
     excluded_comment_ids: set[str] | None = None,
+    allow_empty_change: bool = False,
 ) -> GateEval:
     """Validate the human decision that moved a ticket out of a review status.
 
     ``entry`` is the status change that brought the ticket into its current status.
+    ``allow_empty_change``: a change request needs no numbered items of its own.
     """
     if gate.state is GateState.SUPERSEDED:
         return GateEval(
@@ -175,6 +177,7 @@ def evaluate_human_gate(
             kinds=change_kinds,
             since=gate.published_at,
             allowed_authors=approvers,
+            allow_empty=allow_empty_change,
         )
         if not fb.comments:
             kind = sorted(change_kinds)[0]

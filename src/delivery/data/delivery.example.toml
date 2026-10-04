@@ -190,12 +190,36 @@ image_scale = 2      # render scale, 0.5-4
 max_frames = 10      # frames per ticket
 max_image_mb = 20
 
-# Try the change in your browser: once a development session has handed over its candidate (and
+# Try the change in your browser. Once a development session has handed over its candidate (and
 # stays open, see [claude.interactive]), the coordinator runs the app from that session's
-# worktree and opens it. Changes you then ask for in the session show up there (with a dev
-# server that reloads). It stops when the session closes; `delivery preview <ticket>` reopens it.
+# worktree and opens it; changes you then ask for in the session show up there (with a dev
+# server that reloads). When one of your tickets reaches Acceptance review, it runs the
+# code-approved candidate the same way until the ticket leaves Acceptance review. Anyone with
+# this config can run a ticket's candidate with `delivery try <ticket>`. `delivery preview
+# <ticket>` reopens a running app.
 # [preview]
 # command = ["npm", "run", "dev"]   # "{port}" is replaced by its port, also exported as PORT
 # setup = ["npm", "ci"]             # run first; default checks.setup, [] for nothing
+# seed = ["npm", "run", "seed"]     # run after setup, before the app (demo data); default nothing
 # url = "http://localhost:{port}/"
 # open_browser = true
+# acceptance = true                 # run the candidate during Acceptance review
+
+# How kinds of work move through the stages.
+# [flow]
+# resolve_conflicts = true          # development merges the latest base; Claude resolves conflicts
+# bug_types = ["Bug"]               # reproduce first: failing regression test, checked on the base
+# reproduce_check = "unit"          # the check that runs a bug's regression tests on the base branch
+# spike_types = ["Spike"]           # findings instead of a plan; needs the Complete spike transition
+# fast_track_label = "fast-track"   # plan written and approved with the specification; needs the
+#                                   # Use approved plan transition ("" turns it off)
+# link_type = "Relates"             # how CREATE TICKETS links new tickets to the one proposing them
+
+# Reminder comments on your tickets that have waited long for a person (a review, answers, a
+# blocker, the merge). Jira notifies the ticket's watchers; listed approvers are mentioned.
+# [reminders]
+# after_hours = 24                  # 0: no reminders
+# repeat_hours = 24
+# max_reminders = 3
+# weekdays_only = true
+# webhook_env = "DELIVERY_SLACK_WEBHOOK"   # optional: also post to this Slack incoming webhook URL

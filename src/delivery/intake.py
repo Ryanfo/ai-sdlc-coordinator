@@ -52,6 +52,7 @@ from delivery.models import (
     utcnow,
 )
 from delivery.ports import GitHubPort, JiraComment, JiraIssue, JiraPort, StatusChange
+from delivery.pr_feedback import review_items
 from delivery.workflow import (
     FOLLOW_UP_SOURCES,
     PAUSED_STATUSES,
@@ -331,6 +332,8 @@ class IntakeEvaluator:
         approve: DecisionKind,
         change: set[DecisionKind],
         approvers: Container[str] | None = None,
+        *,
+        allow_empty_change: bool = False,
     ) -> GateEval:
         return evaluate_human_gate(
             gate,
@@ -342,6 +345,7 @@ class IntakeEvaluator:
             approve_kind=approve,
             change_kinds=change,
             approvers=approvers or self.approvers,
+            allow_empty_change=allow_empty_change,
         )
 
     def catch_up_gates(self, ctx: TicketContext) -> SharedExecutionRecord:
@@ -893,8 +897,17 @@ class IntakeEvaluator:
             approve_to = (
                 Status.ACCEPTANCE_REVIEW if kind is GateKind.CODE else Status.READY_RELEASE_PREPARATION
             )
+            # The PR's review comments may be the whole request (G-items, added below).
             ev = self._gate_eval(
-                ctx, gate, into[-1], origin, approve_to, Status.CHANGES_REQUESTED, approve, {change}
+                ctx,
+                gate,
+                into[-1],
+                origin,
+                approve_to,
+                Status.CHANGES_REQUESTED,
+                approve,
+                {change},
+                allow_empty_change=True,
             )
             if ev.outcome is GateOutcome.WAITING:
                 return self._wait(stage, ev.reason, ev.next_action, e)
@@ -909,6 +922,11 @@ class IntakeEvaluator:
             items, token = dict(ev.feedback.items), gate.token
             selected = [cd.comment for cd in ev.feedback.comments]
             rec = _with_gate(rec, _decided(gate, ev, GateState.CHANGES_REQUESTED))
+        if self.github is not None and rec.pr_number:
+            # Unresolved review conversations on the PR since this candidate was published.
+            items.update(
+                await review_items(self.github, rec.pr_number, self._candidate_published(ctx, into[-1]))
+            )
         if token:
             sub = decisions(
                 ctx.comments,
@@ -922,15 +940,21 @@ class IntakeEvaluator:
                 chosen_d = {k: v for k, v in sub[-1].decision.items.items() if k.startswith("D")}
                 if chosen:
                     # R-items are problems the coordinator found (failed checks, conflicts with
-                    # the base branch): the next candidate cannot pass without them.
-                    items = {k: v for k, v in items.items() if k.split("@")[0] in chosen or k.startswith("R")}
+                    # the base branch): the next candidate cannot pass without them. G-items are
+                    # the PR's open review conversations: resolving one on GitHub leaves it out.
+                    items = {
+                        k: v
+                        for k, v in items.items()
+                        if k.split("@")[0] in chosen or k.startswith(("R", "G"))
+                    }
                 selected.append(sub[-1].comment)
         items = self._deviation_items(rec, items, chosen_d)
         if not items:
             return self._wait(
                 stage,
                 "no feedback items selected for the implementation changes",
-                "Comment the change request with numbered F1.. items.",
+                "Comment the change request with numbered F1.. items, or leave review comments on "
+                "the pull request.",
                 e,
             )
         return Intake(
@@ -942,6 +966,15 @@ class IntakeEvaluator:
             feedback_token=token,
             feedback_items=items,
         )
+
+    def _candidate_published(self, ctx: TicketContext, before: StatusChange) -> datetime | None:
+        """When the current candidate went in for verification (before ``before``)."""
+        found = [
+            c
+            for c in ctx.changes
+            if c.to_id == self.ids[Status.READY_VERIFICATION] and c.created <= before.created
+        ]
+        return found[-1].created if found else None
 
     def _deviation_items(
         self, rec: SharedExecutionRecord, items: dict[str, str], named: dict[str, str]
@@ -976,6 +1009,27 @@ class IntakeEvaluator:
                 "the code use Submit implementation changes)"
             )
         return Intake(IntakeKind.READY, stage, reason=reason, record=rec)
+
+    async def _req_plan_with_specification(
+        self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange
+    ) -> Intake:
+        """Fast track: planning published the plan written with the specification as approved."""
+        rec = ctx.record
+        plan = approved_gate(rec.gates, GateKind.PLAN)
+        spec = approved_gate(rec.gates, GateKind.SPEC)
+        if plan is None or spec is None:
+            return self._block(
+                stage,
+                "the fast-track plan is not recorded as approved with the specification",
+                "Return the ticket through Plan review.",
+                entry=e,
+            )
+        return Intake(
+            IntakeKind.READY,
+            stage,
+            reason=f"plan v{plan.revision:03d} approved with specification v{spec.revision:03d} (fast track)",
+            record=rec,
+        )
 
     async def _code_evidence(self, rec: SharedExecutionRecord) -> tuple[bool, str]:
         if self.github is None or rec.pr_number is None or not rec.candidate_sha:

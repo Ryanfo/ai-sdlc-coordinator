@@ -8,7 +8,7 @@ offers says which status it moves the ticket into (taken from the workflow defin
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from delivery.feedback import (
@@ -17,7 +17,7 @@ from delivery.feedback import (
     approve_template,
     change_template,
 )
-from delivery.models import CheckResult, DeviationRecord, Finding, Question, Severity
+from delivery.models import CheckResult, DeviationRecord, Finding, ProposedTicket, Question, Severity
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
 from delivery.workflow import STAGES, STATUS_NAMES, Action, Stage, StageDef, Status, route_for_action
@@ -35,6 +35,13 @@ STAGE_TITLES = {
 NOTE_HINT = (
     "To guide the next Claude session, first add a comment that starts with `FOR CLAUDE` "
     "(or `FOR CLAUDE development` for one stage) followed by what it should know or do."
+)
+
+
+PR_COMMENTS_HINT = (
+    "Unresolved review conversations on the pull request are included as G-items, so the "
+    "request needs no F-items when the PR comments say it all; resolve a conversation on GitHub "
+    "to leave it out."
 )
 
 
@@ -102,30 +109,134 @@ def design_drift(stage: str, frames: list[tuple[str, str]]) -> str:
     )
 
 
-def spec_gate(token: str, url: str, revision: int, summary: str, approvers: str) -> str:
+def proposals_section(token: str, proposals: Sequence[ProposedTicket]) -> list[str]:
+    """Tickets Claude proposes (slices or follow-ups): created only when someone asks."""
+    if not proposals:
+        return []
+    lines = ["", "**Proposed tickets** (nothing is created unless you ask):"]
+    for t in proposals:
+        first = t.description.strip().splitlines()[0] if t.description.strip() else ""
+        lines.append(f"- **{t.id}** {t.summary}" + (f": {_clip(first, 200)}" if first else ""))
+    lines += [
+        "To create some or all of them in Backlog (unassigned, linked to this ticket), add this "
+        "comment with their IDs. A note after an ID (`S2: call it Export`) goes into that ticket.",
+        "```",
+        f"{DecisionKind.CREATE_TICKETS.value} {token}",
+        ", ".join(t.id for t in proposals),
+        "```",
+    ]
+    return lines
+
+
+def spec_gate(
+    token: str,
+    url: str,
+    revision: int,
+    summary: str,
+    approvers: str,
+    *,
+    plan: tuple[int, str] | None = None,
+    fast_track_note: str = "",
+    proposals: Sequence[ProposedTicket] = (),
+) -> str:
+    lines = [
+        f"## Specification v{revision:03d} ready for review: {token}",
+        _ready_to_move(
+            Status.SPECIFICATION_REVIEW,
+            Action.APPROVE_SPECIFICATION,
+            "once the specification is approved",
+        ),
+        f"[Read specification v{revision:03d}]({url}) (pinned to the exact commit).",
+    ]
+    if plan:
+        lines.append(
+            f"**Fast track**: [plan v{plan[0]:03d}]({plan[1]}) was written with this specification. "
+            "Approving the specification approves this plan too, so development starts straight after "
+            "it (no separate plan review)."
+        )
+    elif fast_track_note:
+        lines.append(f"**Fast track not used**: {fast_track_note}.")
+    lines += [
+        "",
+        summary,
+        "",
+        f"**To approve** ({approvers}): add this comment, then choose **Approve specification** "
+        f"{_moves(Status.SPECIFICATION_REVIEW, Action.APPROVE_SPECIFICATION)}.",
+        "```",
+        approve_template(DecisionKind.APPROVE_SPEC, token),
+        "```",
+        "**To request changes**: add this comment with numbered items, then choose "
+        "**Request specification changes** "
+        f"{_moves(Status.SPECIFICATION_REVIEW, Action.REQUEST_SPECIFICATION_CHANGES)}.",
+        "```",
+        change_template(DecisionKind.CHANGE_SPEC, token),
+        "```",
+    ]
+    lines += proposals_section(token, proposals)
+    return "\n".join(lines)
+
+
+def findings_gate(
+    token: str,
+    url: str,
+    revision: int,
+    summary: str,
+    approvers: str,
+    proposals: Sequence[ProposedTicket] = (),
+) -> str:
+    """A spike's findings, reviewed in Plan review. Accepting them completes the spike."""
+    lines = [
+        f"## Findings v{revision:03d} ready for review: {token}",
+        _ready_to_move(Status.PLAN_REVIEW, Action.APPROVE_PLAN, "once the findings are accepted")
+        + " The coordinator then closes the spike (Done): there is nothing to build or release.",
+        f"[Read findings v{revision:03d}]({url}) (pinned to the exact commit).",
+        "",
+        summary,
+        "",
+        f"**To accept the findings** ({approvers}): add this comment, then choose **Approve plan** "
+        f"{_moves(Status.PLAN_REVIEW, Action.APPROVE_PLAN)}.",
+        "```",
+        approve_template(DecisionKind.APPROVE_PLAN, token),
+        "```",
+        "**To ask for more investigation**: add this comment with numbered items, then choose "
+        f"**Request plan changes** {_moves(Status.PLAN_REVIEW, Action.REQUEST_PLAN_CHANGES)}.",
+        "```",
+        change_template(DecisionKind.CHANGE_PLAN, token),
+        "```",
+    ]
+    lines += proposals_section(token, proposals)
+    return "\n".join(lines)
+
+
+def spike_done(revision: int, url: str, token: str, proposals: Sequence[ProposedTicket], moved: bool) -> str:
+    lines = [
+        f"## Spike complete: findings v{revision:03d} accepted",
+        f"[The findings]({url}) are the result of this ticket; there is nothing to build or release.",
+    ]
+    if not moved:
+        lines.append(
+            "**Move it to Done by hand**: this Jira workflow has no **Complete spike** transition "
+            "(Ready for development to Done), so the coordinator cannot close it."
+        )
+    if proposals:
+        lines += [
+            "",
+            "Follow-up tickets were proposed: create them any time (even after Done) with this comment.",
+            "```",
+            f"{DecisionKind.CREATE_TICKETS.value} {token}",
+            ", ".join(t.id for t in proposals),
+            "```",
+        ]
+    return "\n".join(lines)
+
+
+def fast_track_plan(token: str, url: str, revision: int, spec_token: str) -> str:
     return "\n".join(
         [
-            f"## Specification v{revision:03d} ready for review: {token}",
-            _ready_to_move(
-                Status.SPECIFICATION_REVIEW,
-                Action.APPROVE_SPECIFICATION,
-                "once the specification is approved",
-            ),
-            f"[Read specification v{revision:03d}]({url}) (pinned to the exact commit).",
-            "",
-            summary,
-            "",
-            f"**To approve** ({approvers}): add this comment, then choose **Approve specification** "
-            f"{_moves(Status.SPECIFICATION_REVIEW, Action.APPROVE_SPECIFICATION)}.",
-            "```",
-            approve_template(DecisionKind.APPROVE_SPEC, token),
-            "```",
-            "**To request changes**: add this comment with numbered items, then choose "
-            "**Request specification changes** "
-            f"{_moves(Status.SPECIFICATION_REVIEW, Action.REQUEST_SPECIFICATION_CHANGES)}.",
-            "```",
-            change_template(DecisionKind.CHANGE_SPEC, token),
-            "```",
+            f"## Plan v{revision:03d} approved with the specification (fast track): {token}",
+            f"[Plan v{revision:03d}]({url}) was written with the specification and approved with "
+            f"`{spec_token}`, so there is no separate plan review. **Moving into "
+            f"{_into(Status.PLANNING, Action.USE_APPROVED_PLAN)}**: development starts by itself.",
         ]
     )
 
@@ -280,6 +391,8 @@ def code_gate(
     merge_conflicts: list[dict[str, Any]] | None = None,
     deviations: list[DeviationRecord] | None = None,
     approvers_only: bool = True,
+    claude_resolves: bool = False,
+    reproduction: dict[str, Any] | None = None,
 ) -> str:
     devs = deviations or []
     lines = [
@@ -303,7 +416,8 @@ def code_gate(
     ]
     if provenance:
         lines += ["", f"CI integration provenance: {provenance}"]
-    lines += conflicts_section(merge_conflicts or [], base)
+    lines += reproduction_lines(reproduction, base)
+    lines += conflicts_section(merge_conflicts or [], base, claude_resolves=claude_resolves)
     lines += deviations_section(devs, code_token, Status.CODE_REVIEW, approvers_only=approvers_only)
     if findings:
         lines += ["", "**Non-blocking findings**:", *_by_author(findings, 15)]
@@ -324,7 +438,7 @@ def code_gate(
         approve_template(DecisionKind.APPROVE_CODE, code_token),
         "```",
         "To request changes: comment, then choose **Request code changes** "
-        f"{_moves(Status.CODE_REVIEW, Action.REQUEST_CODE_CHANGES)}.",
+        f"{_moves(Status.CODE_REVIEW, Action.REQUEST_CODE_CHANGES)}. {PR_COMMENTS_HINT}",
         "```",
         change_template(DecisionKind.CHANGE_CODE, code_token),
         "```",
@@ -478,8 +592,35 @@ def back_to_code_review(
     ]
 
 
-def conflicts_section(conflicts: list[dict[str, Any]], base: str) -> list[str]:
-    """Flag textual conflicts. They are resolved when the PR is merged, never a failure."""
+def reproduction_lines(rep: dict[str, Any] | None, base: str) -> list[str]:
+    """A bug fix's regression tests on the base branch without the fix (reported, never a failure)."""
+    if not rep:
+        return []
+    tests = ", ".join(rep.get("tests", [])[:8])
+    check = rep.get("check", "")
+    state = rep.get("state")
+    if state == "reproduced":
+        text = (
+            f"**Bug reproduced**: with only this candidate's tests ({tests}) on `{base}`, the `{check}` "
+            "check fails, so the tests catch the bug this candidate fixes."
+        )
+    elif state == "not_reproduced":
+        text = (
+            f"**Bug not reproduced**: this candidate's tests ({tests}) also pass on `{base}` without "
+            "the fix, so they may not catch the bug. Look at the regression test during review."
+        )
+    elif state == "no_tests":
+        text = "**No regression test**: this bug fix adds or changes no test files."
+    else:
+        text = f"**Reproduction not checked**: {rep.get('detail', 'the check could not run')}."
+    return ["", text]
+
+
+def conflicts_section(
+    conflicts: list[dict[str, Any]], base: str, *, claude_resolves: bool = False
+) -> list[str]:
+    """Flag textual conflicts. They are resolved when the PR is merged, never a failure (or, with
+    ``claude_resolves``, by the next development run if someone asks for changes)."""
     if not conflicts:
         return []
     lines = ["", "**Merge conflicts to resolve when merging** (flagged, not a failure):"]
@@ -498,6 +639,12 @@ def conflicts_section(conflicts: list[dict[str, Any]], base: str) -> list[str]:
         "verification accepts the approved candidate plus that merge and lists the files it "
         "changed for you to check."
     )
+    if claude_resolves:
+        lines.append(
+            f"Or have Claude do it: the next development run (any change request) first merges the "
+            f"latest `{base}` and resolves the conflict with `{base}` in a short session of its own. "
+            "If it cannot, the merge is left out and the conflict stays flagged."
+        )
     return lines
 
 
@@ -517,6 +664,7 @@ def verification_failed(
     merge_conflicts: list[dict[str, Any]] | None = None,
     deviations: list[DeviationRecord] | None = None,
     approvers_only: bool = True,
+    claude_resolves: bool = False,
 ) -> str:
     serious = [f for f in findings if f.severity in (Severity.BLOCKER, Severity.MAJOR)]
     minor = [f for f in findings if f not in serious]
@@ -546,8 +694,8 @@ def verification_failed(
         "**What to do next** (pick one):",
         "- **Fix it in this ticket**: choose **Submit implementation changes** "
         f"{_moves(Status.CHANGES_REQUESTED, Action.SUBMIT_IMPLEMENTATION_CHANGES)}. Development gets "
-        f"every R- and F-item below and publishes candidate c{candidate_no + 1}, which is reviewed "
-        "and verified again.",
+        f"every R- and F-item below, and the PR's unresolved review conversations as G-items, and "
+        f"publishes candidate c{candidate_no + 1}, which is reviewed and verified again.",
     ]
     if findings:
         lines += [
@@ -574,7 +722,7 @@ def verification_failed(
     lines += deviations_section(
         deviations or [], code_token, Status.CHANGES_REQUESTED, approvers_only=approvers_only
     )
-    lines += conflicts_section(merge_conflicts or [], base)
+    lines += conflicts_section(merge_conflicts or [], base, claude_resolves=claude_resolves)
     lines += [
         "",
         *_checks_table(checks),
@@ -582,6 +730,58 @@ def verification_failed(
         "Reviewer and verifier work independently, so their findings can overlap. Full text is "
         f"in the linked reports. On the developer's machine `delivery inspect {key}` shows this "
         "outcome with the check logs and Claude session logs.",
+    ]
+    return "\n".join(lines)
+
+
+def acceptance_ready(
+    key: str,
+    accept_token: str,
+    candidate_no: int,
+    candidate: str,
+    pr_url: str,
+    *,
+    worker_id: str,
+    local_app: bool,
+    try_command: bool,
+    guide: str,
+    guide_url: str | None,
+) -> str:
+    """Posted when a ticket enters Acceptance review: how to try the candidate and what to check."""
+    lines = [
+        f"## Ready for acceptance: candidate c{candidate_no}",
+        _ready_to_move(Status.ACCEPTANCE_REVIEW, Action.ACCEPT_DELIVERY, "once the delivery is accepted"),
+        "The code is approved. Acceptance is the product decision: try it and check that it does "
+        "what the brief asked for.",
+        "",
+        "**Try it locally**:",
+    ]
+    if local_app:
+        lines.append(
+            f"- On `{worker_id}`: the coordinator runs this exact candidate and opens it in the browser "
+            f"there (`delivery preview {key}` opens it again)."
+        )
+    if try_command:
+        lines.append(
+            f"- On your own machine, with the delivery tools installed: `delivery try {key}` runs "
+            f"candidate c{candidate_no} and opens it in your browser."
+        )
+    lines.append(f"- The code: {pr_url} at `{candidate[:12]}`.")
+    if guide:
+        link = f" ([full guide]({guide_url}))" if guide_url else ""
+        lines += ["", f"**What to check**, written by verification{link}:", "", guide.strip()]
+    lines += [
+        "",
+        "**To accept**: add this comment, then choose **Accept delivery** "
+        f"{_moves(Status.ACCEPTANCE_REVIEW, Action.ACCEPT_DELIVERY)}.",
+        "```",
+        approve_template(DecisionKind.ACCEPT_DELIVERY, accept_token),
+        "```",
+        "**To ask for changes**: add this comment with numbered items, then choose **Request "
+        f"acceptance changes** {_moves(Status.ACCEPTANCE_REVIEW, Action.REQUEST_ACCEPTANCE_CHANGES)}.",
+        "```",
+        change_template(DecisionKind.CHANGE_ACCEPTANCE, accept_token),
+        "```",
     ]
     return "\n".join(lines)
 
@@ -642,6 +842,7 @@ def candidate_ready(
     merge_conflicts: list[dict[str, Any]] | None = None,
     base: str = "main",
     session_open: bool = False,
+    resolved: dict[str, Any] | None = None,
 ) -> str:
     starts = (
         "once the developer closes the Claude session, which stays open for further changes"
@@ -656,6 +857,13 @@ def candidate_ready(
         "",
         summary,
     ]
+    if resolved:
+        lines += [
+            "",
+            f"The latest `{base}` (`{str(resolved['sha'])[:12]}`) was merged into this candidate first. "
+            f"Claude resolved the conflicts in {', '.join(resolved['paths'])}; review and verification "
+            "check the result like any other change.",
+        ]
     if merge_conflicts:
         lines += [
             "",

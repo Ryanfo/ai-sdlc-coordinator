@@ -137,8 +137,26 @@ def document_follow_up_published(
     )
 
 
-def preview_ready(cfg: Config, key: str, url: str, worktree: str, log: str) -> str:
+def preview_ready(
+    cfg: Config, key: str, url: str, worktree: str, log: str, procedure: str = "preview"
+) -> str:
     opened = " (opened in your browser)" if cfg.preview.open_browser else ""
+    if procedure == "acceptance":
+        return block(
+            f"TRY IT  Acceptance review  {key}",
+            [
+                ("App", f"{url}{opened}"),
+                ("From", f"the code-approved candidate ({worktree})"),
+                (
+                    "Decide",
+                    "accept or request changes in Jira; the ticket's latest comment has the "
+                    "acceptance guide and the templates. The app stops when it leaves Acceptance review",
+                ),
+                ("Jira", ticket_url(cfg, key)),
+                ("Reopen", f"delivery preview {key}"),
+                ("Output", f"delivery attach {key} --procedure acceptance, or {log}"),
+            ],
+        )
     return block(
         f"TRY IT  Development  {key}",
         [
@@ -155,13 +173,20 @@ def preview_ready(cfg: Config, key: str, url: str, worktree: str, log: str) -> s
     )
 
 
-def preview_trouble(cfg: Config, key: str, what: str, log: str, tail: list[str]) -> str:
+def preview_trouble(
+    cfg: Config, key: str, what: str, log: str, tail: list[str], procedure: str = "preview"
+) -> str:
+    stays = (
+        "the ticket stays in Acceptance review"
+        if procedure == "acceptance"
+        else "the development session stays open"
+    )
     return block(
-        f"APP  Development  {key}",
+        f"APP  {'Acceptance review' if procedure == 'acceptance' else 'Development'}  {key}",
         [
             ("Problem", what),
             ("Output", log),
-            ("Next", f"`delivery preview {key}` starts it again; the development session stays open"),
+            ("Next", f"`delivery preview {key}` starts it again; {stays}"),
         ],
         tail or None,
     )

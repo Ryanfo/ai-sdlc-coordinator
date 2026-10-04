@@ -19,6 +19,7 @@ from delivery.journal import JournalStore, RunJournal, ensure_private_dir
 from delivery.models import (
     AttachmentRef,
     DesignRef,
+    LinkedTicket,
     Model,
     RunRecord,
     SharedExecutionRecord,
@@ -77,6 +78,8 @@ class RunContext:
     attachments_skipped: list[SkippedAttachment] = field(default_factory=list)
     designs: list[DesignRef] = field(default_factory=list)
     designs_skipped: list[SkippedDesign] = field(default_factory=list)
+    linked: list[LinkedTicket] = field(default_factory=list)
+    guidance: Path | None = None
 
     @property
     def key(self) -> str:

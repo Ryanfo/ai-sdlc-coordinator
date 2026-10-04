@@ -1,7 +1,8 @@
 """Atlassian Document Format conversion.
 
 ``markdown_to_adf`` supports the small subset the coordinator writes: headings, paragraphs,
-bullet and ordered lists, fenced code blocks, rules, inline code, bold and links.
+bullet and ordered lists, fenced code blocks, rules, inline code, bold, links and mentions of
+Jira accounts (``<@account-id>``).
 ``adf_to_text`` flattens any ADF document (including human-authored comments) to plain
 text with one line per block, so decision tokens can be parsed deterministically.
 """
@@ -13,7 +14,7 @@ from typing import Any
 
 Node = dict[str, Any]
 
-_INLINE = re.compile(r"(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)\s]+\))")
+_INLINE = re.compile(r"(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)\s]+\)|<@[A-Za-z0-9:_-]{6,128}>)")
 
 
 def _inline(text: str) -> list[Node]:
@@ -25,6 +26,9 @@ def _inline(text: str) -> list[Node]:
             nodes.append({"type": "text", "text": part[1:-1], "marks": [{"type": "code"}]})
         elif part.startswith("**") and part.endswith("**") and len(part) > 3:
             nodes.append({"type": "text", "text": part[2:-2], "marks": [{"type": "strong"}]})
+        elif m := re.fullmatch(r"<@([A-Za-z0-9:_-]{6,128})>", part):
+            # A mention of a Jira account (notifies them), written <@account-id>.
+            nodes.append({"type": "mention", "attrs": {"id": m.group(1), "text": f"@{m.group(1)}"}})
         elif m := re.fullmatch(r"\[([^\]]+)\]\(([^)\s]+)\)", part):
             nodes.append(
                 {
