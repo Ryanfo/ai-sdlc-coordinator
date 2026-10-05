@@ -8,17 +8,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from delivery import comments
 from delivery.attachments import ATTACHMENT_STAGES, fetch_attachments
-from delivery.claude import HUMAN_ACTION, ClaudeStatus
+from delivery.claude import HUMAN_ACTION, TRANSIENT, ClaudeStatus
 from delivery.designs import fetch_designs, figma_links
 from delivery.git import BranchDiverged, GitError, WorktreeConflict
 from delivery.guidance import copy_for_run
 from delivery.intake import Intake, IntakeKind, TicketContext, brief_text, load_context
 from delivery.journal import RunJournal, new_run_id
-from delivery.linked import linked_tickets
+from delivery.linked import linked_tickets, project_of
 from delivery.models import Outcome, RunRecord, RunState, digest, utcnow
 from delivery.open_sessions import SessionRegistry
 from delivery.ports import IntegrationError, UncertainResult
@@ -45,6 +45,18 @@ class StopRequested(Exception):
 
 # Run output key: the run stopped because Claude could not be used and waits for it.
 WAITING_FOR_CLAUDE = "waiting_for_claude"
+# Run output key: the run stopped for a reason that passes by itself and is tried again at
+# ``due`` (delivery.supervisor resumes it): {"kind", "detail", "due", "counts": {kind: n}}.
+RETRY = "retry"
+# Claude's API unavailable or a session that did not start: tried again after these pauses
+# (minutes) before the ticket is blocked.
+CLAUDE_RETRY_MINUTES = (2, 10, 30)
+# Jira or GitHub unreachable: tried again after these pauses (minutes), the last repeating.
+# Never blocks: an outage is nobody's fault and the work is kept.
+INTEGRATION_RETRY_MINUTES = (1, 2, 5, 10)
+# The ticket was edited while Claude worked: start again with the new text after this pause,
+# so that a few edits in a row lead to one restart.
+EDITED_RESTART_MINUTES = 1
 
 
 class ClaudeUnavailable(Exception):
@@ -60,6 +72,22 @@ class ClaudeUnavailable(Exception):
         self.procedure = failure.procedure
         self.detail = failure.detail
         super().__init__(failure.detail)
+
+
+class RetryLater(Exception):
+    """The run stops for now and is resumed automatically at a set time (see ``RETRY``)."""
+
+    def __init__(self, kind: str, detail: str, minutes: float, *, counts: bool = True) -> None:
+        self.kind = kind
+        self.detail = detail
+        self.minutes = minutes
+        self.counts = counts
+        super().__init__(detail)
+
+
+def retries(record: RunRecord, kind: str) -> int:
+    """How many times this run has already been retried for ``kind``."""
+    return int(((record.outputs.get(RETRY) or {}).get("counts") or {}).get(kind, 0))
 
 
 def scoped_digest(ctx: TicketContext, selected_ids: list[str]) -> str:
@@ -137,6 +165,8 @@ class StageExecutor:
             await self._interrupt(rc, stop.reason, hold=stop.hold)
         except ClaudeUnavailable as exc:
             await self._wait_for_claude(rc, exc)
+        except RetryLater as exc:
+            self._retry_later(rc, exc)
         except asyncio.CancelledError:
             reason = rc.stop_reason or "supervisor shutdown"
             await asyncio.shield(self._interrupt(rc, reason, hold=rc.stop_hold))
@@ -146,6 +176,7 @@ class StageExecutor:
         except PublicationUncertain as exc:
             # Before a decision exists the run is resumable work; afterwards it is publication.
             state = RunState.PUBLISHING if "decision" in rc.record.outputs else RunState.INTERRUPTED
+            self._set_retry(rc, RetryLater("publication", str(exc), 1, counts=False))
             rc.record = rc.record.model_copy(
                 update={
                     "state": state,
@@ -173,11 +204,16 @@ class StageExecutor:
                 "`delivery recover`. No force push or blind retry is performed.",
             )
         except (IntegrationError, UncertainResult) as exc:
+            tried = retries(rc.record, "integration")
+            minutes = INTEGRATION_RETRY_MINUTES[min(tried, len(INTEGRATION_RETRY_MINUTES) - 1)]
+            due = self._set_retry(rc, RetryLater("integration", str(exc), minutes))
             rc.record = rc.record.model_copy(
                 update={
                     "state": RunState.INTERRUPTED,
+                    "held": False,
                     "reason": f"integration unavailable: {exc}",
-                    "next_action": "Retried after connectivity returns.",
+                    "next_action": f"Tried again automatically at {due.astimezone():%H:%M}, and then "
+                    "until Jira and GitHub can be reached; the work so far is kept.",
                 }
             )
             rc.save("integration_error", error=str(exc))
@@ -228,12 +264,25 @@ class StageExecutor:
         """Linked tickets, with their approved documents (delivery.linked)."""
         if not rc.ticket.issue.links:
             return
+        jira = rc.cfg.jira
+        projects = frozenset({jira.project_key, *jira.linked_projects})
         rc.linked = await linked_tickets(
-            self.deps.jira, self.deps.repo, rc.cfg.repository.url, rc.ticket.issue, rc.inputs_dir / "linked"
+            self.deps.jira,
+            self.deps.repo,
+            rc.cfg.repository.url,
+            rc.ticket.issue,
+            rc.inputs_dir / "linked",
+            projects,
         )
+        other_projects = {
+            ln.other_key for ln in rc.ticket.issue.links if project_of(ln.other_key) not in projects
+        }
         rc.journal.events.append(
             "linked",
-            {"tickets": [{"key": t.key, "documents": len(t.documents)} for t in rc.linked]},
+            {
+                "tickets": [{"key": t.key, "documents": len(t.documents)} for t in rc.linked],
+                "other_projects_left_out": sorted(other_projects),
+            },
         )
 
     async def _fetch_designs(self, rc: RunContext) -> None:
@@ -355,6 +404,12 @@ class StageExecutor:
         except WorkerFailure as exc:
             if exc.outcome and exc.outcome.status in HUMAN_ACTION:
                 raise ClaudeUnavailable(exc) from exc
+            if exc.outcome and exc.outcome.status in TRANSIENT:
+                tried = retries(rc.record, "claude")
+                if tried < len(CLAUDE_RETRY_MINUTES):
+                    raise RetryLater(
+                        "claude", f"{exc.procedure}: {exc.detail}", CLAUDE_RETRY_MINUTES[tried]
+                    ) from exc
             return self._worker_failure_decision(rc, exc)
         except OutputInvalid as exc:
             return Decision(
@@ -411,6 +466,12 @@ class StageExecutor:
                 f"[claude.turn_limits] {exc.procedure} in the config and restart the "
                 "coordinator, then resume."
             )
+        elif status in TRANSIENT:
+            action = (
+                f"Claude could not be used {retries(rc.record, 'claude') + 1} times in a row over about "
+                f"{sum(CLAUDE_RETRY_MINUTES)} minutes (its API or the network was unavailable, or the "
+                "session did not start). Check https://status.claude.com and the session log, then resume."
+            )
         elif status is ClaudeStatus.GUARDRAIL:
             action = (
                 "The coordinator stopped the session because it was not making progress. Check the log "
@@ -461,12 +522,13 @@ class StageExecutor:
 
     async def _stale_decision(self, rc: RunContext, stale: str) -> Decision:
         if stale == "inputs_changed":
-            return Decision(
-                outcome="blocked",
-                reason="the brief or selected comments changed while the worker ran; its "
-                "result is stale and was not published",
-                action="Resume the stage to rerun it with the current inputs.",
-                blocker_kind="stale_input",
+            # Editing a ticket is normal. Nothing was published from the old text; the stage starts
+            # again with the new one, without anyone having to resume it.
+            raise RetryLater(
+                "edited",
+                "the description or a comment this stage uses was edited while Claude worked",
+                EDITED_RESTART_MINUTES,
+                counts=False,
             )
         raise StopRequested(f"stale: {stale}; result preserved locally and not published", hold=True)
 
@@ -519,6 +581,42 @@ class StageExecutor:
         )
         rc.save("interrupted", reason=reason, hold=hold)
 
+    def _set_retry(self, rc: RunContext, exc: RetryLater) -> datetime:
+        info = rc.record.outputs.get(RETRY) or {}
+        counts = dict(info.get("counts") or {})
+        if exc.counts:
+            counts[exc.kind] = counts.get(exc.kind, 0) + 1
+        due = utcnow() + timedelta(minutes=exc.minutes)
+        rc.record.outputs[RETRY] = {
+            "kind": exc.kind,
+            "detail": exc.detail[:300],
+            "due": due.isoformat(),
+            "counts": counts,
+        }
+        return due
+
+    def _retry_later(self, rc: RunContext, exc: RetryLater) -> None:
+        due = self._set_retry(rc, exc)
+        when = f"{due.astimezone():%H:%M}"
+        if exc.kind == "edited":
+            reason = f"{exc.detail}; starting again with the new text"
+            action = f"Starts again with the edited ticket at {when}; nothing to do in Jira."
+        else:
+            n = retries(rc.record, exc.kind)
+            reason = f"{exc.detail} (try {n} of {len(CLAUDE_RETRY_MINUTES)})"
+            action = f"Tried again automatically at {when}; nothing to do in Jira. The work so far is kept."
+        rc.record = rc.record.model_copy(
+            update={
+                "state": RunState.INTERRUPTED,
+                "held": False,
+                "hold_reason": "",
+                "child": None,
+                "reason": reason[:2000],
+                "next_action": action,
+            }
+        )
+        rc.save("retry_later", kind=exc.kind, due=due.isoformat(), detail=exc.detail[:300])
+
     async def _wait_for_claude(self, rc: RunContext, exc: ClaudeUnavailable) -> None:
         rc.record.outputs[WAITING_FOR_CLAUDE] = {
             "kind": exc.kind,
@@ -541,10 +639,20 @@ class StageExecutor:
             rc,
             "waiting-for-claude",
             comments.claude_unavailable(rc.record.stage.value, exc.kind, rc.cfg.identity.worker_id),
+            operational=True,
         )
 
-    async def notice(self, rc: RunContext, op: str, markdown: str) -> bool:
-        """Best-effort informational comment, journaled apart from the run's publication."""
+    async def notice(self, rc: RunContext, op: str, markdown: str, *, operational: bool = False) -> bool:
+        """Best-effort informational comment, journaled apart from the run's publication.
+
+        ``operational`` notices are about this machine rather than the ticket (Claude's login or
+        usage limit, a coordinator error): with ``[notifications] operational = "operator"`` they
+        are not commented on the ticket; the coordinator window and alerts carry them instead.
+        """
+        alerts = self.deps.alerts
+        if operational and alerts is not None and not alerts.on_tickets:
+            rc.journal.events.append("notice_not_commented", {"op": op, "why": "operator notices"})
+            return False
         journal = RunJournal(rc.cfg.runtime.state_dir / "intake" / rc.key)
         pub = Publisher(rc.cfg, self.deps.jira, None, None, journal, f"notice-{rc.run_id}")
         try:
@@ -612,6 +720,8 @@ def _next_action(outcome: str, stage: Stage, *, session_open: bool = False) -> s
 
 
 __all__ = [
+    "RETRY",
+    "RetryLater",
     "RunJournal",
     "StageExecutor",
     "StopRequested",

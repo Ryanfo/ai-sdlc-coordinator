@@ -111,7 +111,8 @@ class Reminders:
         return True
 
     async def _webhook(self, issue: JiraIssue, status: Status, hours: float, step: str) -> None:
-        url = os.environ.get(self.cfg.reminders.webhook_env) if self.cfg.reminders.webhook_env else None
+        env = self.cfg.reminders.webhook_env or self.cfg.notifications.webhook_env
+        url = os.environ.get(env) if env else None
         if not url:
             return
         link = f"{self.cfg.jira.base_url}/browse/{issue.key}"

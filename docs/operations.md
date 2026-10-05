@@ -11,24 +11,74 @@ to `<state_dir>/supervisor/<identity>/coordinator.log` (rotated at 5 MB, five ke
 when its code last changed and says when the code on disk is newer (`coordinator restart`).
 Each poll:
 
-1. Reconciles unfinished runs (only on start-up and on request).
+1. Reconciles every unfinished run on start-up (and on request).
 2. Searches Jira for tickets assigned to you in the six *Ready for…* statuses.
-3. For each eligible ticket, in deterministic order (ready time, then key), validates how it got
+3. Resumes runs whose retry time has come (see *Retried by themselves* below).
+4. For each eligible ticket, in deterministic order (ready time, then key), validates how it got
    there (intake) and launches it as its own task. Ordering is for reproducible logs only; it
    never serialises execution.
 
-There is no session-count limit. Machine capacity and subscription limits are real: if you need
-to slow down, pause new launches (`delivery dispatch pause`); running sessions continue.
+An unexpected error in a poll does not stop the supervisor: it is logged with its traceback,
+alerted, and the next poll follows after a pause (15 seconds, doubling to 10 minutes). Running
+sessions are separate tasks and carry on. If the process itself died (the Mac restarted, the
+process was killed), the next start says so, alerts, and resumes what was interrupted.
+
+There is no session-count limit. Machine capacity and subscription limits are real: new
+sessions wait by themselves while the disk holding `worktree_root` has less than
+`runtime.min_free_disk_gb` (default 5) free or macOS reports critical memory pressure
+(`hold_on_memory_pressure`); running sessions carry on, and `delivery status` says why. To slow
+down by hand, pause new launches (`delivery dispatch pause`). While sessions run, the Mac is kept
+from idle sleep (`runtime.keep_awake`, `caffeinate -i`); closing the lid still sleeps it, and
+runs interrupted that way resume afterwards.
+
+### Retried by themselves
+
+| Cause | What happens |
+|---|---|
+| Claude's API unavailable (overloaded, 5xx, connection lost) or a session that did not start | The run waits and is tried again after 2, 10 and 30 minutes, with its work so far. Only a fourth failure blocks the ticket |
+| Jira or GitHub unreachable mid-run | Tried again after 1, 2, 5, then every 10 minutes until they answer; never blocks |
+| A publication step whose outcome was uncertain | Reconciled by marker on the next poll |
+| The ticket's description or a selected comment edited while Claude worked | Nothing is published from the old text; the stage starts again with the new text a minute later. Nobody needs to resume it |
+| GitHub rate limits | The request is repeated after 20, 60 and 120 seconds; after that the run is retried as above |
+
+### Claude Code updates
+
+Claude Code updates itself, and the sandbox behaviour the worker profile relies on can change in
+any release. `delivery doctor --claude-probe` records the Claude Code version (and session
+mode) it passed on in `<state_dir>/claude-probe.json`. Every five minutes the supervisor compares
+that with `claude --version`; when they differ, new sessions wait while it runs the same probe in
+the background, and start once it passes. A failed probe keeps them waiting and alerts; it is
+tried again every half hour, and `delivery doctor --claude-probe` shows the details.
+`claude.probe_on_version_change = false` turns this off.
+
+### Alerts and notices
+
+`[notifications] webhook_env` names an environment variable holding a Slack-compatible incoming
+webhook; `desktop` (default on) shows the same as macOS notifications. They carry what concerns
+the person running the coordinator: it stopped unexpectedly or hit an internal error, Claude
+cannot be used, Claude Code failed its probe, the machine is short of room. Each alert is sent
+at most once an hour. With `operational = "operator"`, notices about Claude's login or usage
+limit and internal errors are not commented on tickets at all, which keeps a client's tickets
+free of anything about the developer's machine. Comments about an internal error never include
+the error text, which stays in the coordinator log.
+
+### Local retention
+
+Run logs (with the Claude transcripts, which contain the code Claude read) and worktrees stay on
+this machine. Once a day the supervisor removes those of runs that finished more than
+`runtime.retention_days` (default 30) ago, as `coordinator clean --older-than` would: unpushed
+changes are saved as a patch first, and nothing unfinished, held or open for questions is
+touched. `retention_days = 0` keeps everything until you clean by hand.
 
 ## Run states
 
 | State | Meaning | What happens next |
 |---|---|---|
 | discovered / starting | Prepared; start transition being made | Restarted automatically after a crash (revalidated first) |
-| running | Claude session working | Heartbeat every `heartbeat_seconds`; stops if the ticket is reassigned, moved, cancelled or its inputs change |
+| running | Claude session working | Heartbeat every `heartbeat_seconds`; stops if the ticket is reassigned, moved or cancelled; starts again by itself if its inputs are edited |
 | publishing | Decision made; committing, commenting, transitioning | Every step journaled; uncertain steps reconciled by marker before any retry |
 | awaiting_human | Published; ticket is in a review or paused status | Nothing until a human acts |
-| interrupted | Stopped mid-work | Not held: resumes on the next supervisor start. Held: needs `delivery recover <KEY> --resume` |
+| interrupted | Stopped mid-work | Not held: resumes on the next supervisor start, or on the poll once its retry time comes. Held: needs `delivery recover <KEY> --resume` |
 | interrupted, waiting for Claude | Claude's login expired or the usage limit was reached | Resumes by itself once a one-word Claude probe works (checked every 1 to 15 minutes); new work waits meanwhile |
 | blocked | Ticket moved to Blocked with a reason | A human fixes the cause and chooses Resume in Jira |
 | failed | A definite failure the coordinator could not publish around | `delivery inspect` explains; fix, then `delivery recover` |
@@ -58,8 +108,8 @@ status), attaches to what exists, and only then sends what is missing. Comments,
 transitions are never blindly retried; there is no force push. `--resume` continues held work.
 
 A run that fails inside the coordinator (an internal error) is held, comments on the ticket with
-the error and this command, and records the traceback in its `events.jsonl` and the coordinator
-log.
+this command (not the error, unless `[notifications] operational = "operator"`, which skips the
+comment), alerts, and records the traceback in its `events.jsonl` and the coordinator log.
 
 A corrupt local record (for example a torn write after a power cut) blocks only that ticket;
 `delivery status` shows it as CORRUPT. Inspect the run directory before deleting anything; the

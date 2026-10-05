@@ -487,6 +487,20 @@ def main() -> int:
             )
         )
         return 1
+    if b.get("api_error"):
+        # Anthropic's API overloaded: Claude Code retried and gave up for now.
+        print(json.dumps({"type": "system", "subtype": "api_retry", "error": "overloaded_error"}))
+        print(
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "is_error": True,
+                    "result": 'API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}',
+                }
+            )
+        )
+        return 1
     if b.get("auth_error"):
         print(
             json.dumps(

@@ -43,6 +43,7 @@ from delivery.claude import (
     ClaudeOutcome,
     ClaudeStatus,
     OpenSession,
+    unavailable_text,
     worker_env,
 )
 from delivery.config import InteractiveConfig
@@ -237,6 +238,8 @@ def _api_status(text: str) -> ClaudeStatus:
         return ClaudeStatus.AUTH
     if _USAGE_HINTS.search(text):
         return ClaudeStatus.USAGE_LIMIT
+    if unavailable_text(text):
+        return ClaudeStatus.UNAVAILABLE
     return ClaudeStatus.ERROR
 
 
@@ -245,6 +248,7 @@ def _api_outcome(text: str) -> ClaudeOutcome:
     detail = {
         ClaudeStatus.AUTH: "Claude Code login missing or expired",
         ClaudeStatus.USAGE_LIMIT: "Claude subscription usage limit reached; no paid fallback is used",
+        ClaudeStatus.UNAVAILABLE: f"Claude's API was unavailable: {text[:300]}",
     }.get(status, f"API error: {text[:300]}")
     return ClaudeOutcome(status, detail)
 

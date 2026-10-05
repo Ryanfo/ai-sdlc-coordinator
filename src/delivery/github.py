@@ -2,12 +2,15 @@
 
 The coordinator uses the operator's ``gh`` login; no token is stored in configuration and
 Claude worker sessions never inherit it. Lists use ``--paginate --slurp``. Writes are not
-retried blindly: a failure without an HTTP status is reported as uncertain.
+retried blindly: a failure without an HTTP status is reported as uncertain. Requests GitHub
+rejected for its rate limits are tried again after a pause.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import re
 from datetime import datetime
@@ -31,7 +34,18 @@ from delivery.ports import (
 )
 from delivery.proc import ProcessStartError, run_process
 
+log = logging.getLogger("delivery")
+
+
+class RateLimited(IntegrationError):
+    """GitHub refused the request for its rate limits (nothing was done)."""
+
+
 _HTTP = re.compile(r"HTTP (\d{3})")
+# GitHub's primary and secondary rate limits answer 403 or 429 with one of these.
+_RATE_LIMITED = re.compile(r"(rate limit|abuse detection|retry-after|too many requests)", re.I)
+# Seconds to wait before each new try of a rate-limited request.
+RATE_LIMIT_PAUSES = (20.0, 60.0, 120.0)
 
 
 def _dt(v: str | None) -> datetime | None:
@@ -39,13 +53,33 @@ def _dt(v: str | None) -> datetime | None:
 
 
 class GhClient:
-    def __init__(self, slug: str, executable: str = "gh") -> None:
+    def __init__(
+        self, slug: str, executable: str = "gh", *, pauses: tuple[float, ...] = RATE_LIMIT_PAUSES
+    ) -> None:
         self.slug = slug
         self.exe = executable
+        self.pauses = pauses
 
     async def api(
         self, path: str, *, method: str = "GET", body: dict[str, Any] | None = None, paginate: bool = False
     ) -> Any:
+        """One GitHub API call. Rate-limited requests are tried again after a pause.
+
+        GitHub rejects a rate-limited request before acting on it, so repeating it is safe for
+        writes too. If it is still limited after the last pause, the error is retryable: the run
+        is resumed later rather than blocked.
+        """
+        for pause in (*self.pauses, None):
+            try:
+                return await self._api(path, method=method, body=body, paginate=paginate)
+            except RateLimited as exc:
+                if pause is None:
+                    raise IntegrationError(str(exc), status=exc.status, retryable=True) from None
+                log.info("GitHub rate limit on %s %s; trying again in %.0fs", method, path, pause)
+                await asyncio.sleep(pause)
+        raise AssertionError("unreachable")
+
+    async def _api(self, path: str, *, method: str, body: dict[str, Any] | None, paginate: bool) -> Any:
         argv = [
             self.exe,
             "api",
@@ -81,6 +115,8 @@ class GhClient:
             m = _HTTP.search(res.stderr)
             status = int(m.group(1)) if m else None
             msg = f"GitHub {status or 'error'} on {method} {path}: {res.stderr.strip()[-300:]}"
+            if status in (403, 429) and _RATE_LIMITED.search(res.stderr):
+                raise RateLimited(msg, status=status)
             if status in (401, 403):
                 raise AuthError(msg, status=status)
             if status == 404:
@@ -221,7 +257,7 @@ class GhClient:
             reviews = 0
             dismiss = last_push = strict = False
             checks: list[str] = []
-            no_force = no_delete = False
+            no_force = no_delete = signed = False
             for r in rules:
                 t, p = r.get("type"), r.get("parameters") or {}
                 if t == "pull_request":
@@ -235,6 +271,8 @@ class GhClient:
                     no_force = True
                 elif t == "deletion":
                     no_delete = True
+                elif t == "required_signatures":
+                    signed = True
             return BranchProtection(
                 reviews,
                 dismiss,
@@ -245,6 +283,7 @@ class GhClient:
                 not no_force,
                 not no_delete,
                 source="rulesets",
+                require_signed_commits=signed,
             )
         try:
             d = await self.api(f"repos/{self.slug}/branches/{branch}/protection")
@@ -263,6 +302,7 @@ class GhClient:
             bool((d.get("enforce_admins") or {}).get("enabled")),
             bool((d.get("allow_force_pushes") or {}).get("enabled")),
             bool((d.get("allow_deletions") or {}).get("enabled")),
+            require_signed_commits=bool((d.get("required_signatures") or {}).get("enabled")),
         )
 
     async def commit(self, sha: str) -> CommitInfo:

@@ -136,6 +136,17 @@ class JiraConfig(StrictModel):
     cloud_id: str | None = None
     fields: JiraFieldsConfig = JiraFieldsConfig()
     attachments: AttachmentsConfig = AttachmentsConfig()
+    # Linked tickets in these projects are read for context too; links into any other project
+    # (other than this one) are left out, so other projects' data never reaches Claude.
+    linked_projects: list[str] = Field(default_factory=list)
+
+    @field_validator("linked_projects")
+    @classmethod
+    def _projects(cls, v: list[str]) -> list[str]:
+        bad = [k for k in v if not re.match(r"^[A-Z][A-Z0-9_]{1,9}$", k)]
+        if bad:
+            raise ValueError(f"{bad} are not Jira project keys")
+        return v
 
     @field_validator("base_url")
     @classmethod
@@ -179,6 +190,12 @@ class RepositoryConfig(StrictModel):
     checkout_path: Path
     worktree_root: Path
     github_auth_profile: Literal["gh"] = "gh"
+    # Sign the coordinator's commits with your own Git signing setup (user.signingkey,
+    # gpg.format): needed when the base branch requires signed commits. Off: never signed.
+    sign_commits: bool = False
+    # Run the repository's Git hooks (pre-commit, commit-msg) on the coordinator's commits.
+    # They run as you, outside Claude's sandbox, like the checks. Off: hooks are skipped.
+    run_git_hooks: bool = False
 
     @field_validator("url")
     @classmethod
@@ -216,6 +233,18 @@ class RuntimeConfig(StrictModel):
     timeout_seconds: int = Field(default=1800, ge=60, le=86400)
     heartbeat_seconds: int = Field(default=30, ge=5, le=600)
     check_timeout_seconds: int = Field(default=1800, ge=30, le=86400)
+    # New sessions wait (running ones carry on) while this machine is short of room: less free
+    # disk than this under the worktree root (0: never checked), or, with
+    # hold_on_memory_pressure, macOS reporting critical memory pressure.
+    min_free_disk_gb: int = Field(default=5, ge=0, le=10000)
+    hold_on_memory_pressure: bool = True
+    # Keep the Mac from idle sleep while sessions run (macOS `caffeinate -i`). Closing the lid
+    # still sleeps it; runs interrupted that way resume afterwards.
+    keep_awake: bool = True
+    # Local logs and worktrees of runs that finished longer ago than this are removed once a day,
+    # as `coordinator clean --older-than` would (Jira and Git keep the durable record).
+    # 0: kept until you clean by hand.
+    retention_days: int = Field(default=30, ge=0, le=3650)
 
     @field_validator("state_dir", mode="after")
     @classmethod
@@ -360,6 +389,29 @@ class FlowConfig(StrictModel):
         return bool(self.fast_track_label) and self.fast_track_label in labels
 
 
+class NotificationsConfig(StrictModel):
+    """Notices about the coordinator itself rather than a ticket (delivery.alerts)."""
+
+    # Claude's login or usage limit, an internal coordinator error. "jira": also a comment on
+    # the affected ticket. "operator": only the coordinator window, a desktop notification and
+    # the webhook, so tickets a client reads carry no notices about this machine.
+    operational: Literal["jira", "operator"] = "jira"
+    # Name of an environment variable holding a Slack (or compatible) incoming-webhook URL for
+    # those notices and for alerts: the coordinator stopped unexpectedly or crashed, Claude
+    # Code changed and failed its probe, the machine is short of room. Reminders use it too
+    # when [reminders] webhook_env is not set. The URL is a secret: never put it in this file.
+    webhook_env: str = ""
+    # Show the same alerts as macOS notifications.
+    desktop: bool = True
+
+    @field_validator("webhook_env")
+    @classmethod
+    def _env(cls, v: str) -> str:
+        if v and not ENV_NAME.match(v):
+            raise ValueError("must be an environment variable name, not the webhook URL")
+        return v
+
+
 class RemindersConfig(StrictModel):
     """Remind people about your tickets that have waited long for them (delivery.reminders)."""
 
@@ -408,6 +460,10 @@ class ClaudeConfig(StrictModel):
     # Model for `coordinator help <KEY>` sessions; None means opus.
     help_model: str | None = None
     supported_versions: str = ">=2.1.0,<3"
+    # When `claude --version` is not the version the sandbox probe last passed on (Claude Code
+    # updates itself), new sessions wait while the coordinator runs that probe again
+    # (`delivery doctor --claude-probe`); they start once it passes.
+    probe_on_version_change: bool = True
 
     @field_validator("model", "help_model")
     @classmethod
@@ -639,6 +695,7 @@ class Config(StrictModel):
     preview: PreviewConfig = PreviewConfig()
     flow: FlowConfig = FlowConfig()
     reminders: RemindersConfig = RemindersConfig()
+    notifications: NotificationsConfig = NotificationsConfig()
 
     # Set by load_config; not part of the file.
     source_path: Path | None = Field(default=None, exclude=True)
@@ -697,9 +754,10 @@ PERSONAL_KEYS: dict[str, frozenset[str] | None] = {
     "identity": None,
     "jira": frozenset({"email", "email_env", "token_env", "token_keychain_service"}),
     "repository": frozenset({"checkout_path", "worktree_root"}),
-    "runtime": frozenset({"state_dir"}),
+    "runtime": frozenset({"state_dir", "min_free_disk_gb", "hold_on_memory_pressure", "keep_awake"}),
     "claude": frozenset({"executable", "plugin_path", "interactive"}),
     "figma": frozenset({"token_keychain_service", "token_account", "token_env"}),
+    "notifications": frozenset({"webhook_env", "desktop"}),
 }
 
 

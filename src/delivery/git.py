@@ -79,6 +79,8 @@ class ManagedRepo:
         author_name: str = "delivery coordinator",
         author_email: str = "delivery-coordinator@localhost",
         reference: Path | None = None,
+        sign_commits: bool = False,
+        run_hooks: bool = False,
     ) -> None:
         self.url = url
         self.base_branch = base_branch
@@ -89,13 +91,17 @@ class ManagedRepo:
         self.author_name = author_name
         self.author_email = author_email
         self.reference = reference
+        # repository.sign_commits / run_git_hooks: off, commits are unsigned and no hook runs.
+        self.sign_commits = sign_commits
+        self.run_hooks = run_hooks
 
     # ------------------------------------------------------------------ plumbing
     def _argv(self, args: tuple[str, ...], bare: bool) -> list[str]:
         base = [
             "git",
-            "-c", "core.hooksPath=/dev/null",
-            "-c", "commit.gpgsign=false",
+            *(() if self.run_hooks else ("-c", "core.hooksPath=/dev/null")),
+            # Signing uses the operator's own Git signing setup (user.signingkey, gpg.format).
+            "-c", f"commit.gpgsign={'true' if self.sign_commits else 'false'}",
             "-c", "advice.detachedHead=false",
             "-c", f"user.name={self.author_name}",
             "-c", f"user.email={self.author_email}",
@@ -262,7 +268,8 @@ class ManagedRepo:
             staged = await self.git("diff", "--cached", "--quiet", cwd=wt, check=False)
             if staged.returncode == 0:
                 return None
-            await self.git("commit", "--no-verify", "-q", "-m", message, cwd=wt)
+            verify = () if self.run_hooks else ("--no-verify",)
+            await self.git("commit", *verify, "-q", "-m", message, cwd=wt)
             head = await self.git("rev-parse", "HEAD", cwd=wt)
         return head.stdout.strip()
 

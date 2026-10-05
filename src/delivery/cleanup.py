@@ -151,6 +151,34 @@ def _old_logs(store: JournalStore, days: int, open_tickets: set[str]) -> list[It
     return out
 
 
+async def clean_expired(
+    cfg: Config, repo: ManagedRepo, days: int, keep_tickets: set[str], emit: Callable[[str], None]
+) -> int:
+    """What the running coordinator removes by itself once a day (``runtime.retention_days``).
+
+    Like ``coordinator clean --older-than DAYS``, but only what has been finished for longer than
+    ``days``: worktrees of runs that ended before then (unpushed changes are kept as a patch
+    first) and the logs of tickets whose runs all did. Nothing of a ticket in ``keep_tickets``,
+    of a session open for questions, or of a run that is not finished is touched. Returns how
+    many tickets lost something.
+    """
+    live = {r.name for r in SessionRegistry(cfg.runtime.state_dir).all()}
+    p = plan(cfg, live, days)
+    cutoff = utcnow() - timedelta(days=days)
+
+    def old(item: Item) -> bool:
+        rec = item.run.record if item.run else None
+        return rec is not None and rec.updated_at < cutoff and rec.ticket_key not in keep_tickets
+
+    p.worktrees = [i for i in p.worktrees if old(i)]
+    p.logs = [i for i in p.logs if i.path.name not in keep_tickets]
+    p.dead_sessions = []
+    if not (p.worktrees or p.logs or p.empty):
+        return 0
+    await apply(cfg, repo, p, emit)
+    return len({i.path.parent.name for i in p.worktrees} | {i.path.name for i in p.logs})
+
+
 async def save_unpushed(repo: ManagedRepo, worktree: Path, dest: Path) -> str:
     """Keep uncommitted or unpushed changes of a worktree as a patch before it is removed."""
     try:

@@ -71,6 +71,8 @@ def build_repo(cfg: Config) -> Any:
         author_name=name,
         author_email=email,
         reference=cfg.repository.checkout_path,
+        sign_commits=cfg.repository.sign_commits,
+        run_hooks=cfg.repository.run_git_hooks,
     )
 
 
@@ -383,6 +385,8 @@ async def _status(args: argparse.Namespace) -> int:
             f"{waiting.get('since', '?')[:16]}; next check {waiting.get('next_check', '?')[11:16]} UTC. "
             "New work waits; waiting runs continue by themselves."
         )
+    if live and live.get("new_sessions_wait"):
+        lines.append(f"  New sessions wait: {live['new_sessions_wait']}. Running sessions carry on.")
     if live:
         lines.append(f"Active sessions ({len(live['sessions'])}):")
         lines += [
