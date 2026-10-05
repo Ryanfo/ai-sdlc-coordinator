@@ -61,6 +61,7 @@ refinement** ([step 7](#7-submit-a-ticket)).
 | `coordinator logs` | The coordinator's own log; `coordinator logs PILOT-7` is one ticket's Claude log |
 | `coordinator open PILOT-7` | Open that ticket's latest Claude log (`--folder`: its run folder, `--jira`: the ticket) |
 | `coordinator help PILOT-7` | Ask Claude what is wrong with that ticket and how to fix it |
+| `coordinator office` | Watch it work as an animated, Office-style pixel office in your browser (read-only; `--mode replay` replays the journal, `--mode demo` shows made-up tickets) |
 | `coordinator stop` / `restart` | Stop it cleanly (sessions are saved and resume) / stop and start, to use new code |
 | `coordinator clean` | Remove what finished runs left on disk |
 
