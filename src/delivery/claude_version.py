@@ -7,7 +7,9 @@ and ``--restricted``, and their behaviour can change in any release. ``delivery 
 ``claude --version``. When they differ, new sessions wait while it runs the same probe in the
 background, and start once it passes. A failed probe keeps them waiting, says why in the
 coordinator window and alerts; it is tried again every half hour and whenever the version
-changes again. Sessions already running are never stopped.
+changes again. A pass recorded since (``delivery doctor --claude-probe``) ends the wait at
+once. Because the probe asks Claude to try things, a failure is checked with a second run
+before anything waits for it. Sessions already running are never stopped.
 
 ``[claude] probe_on_version_change = false`` turns this off.
 """
@@ -33,6 +35,8 @@ log = logging.getLogger("delivery")
 STAMP = "claude-probe.json"
 CHECK_SECONDS = 300.0
 RETRY_FAILED_SECONDS = 1800.0
+# Runs of the probe before a failure holds new sessions.
+PROBE_ATTEMPTS = 2
 
 Version = Callable[[], Coroutine[Any, Any, str]]
 Probe = Callable[[], Coroutine[Any, Any, tuple[bool, str]]]
@@ -80,7 +84,11 @@ async def run_probe(cfg: Config) -> tuple[bool, str]:
 
     report = Report()
     await claude_probe(cfg, report)
-    failed = [f"{c.name}: {c.detail}" for c in report.checks if c.area == "probe" and c.level == "fail"]
+    failed = [
+        f"{c.name}: {c.detail}" + (f" ({c.action})" if c.action else "")
+        for c in report.checks
+        if c.area == "probe" and c.level == "fail"
+    ]
     return not failed, "; ".join(failed)
 
 
@@ -106,6 +114,8 @@ class VersionGuard:
         self.enabled = cfg.claude.probe_on_version_change
         self.current = ""
         self.failed = ""
+        self._failed_at = ""
+        self._attempts = 0
         self._task: asyncio.Task[tuple[bool, str]] | None = None
         self._next_check = 0.0
 
@@ -133,6 +143,15 @@ class VersionGuard:
             if self._task.done():
                 await self._finished(self._task)
             return
+        if self.failed and self._passed_since_failure():
+            self.failed = ""
+            self.emit(
+                console.line(
+                    f"Claude Code {self.current} has since passed the sandbox probe "
+                    "(`delivery doctor --claude-probe`); new sessions start again"
+                )
+            )
+            return
         now = self.clock()
         if now < self._next_check:
             return
@@ -155,7 +174,16 @@ class VersionGuard:
                 "new sessions wait while it runs (running sessions carry on)"
             )
         )
+        self._attempts = 0
+        self._start_probe()
+
+    def _start_probe(self) -> None:
+        self._attempts += 1
         self._task = asyncio.create_task(self.probe(), name="claude-probe")
+
+    def _passed_since_failure(self) -> bool:
+        stamp = read_stamp(self.cfg.runtime.state_dir) or {}
+        return proven(self.cfg, self.current) and str(stamp.get("passed_at", "")) > self._failed_at
 
     async def _finished(self, task: asyncio.Task[tuple[bool, str]]) -> None:
         self._task = None
@@ -170,7 +198,12 @@ class VersionGuard:
                 console.line(f"Claude Code {self.current} passed the sandbox probe; new sessions start again")
             )
             return
+        if self._attempts < PROBE_ATTEMPTS:
+            self.emit(console.line(f"the sandbox probe failed ({detail[:200]}); running it once more"))
+            self._start_probe()
+            return
         self.failed = detail[:300] or "unknown failure"
+        self._failed_at = utcnow().isoformat()
         self._next_check = self.clock() + RETRY_FAILED_SECONDS
         self.emit(console.line(f"New sessions wait: {self.hold}"))
         await self.alerts.send(

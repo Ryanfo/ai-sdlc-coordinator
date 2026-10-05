@@ -47,8 +47,10 @@ Claude Code updates itself, and the sandbox behaviour the worker profile relies 
 any release. `delivery doctor --claude-probe` records the Claude Code version (and session
 mode) it passed on in `<state_dir>/claude-probe.json`. Every five minutes the supervisor compares
 that with `claude --version`; when they differ, new sessions wait while it runs the same probe in
-the background, and start once it passes. A failed probe keeps them waiting and alerts; it is
-tried again every half hour, and `delivery doctor --claude-probe` shows the details.
+the background, and start once it passes. The probe asks Claude to try things, so a failure is
+run once more before anything waits for it. A second failure keeps new sessions waiting and
+alerts; it is tried again every half hour, and running `delivery doctor --claude-probe` (which
+shows the details) ends the wait at once when it passes.
 `claude.probe_on_version_change = false` turns this off.
 
 ### Alerts and notices
