@@ -1,0 +1,1261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Office</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #12141c;
+  --panel: #1b1f2b;
+  --panel-2: #232838;
+  --line: #333a50;
+  --ink: #ece6d3;
+  --dim: #9097ad;
+  --accent: #f2c14e;
+  --good: #7bd389;
+  --bad: #ef6f6c;
+  --blue: #7fb2ff;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); }
+body { font-family: "VT323", ui-monospace, Menlo, monospace; font-size: 20px; line-height: 1.15; }
+header {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+  padding: 10px 16px; border-bottom: 2px solid var(--line); background: var(--panel);
+}
+.logo { display: flex; align-items: baseline; gap: 10px; }
+.logo b { font-size: 30px; letter-spacing: 2px; color: var(--ink); }
+.logo span { color: var(--dim); }
+.controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-left: auto; }
+.group { display: flex; gap: 2px; border: 2px solid var(--line); background: var(--bg); }
+button, select {
+  font: inherit; color: var(--ink); background: transparent; border: 0; padding: 2px 10px; cursor: pointer;
+}
+button:hover { background: var(--panel-2); }
+button[aria-pressed="true"] { background: var(--accent); color: #1a1a1a; }
+select { background: var(--bg); border: 2px solid var(--line); padding: 1px 6px; }
+#clock { color: var(--accent); min-width: 15ch; text-align: right; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 0; min-height: calc(100vh - 60px); }
+.stage { position: relative; padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+canvas#office {
+  image-rendering: pixelated; image-rendering: crisp-edges;
+  width: 100%; max-width: 1440px; aspect-ratio: 3 / 2; display: block;
+  border: 4px solid #000; box-shadow: 0 0 0 2px var(--line), 0 12px 40px rgba(0,0,0,.5);
+  background: #000;
+}
+#banner { color: var(--dim); min-height: 1.2em; text-align: center; }
+#tip {
+  position: fixed; pointer-events: none; z-index: 10; display: none; max-width: 280px;
+  background: #fffbe8; color: #1a1a1a; border: 2px solid #000; padding: 6px 8px; box-shadow: 4px 4px 0 rgba(0,0,0,.4);
+}
+#tip b { display: block; font-size: 22px; }
+aside { border-left: 2px solid var(--line); background: var(--panel); overflow: auto; max-height: calc(100vh - 60px); }
+aside section { padding: 12px 14px; border-bottom: 2px solid var(--line); }
+aside h2 { margin: 0 0 8px; font-size: 22px; font-weight: normal; color: var(--accent); letter-spacing: 1px; }
+.who { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.who div { display: flex; gap: 6px; align-items: center; cursor: default; padding: 2px; }
+.who div:hover { background: var(--panel-2); }
+.who canvas { image-rendering: pixelated; width: 28px; height: 48px; flex: none; }
+.who small { display: block; color: var(--dim); font-size: 16px; line-height: 1; }
+.tickets { display: flex; flex-direction: column; gap: 6px; }
+.ticket { background: var(--panel-2); border-left: 4px solid var(--blue); padding: 4px 8px; cursor: pointer; }
+.ticket.waiting { border-color: var(--accent); }
+.ticket.bad { border-color: var(--bad); }
+.ticket.done { border-color: var(--good); opacity: .75; }
+.ticket.focus { outline: 2px solid var(--accent); }
+.ticket .k { color: var(--accent); }
+.ticket .t { color: var(--ink); }
+.ticket .w { color: var(--dim); font-size: 17px; }
+#log { list-style: none; margin: 0; padding: 0; font-size: 17px; }
+#log li { padding: 1px 0; color: var(--ink); }
+#log li time { color: var(--dim); margin-right: 6px; }
+#log li.minor { color: var(--dim); }
+.empty { color: var(--dim); }
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  aside { border-left: 0; border-top: 2px solid var(--line); max-height: none; }
+  .stage { padding: 8px 0; }
+  canvas#office { border-width: 2px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><b>DUNDER MIFFLIN</b><span>Scranton branch · coordinator office</span></div>
+  <div class="controls">
+    <div class="group" role="group" aria-label="Mode">
+      <button data-mode="live">Live</button>
+      <button data-mode="replay">Replay</button>
+      <button data-mode="demo">Demo</button>
+    </div>
+    <select id="replayTicket" title="Replay one ticket or all"><option value="">All tickets</option></select>
+    <div class="group" role="group" aria-label="Speed">
+      <button data-speed="1">1x</button>
+      <button data-speed="2">2x</button>
+      <button data-speed="4">4x</button>
+      <button data-speed="8">8x</button>
+    </div>
+    <div class="group">
+      <button id="namesBtn" aria-pressed="true">Names</button>
+      <button id="quipsBtn" aria-pressed="true">Banter</button>
+    </div>
+    <span id="clock"></span>
+  </div>
+</header>
+<main>
+  <div class="stage">
+    <canvas id="office" width="480" height="320" aria-label="Animated office: the coordinator and its stages at work"></canvas>
+    <div id="banner"></div>
+  </div>
+  <aside>
+    <section><h2>Tickets</h2><div class="tickets" id="tickets"><span class="empty">No tickets yet.</span></div></section>
+    <section><h2>Who's who</h2><div class="who" id="who"></div></section>
+    <section><h2>What just happened</h2><ul id="log"></ul></section>
+  </aside>
+</main>
+<div id="tip"></div>
+<script>
+'use strict';
+// ============================================================================ basics
+const W = 480, H = 320, T = 16;
+const cv = document.getElementById('office');
+const ctx = cv.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+const $ = (s) => document.querySelector(s);
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
+
+// ============================================================================ 3x5 pixel font
+const FONT = {};
+function G(chars, rows) { FONT[chars] = rows.split(' ').map((r) => [...r].map((c) => c === '#')); }
+G('A', '.#. #.# ### #.# #.#'); G('B', '##. #.# ##. #.# ##.'); G('C', '.## #.. #.. #.. .##');
+G('D', '##. #.# #.# #.# ##.'); G('E', '### #.. ##. #.. ###'); G('F', '### #.. ##. #.. #..');
+G('G', '.## #.. #.# #.# .##'); G('H', '#.# #.# ### #.# #.#'); G('I', '### .#. .#. .#. ###');
+G('J', '..# ..# ..# #.# .#.'); G('K', '#.# #.# ##. #.# #.#'); G('L', '#.. #.. #.. #.. ###');
+G('M', '#.# ### #.# #.# #.#'); G('N', '##. #.# #.# #.# #.#'); G('O', '.#. #.# #.# #.# .#.');
+G('P', '##. #.# ##. #.. #..'); G('Q', '.#. #.# #.# ##. .##'); G('R', '##. #.# ##. #.# #.#');
+G('S', '.## #.. .#. ..# ##.'); G('T', '### .#. .#. .#. .#.'); G('U', '#.# #.# #.# #.# ###');
+G('V', '#.# #.# #.# #.# .#.'); G('W', '#.# #.# #.# ### #.#'); G('X', '#.# #.# .#. #.# #.#');
+G('Y', '#.# #.# .#. .#. .#.'); G('Z', '### ..# .#. #.. ###');
+G('0', '### #.# #.# #.# ###'); G('1', '.#. ##. .#. .#. ###'); G('2', '##. ..# .#. #.. ###');
+G('3', '##. ..# .#. ..# ##.'); G('4', '#.# #.# ### ..# ..#'); G('5', '### #.. ##. ..# ##.');
+G('6', '.## #.. ### #.# ###'); G('7', '### ..# .#. .#. .#.'); G('8', '### #.# ### #.# ###');
+G('9', '### #.# ### ..# ##.');
+G('.', '... ... ... ... .#.'); G(',', '... ... ... .#. #..'); G('!', '.#. .#. .#. ... .#.');
+G('?', '##. ..# .#. ... .#.'); G("'", '.#. .#. ... ... ...'); G('"', '#.# #.# ... ... ...');
+G('-', '... ... ### ... ...'); G(':', '... .#. ... .#. ...'); G('#', '#.# ### #.# ### #.#');
+G('/', '..# ..# .#. #.. #..'); G('(', '.#. #.. #.. #.. .#.'); G(')', '.#. ..# ..# ..# .#.');
+G('+', '... .#. ### .#. ...'); G('&', '.#. #.# .#. #.# .##'); G('*', '... #.# .#. #.# ...');
+G('_', '... ... ... ... ###'); G('%', '#.. ..# .#. #.. ..#');
+function clean(s) { return String(s).toUpperCase().replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[—–]/g, '-'); }
+function textW(s) { s = clean(s); return s.length ? s.length * 4 - 1 : 0; }
+function drawText(c, s, x, y, col) {
+  c.fillStyle = col;
+  let cx = Math.round(x); y = Math.round(y);
+  for (const ch of clean(s)) {
+    const g = FONT[ch];
+    if (g) for (let r = 0; r < 5; r++) for (let k = 0; k < 3; k++) if (g[r][k]) c.fillRect(cx + k, y + r, 1, 1);
+    cx += 4;
+  }
+}
+function drawTextOutlined(c, s, x, y, col, out = '#111') {
+  for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) drawText(c, s, x + dx, y + dy, out);
+  drawText(c, s, x, y, col);
+}
+function wrap(s, max) {
+  const lines = []; let line = '';
+  for (const word of clean(s).split(/\s+/)) {
+    if (!line) line = word;
+    else if ((line + ' ' + word).length <= max) line += ' ' + word;
+    else { lines.push(line); line = word; }
+  }
+  if (line) lines.push(line);
+  return lines.slice(0, 4);
+}
+function shade(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = (v) => Math.max(0, Math.min(255, v + amt));
+  return '#' + [f(n >> 16), f((n >> 8) & 255), f(n & 255)].map((v) => v.toString(16).padStart(2, '0')).join('');
+}
+
+// ============================================================================ the floor plan
+// # wall, g glass, D door, S stairs; floors: m Michael, c conference, k kitchen, a annex,
+// r reception, . bullpen (sales), A accounting, w warehouse.
+const MAP = [
+  '##############################',
+  '#mmmmmg#cccccccc#kkkkkk#aaaaa#',
+  '#mmmmmg#cccccccc#kkkkkk#aaaaa#',
+  '#mmmmmg#cccccccc#kkkkkk#aaaaa#',
+  '#mmmmmg#cccccccc#kkkkkk#aaaaa#',
+  '#ggDgg####D#######D######D####',
+  '#rrrrrr...............AAAAAAA#',
+  '#rrrrrr...............AAAAAAA#',
+  '#rrrrrr...............AAAAAAA#',
+  '#rrrrrr...............AAAAAAA#',
+  '#rrrrrr...............AAAAAAA#',
+  'Drrrrrr...............AAAAAAA#',
+  '#rrrrrr...............AAAAAAA#',
+  '#rrrrrr...............AAAAAAA#',
+  '#####################SS#######',
+  '#wwwwwwwwwwwwwwwwwwwwwwwwwwww#',
+  '#wwwwwwwwwwwwwwwwwwwwwwwwwwww#',
+  '#wwwwwwwwwwwwwwwwwwwwwwwwwwww#',
+  '#wwwwwwwwwwwwwwwwwwwwwwwwwwww#',
+  '##############################',
+];
+const blocked = new Set();
+function block(x, y, w = 1, h = 1) { for (let i = 0; i < w; i++) for (let j = 0; j < h; j++) blocked.add(`${x + i},${y + j}`); }
+function walkable(x, y) {
+  if (x < 0 || y < 0 || x >= 30 || y >= 20) return false;
+  const c = MAP[y][x];
+  return c !== '#' && c !== 'g' && !blocked.has(`${x},${y}`);
+}
+function findPath(sx, sy, tx, ty) {
+  if (sx === tx && sy === ty) return [];
+  const key = (x, y) => x + y * 30;
+  const prev = new Map([[key(sx, sy), -1]]);
+  const queue = [[sx, sy]];
+  while (queue.length) {
+    const [x, y] = queue.shift();
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy, k = key(nx, ny);
+      if (prev.has(k)) continue;
+      if (!(nx === tx && ny === ty) && !walkable(nx, ny)) continue;
+      prev.set(k, key(x, y));
+      if (nx === tx && ny === ty) {
+        const path = []; let cur = k;
+        while (cur !== key(sx, sy)) { path.unshift([cur % 30, Math.floor(cur / 30)]); cur = prev.get(cur); }
+        return path;
+      }
+      queue.push([nx, ny]);
+    }
+  }
+  return null;
+}
+
+// Places people walk to.
+const SPOT = {
+  door: [0, 11], tray: [5, 10], conference: [11, 4], hr: [27, 4], truck: [24, 16],
+  kitchen: [[17, 2], [18, 2], [19, 2], [20, 2], [21, 2], [22, 2], [17, 3], [18, 3], [21, 3], [22, 3],
+            [17, 4], [18, 4], [19, 4], [20, 4], [21, 4], [22, 4]],
+};
+
+// ============================================================================ the cast
+const SKIN = { light: '#f1c7a3', fair: '#f6d8bf', tan: '#c98e5e', brown: '#8d5a3a', deep: '#6a4128' };
+const CAST = {
+  michael: { tag: 'The coordinator', name: 'Michael', seat: [3, 2], role: 'Regional Manager. He is the coordinator: picks up every ticket and hands it to the right person.',
+    skin: SKIN.light, hair: '#3a2a1e', style: 'side', shirt: '#f2f2ee', jacket: '#2e3a58', tie: '#9c2424', pants: '#2e3a58', collar: '#ffffff' },
+  pam: { tag: 'Jira, new tickets', name: 'Pam', seat: [3, 8], role: 'Reception, i.e. Jira. New tickets land in her tray and she keeps every Jira status up to date.',
+    skin: SKIN.light, hair: '#b8653a', style: 'pony', shirt: '#f4efe6', cardigan: '#e59ab3', pants: '#6a6f8c', skirt: true },
+  jim: { tag: 'Refinement', name: 'Jim', seat: [9, 7], role: 'Sales. Refinement: turns a ticket into a specification.', tall: true,
+    skin: SKIN.light, hair: '#7a5230', style: 'floppy', shirt: '#e4ecf4', tie: '#2c3e5e', tieLoose: true, pants: '#3a3f4c', collar: '#ffffff' },
+  dwight: { tag: 'Planning', name: 'Dwight', seat: [12, 7], role: 'Assistant (to the) Regional Manager. Planning.',
+    skin: SKIN.light, hair: '#6a4a2b', style: 'part', glasses: true, shirt: '#d6ae35', shortSleeve: true, tie: '#5a3b1e', pants: '#4f3d2a' },
+  ryan: { tag: 'Development', name: 'Ryan', seat: [15, 7], role: 'Development: writes the code. Each developer takes one ticket at a time.',
+    skin: SKIN.light, hair: '#1b1b1b', style: 'spiky', shirt: '#ffffff', jacket: '#25252b', pants: '#25252b' },
+  andy: { tag: 'Development', name: 'Andy', seat: [9, 10], role: 'Development: writes the code. Each developer takes one ticket at a time.',
+    skin: SKIN.light, hair: '#a97c4a', style: 'short', shirt: '#9e1b32', collar: '#ffffff', pants: '#c2a878' },
+  stanley: { tag: 'Development', name: 'Stanley', seat: [12, 10], role: 'Development: writes the code. Each developer takes one ticket at a time.',
+    skin: SKIN.deep, hair: '#3a3a3a', style: 'bald', stache: '#2a2a2a', shirt: '#cdb98e', tie: '#6a3a2a', collar: '#cdb98e', pants: '#3a3a3a' },
+  phyllis: { tag: 'Development', name: 'Phyllis', seat: [15, 10], role: 'Development: writes the code. Each developer takes one ticket at a time.',
+    skin: SKIN.light, hair: '#cbb48c', style: 'curly', shirt: '#5f8d62', floral: '#e9d36b', pants: '#4a4a5a' },
+  oscar: { tag: 'Verification', name: 'Oscar', seat: [23, 7], role: 'Accounting. Verification: checks the work against the specification.',
+    skin: SKIN.tan, hair: '#1d1d1d', style: 'short', stache: '#1d1d1d', shirt: '#6f6380', collar: '#ffffff', pants: '#3a3a3a' },
+  angela: { tag: 'Reviews findings', name: 'Angela', seat: [26, 7], role: 'Head of Accounting. Reviews the verification findings, harshly. Her cat is not involved.', short: true,
+    skin: SKIN.fair, hair: '#e8d27a', style: 'bun', shirt: '#ebdfc4', collar: '#ffffff', pants: '#6a5a7a', skirt: true },
+  kevin: { tag: 'Runs the checks', name: 'Kevin', seat: [23, 10], role: 'Accounting. Runs the checks: tests, lint and CI. And his chili.', wide: true,
+    skin: SKIN.light, hair: '#5a4632', style: 'receding', shirt: '#a3bcd8', tie: '#3a4a6a', collar: '#ffffff', pants: '#4a4f5a' },
+  creed: { tag: 'Release check', name: 'Creed', seat: [26, 10], role: 'Quality Assurance. Release verification. Nobody is sure what he does.',
+    skin: SKIN.light, hair: '#d9d9d9', style: 'messy', shirt: '#e8e2d2', cardigan: '#7d7f68', pants: '#5a5a4a' },
+  toby: { tag: 'Blocked and failed', name: 'Toby', seat: [27, 2], role: 'HR, in the annex. Blocked and failed tickets end up on his desk. Michael hates that.',
+    skin: SKIN.light, hair: '#7a6a5a', style: 'thin', shirt: '#8b9aa8', collar: '#ffffff', pants: '#4a4a4a' },
+  darryl: { tag: 'Release prep', name: 'Darryl', seat: [18, 16], role: 'Warehouse. Release preparation: gets the release ready for the truck.',
+    skin: SKIN.brown, hair: '#151515', style: 'buzz', beard: '#151515', shirt: '#3d5a80', vest: '#d4e02a', pants: '#2f3a4a' },
+};
+const STAGE_WORKER = { refinement: 'jim', planning: 'dwight', verification: 'oscar',
+  release_preparation: 'darryl', release_verification: 'creed' };
+const DEV_POOL = ['ryan', 'andy', 'stanley', 'phyllis'];
+const STAGE_NAME = { refinement: 'refinement', planning: 'planning', development: 'development',
+  verification: 'verification', release_preparation: 'release prep', release_verification: 'release check' };
+
+// Desks: two tiles in front of (below) each seat; the person sits behind it, facing you.
+for (const [id, d] of Object.entries(CAST)) {
+  if (id === 'pam') continue;
+  const [sx, sy] = d.seat;
+  block(sx - 1, sy + 1, 2, 1);
+}
+block(1, 9, 4, 1);              // reception counter
+block(9, 2, 6, 2);              // conference table
+block(17, 1, 6, 1);             // kitchen counter
+block(19, 3, 2, 1);             // kitchen table
+block(24, 1);                   // annex filing cabinet
+block(18, 7, 2, 1); block(20, 7); // copier, water cooler
+block(27, 8);                   // Angela's cat
+block(1, 15, 10, 1);            // warehouse shelves
+block(13, 17, 2, 1);            // forklift
+block(25, 15, 4, 4);            // truck
+
+// ============================================================================ drawing people
+function drawPerson(c, d, fx, fy, o = {}) {
+  const legLen = 5 + (d.tall ? 2 : 0) - (d.short ? 2 : 0);
+  const h = 15 + legLen;
+  const L = Math.round(fx) - 6, Tp = Math.round(fy) - h + 1;
+  const P = (x, y, w, hh, col) => { c.fillStyle = col; c.fillRect(L + x, Tp + y, w, hh); };
+  const back = o.dir === 'up';
+  const ex = o.dir === 'left' ? -1 : o.dir === 'right' ? 1 : 0;
+  const wide = d.wide ? 1 : 0;
+  const tx = 2 - wide, tw = 8 + 2 * wide;
+  const shoe = '#2a1f1a';
+  if (!o.noShadow) { c.fillStyle = 'rgba(0,0,0,.28)'; c.fillRect(L + 2, Tp + h - 1, 8, 2); }
+  // legs
+  const walk = o.walking ? o.frame % 2 : -1;
+  if (d.skirt) {
+    P(2, 15, 8, 2, d.pants);
+    const a = walk === 0 ? 1 : 0, b = walk === 1 ? 1 : 0;
+    P(3, 17, 2, legLen - 3 - a, d.skin); P(7, 17, 2, legLen - 3 - b, d.skin);
+    P(3, 15 + legLen - 1 - a, 2, 1, shoe); P(7, 15 + legLen - 1 - b, 2, 1, shoe);
+  } else {
+    const a = walk === 0 ? 1 : 0, b = walk === 1 ? 1 : 0;
+    P(3, 15, 6, 1, d.pants);
+    P(3, 15, 2, legLen - 1 - a, d.pants); P(7, 15, 2, legLen - 1 - b, d.pants);
+    P(3, 15 + legLen - 1 - a, 2, 1, shoe); P(7, 15 + legLen - 1 - b, 2, 1, shoe);
+  }
+  // torso
+  P(tx, 8, tw, 7, d.shirt);
+  if (d.floral && !back) { for (const [x, y] of [[3, 9], [7, 10], [4, 12], [8, 13], [6, 8], [2, 11]]) P(x, y, 1, 1, d.floral); }
+  if (back) {
+    if (d.jacket) P(tx, 8, tw, 7, d.jacket);
+    if (d.cardigan) P(tx, 8, tw, 7, d.cardigan);
+    if (d.vest) { P(tx, 8, tw, 7, d.vest); P(tx, 12, tw, 1, '#e6e6e6'); }
+  } else {
+    if (d.collar) P(4, 8, 4, 1, d.collar);
+    if (d.tie) {
+      const off = d.tieLoose ? 1 : 0;
+      P(5, 8 + off, 2, 1, shade(d.tie, -25)); P(5, 9 + off, 2, 4 - off, d.tie); P(5, 13, 2, 1, shade(d.tie, -25));
+    }
+    if (d.jacket) { P(tx, 8, 3, 7, d.jacket); P(tx + tw - 3, 8, 3, 7, d.jacket); }
+    if (d.cardigan) { P(tx, 8, 3, 7, d.cardigan); P(tx + tw - 3, 8, 3, 7, d.cardigan); }
+    if (d.vest) { P(tx, 8, 3, 7, d.vest); P(tx + tw - 3, 8, 3, 7, d.vest); P(tx, 12, 3, 1, '#e6e6e6'); P(tx + tw - 3, 12, 3, 1, '#e6e6e6'); }
+  }
+  P(tx, 14, tw, 1, shade(d.pants, -20)); // belt
+  // arms
+  const sleeve = d.jacket || d.cardigan || d.shirt;
+  const ax1 = tx - 1, ax2 = tx + tw;
+  if (o.typing && !back) {
+    const f = o.frame % 2;
+    P(ax1, 9, 1, 3, sleeve); P(ax2, 9, 1, 3, sleeve);
+    P(ax1 + 1, 12 - f, 2, 1, d.skin); P(ax2 - 2, 11 + f, 2, 1, d.skin);
+  } else if (o.carrying && !back) {
+    P(ax1, 9, 1, 3, sleeve); P(ax2, 9, 1, 3, sleeve);
+  } else {
+    const len = d.shortSleeve ? 2 : 5;
+    P(ax1, 9, 1, len, sleeve); P(ax2, 9, 1, len, sleeve);
+    if (d.shortSleeve) { P(ax1, 11, 1, 3, d.skin); P(ax2, 11, 1, 3, d.skin); }
+    P(ax1, 14, 1, 1, d.skin); P(ax2, 14, 1, 1, d.skin);
+  }
+  // head
+  P(3, 1, 6, 6, d.skin); P(4, 7, 4, 1, d.skin);
+  P(2, 3, 1, 2, d.skin); P(9, 3, 1, 2, d.skin);
+  if (!back) {
+    if (d.glasses) {
+      P(3, 4, 6, 1, '#2a2a2a'); P(4 + ex, 4, 1, 1, '#cfe6f5'); P(7 + ex, 4, 1, 1, '#cfe6f5');
+    } else {
+      P(4 + ex, 4, 1, 1, '#1b1b1b'); P(7 + ex, 4, 1, 1, '#1b1b1b');
+    }
+    P(5 + ex, 6, 2, 1, shade(d.skin, -55));
+    if (d.stache) P(4 + ex, 5, 4, 1, d.stache);
+    if (d.beard) { P(4, 7, 4, 1, d.beard); P(3 + ex, 6, 1, 1, d.beard); P(8 + ex, 6, 1, 1, d.beard); }
+  }
+  const Hc = d.hair;
+  const styles = {
+    side: [[3, 0, 6, 1], [2, 1, 8, 1], [2, 2, 4, 1], [2, 3, 1, 2], [9, 2, 1, 2]],
+    part: [[3, 0, 6, 1], [2, 1, 3, 1], [6, 1, 4, 1], [2, 2, 3, 1], [7, 2, 3, 1], [2, 3, 1, 2], [9, 3, 1, 2]],
+    floppy: [[3, -1, 6, 1], [2, 0, 8, 2], [2, 2, 5, 1], [2, 3, 1, 2], [9, 2, 1, 2]],
+    pony: [[3, 0, 6, 1], [2, 1, 8, 1], [2, 2, 3, 1], [8, 2, 2, 1], [2, 3, 1, 4], [9, 3, 1, 4], [1, 4, 1, 3], [10, 4, 1, 3]],
+    short: [[3, 0, 6, 1], [2, 1, 8, 1], [2, 2, 1, 2], [9, 2, 1, 2]],
+    bald: [[2, 3, 1, 2], [9, 3, 1, 2]],
+    curly: [[2, -1, 8, 1], [1, 0, 10, 2], [1, 2, 3, 1], [8, 2, 3, 1], [1, 3, 2, 4], [9, 3, 2, 4]],
+    spiky: [[3, -1, 1, 1], [5, -2, 1, 2], [7, -1, 1, 1], [3, 0, 6, 1], [2, 1, 8, 1], [2, 2, 2, 1], [9, 2, 1, 1]],
+    bun: [[4, -3, 4, 3], [3, 0, 6, 1], [2, 1, 8, 1], [2, 2, 1, 2], [9, 2, 1, 2]],
+    receding: [[4, 0, 4, 1], [2, 1, 2, 2], [8, 1, 2, 2], [2, 3, 1, 1], [9, 3, 1, 1]],
+    messy: [[2, 0, 2, 1], [5, -1, 2, 1], [8, 0, 2, 1], [1, 1, 3, 2], [8, 1, 3, 2], [2, 3, 1, 2], [9, 3, 1, 2]],
+    buzz: [[3, 0, 6, 1], [2, 1, 8, 1], [2, 2, 1, 1], [9, 2, 1, 1]],
+    thin: [[2, 1, 2, 1], [8, 1, 2, 1], [2, 2, 1, 2], [9, 2, 1, 2], [4, 0, 1, 1], [7, 0, 1, 1]],
+  };
+  const bald = ['bald', 'receding', 'messy', 'thin'].includes(d.style);
+  if (back && !bald) P(2, 0, 8, 7, Hc);
+  if (back && d.style === 'pony') P(5, 7, 2, 4, Hc);
+  for (const [x, y, w, hh] of styles[d.style] || []) P(x, y, w, hh, Hc);
+  if (d.style === 'curly') { P(3, -1, 1, 1, shade(Hc, 30)); P(7, 0, 1, 1, shade(Hc, 30)); P(1, 4, 1, 1, shade(Hc, 30)); }
+  if (d.style === 'bald') P(5, 1, 2, 1, shade(d.skin, 35));
+  // carried folder, in front of the chest
+  if (o.carrying && !back) { drawFolder(c, L + 2, Tp + 9); P(ax1 + 1, 12, 1, 1, d.skin); P(ax2 - 1, 12, 1, 1, d.skin); }
+  return { x: L, y: Tp + Math.min(0, -3), w: 12, h: h + 3 };
+}
+
+function drawFolder(c, x, y, o = {}) {
+  x = Math.round(x); y = Math.round(y);
+  c.fillStyle = '#c99a45'; c.fillRect(x, y, 4, 1);
+  c.fillStyle = '#efcf7f'; c.fillRect(x, y + 1, 8, 5);
+  c.fillStyle = '#fffbe8'; c.fillRect(x + 1, y + 1, 6, 1);
+  c.fillStyle = '#b8873a'; c.fillRect(x, y + 5, 8, 1);
+  if (o.glow) { c.fillStyle = 'rgba(242,193,78,.55)'; c.fillRect(x - 1, y - 1, 10, 1); c.fillRect(x - 1, y + 6, 10, 1); c.fillRect(x - 1, y, 1, 6); c.fillRect(x + 8, y, 1, 6); }
+}
+
+// ============================================================================ simulation clock
+let speed = 1, simNow = 0, timers = [], waiters = [], sceneGen = 0;
+function sleep(ms) { return new Promise((r) => timers.push({ at: simNow + ms, fn: r })); }
+function after(ms, fn) { timers.push({ at: simNow + ms, fn }); }
+function waitUntil(cond, why = '') { return cond() ? Promise.resolve() : new Promise((r) => waiters.push({ cond, r, why })); }
+function tickTimers() {
+  const due = timers.filter((t) => simNow >= t.at);
+  timers = timers.filter((t) => simNow < t.at);
+  due.forEach((t) => t.fn());
+  const ready = waiters.filter((w) => w.cond());
+  waiters = waiters.filter((w) => !ready.includes(w));
+  ready.forEach((w) => w.r());
+}
+
+// ============================================================================ actors
+const WALK = 64; // px per second
+const tileXY = ([tx, ty]) => [tx * T + 8, ty * T + 15];
+class Actor {
+  constructor(id, d) {
+    this.id = id; this.d = d; this.name = d.name; this.home = d.seat;
+    [this.x, this.y] = tileXY(d.seat);
+    this.deliver = [d.seat[0], d.seat[1] + 2];
+    this.path = []; this.dir = 'down'; this.frame = 0; this.ft = 0;
+    this.q = Promise.resolve(); this.qlen = 0;
+    this.working = new Set(); this.carry = null; this.bubble = null; this.hidden = false; this.onArrive = null;
+  }
+  get tile() { return [Math.floor(this.x / T), Math.floor((this.y - 1) / T)]; }
+  get walking() { return this.path.length > 0; }
+  get atHome() { const [x, y] = this.tile; return !this.walking && x === this.home[0] && y === this.home[1]; }
+  enqueue(fn) {
+    const gen = sceneGen; this.qlen++;
+    this.q = this.q.then(() => (gen === sceneGen ? fn() : null)).catch((e) => console.error(e)).finally(() => { this.qlen--; });
+    return this.q;
+  }
+  walkTo(target) {
+    return new Promise((res) => {
+      const [sx, sy] = this.tile;
+      const p = findPath(sx, sy, target[0], target[1]);
+      if (!p) { [this.x, this.y] = tileXY(target); res(); return; }
+      this.path = p.map(tileXY);
+      if (!this.path.length) { res(); return; }
+      this.onArrive = res;
+    });
+  }
+  goHome() { return this.walkTo(this.home); }
+  say(text, ms = 3000) { if (!this.hidden) this.bubble = { text, until: simNow + ms }; }
+  update(dt) {
+    if (this.path.length) {
+      const [nx, ny] = this.path[0];
+      const dx = nx - this.x, dy = ny - this.y, dist = Math.hypot(dx, dy);
+      const step = WALK * (1 + Math.min(Math.max(this.qlen - 1, 0), 4) * 0.35) * dt;
+      if (dist <= step) {
+        this.x = nx; this.y = ny; this.path.shift();
+        if (!this.path.length) { this.dir = 'down'; const r = this.onArrive; this.onArrive = null; if (r) r(); }
+      } else {
+        this.x += (dx / dist) * step; this.y += (dy / dist) * step;
+        this.dir = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down');
+      }
+      this.ft += dt; if (this.ft > 0.16) { this.ft = 0; this.frame++; }
+    } else if (this.working.size) {
+      this.ft += dt; if (this.ft > 0.2) { this.ft = 0; this.frame++; }
+    }
+    if (this.bubble && simNow > this.bubble.until) this.bubble = null;
+  }
+  draw(c) {
+    if (this.hidden) return null;
+    const typing = this.working.size > 0 && this.atHome;
+    return drawPerson(c, this.d, this.x, this.y, { dir: this.dir, walking: this.walking, frame: this.frame, typing, carrying: !!this.carry });
+  }
+}
+
+// ============================================================================ scene state
+let A = {}, tickets = new Map(), particles = [], planes = [], shipped = 0, breakTime = false;
+let focusKey = null, showNames = true, banter = true;
+const meta = new Map(); // ticket key -> {title, type} from the server
+
+function resetScene() {
+  sceneGen++; timers = []; waiters = []; particles = []; planes = [];
+  A = {}; for (const [id, d] of Object.entries(CAST)) A[id] = new Actor(id, d);
+  tickets = new Map(); shipped = 0; breakTime = false;
+  A.michael.hidden = true; A.michael.out = true;
+  [A.michael.x, A.michael.y] = tileXY(SPOT.door);
+  scheduleBanter(sceneGen);
+}
+
+function ticketOf(key) {
+  let t = tickets.get(key);
+  if (!t) { t = { key, loc: { k: 'tray' }, stage: '', last: '', dev: null, seq: 0, open: new Set() }; tickets.set(key, t); }
+  return t;
+}
+function workerFor(t, stage) {
+  if (stage === 'development') {
+    if (!t.dev) {
+      const load = (id) => [...tickets.values()].filter((o) => o.dev === id && o.loc.k === 'desk').length;
+      t.dev = DEV_POOL.slice().sort((a, b) => load(a) - load(b))[0];
+    }
+    return A[t.dev];
+  }
+  return A[STAGE_WORKER[stage] || 'jim'];
+}
+function holderOf(t) { return t.loc.k === 'desk' || t.loc.k === 'hand' ? A[t.loc.a] : null; }
+function place(t, loc) {
+  const h = holderOf(t);
+  if (h && h.carry === t.key) h.carry = null;
+  t.loc = loc;
+  if (loc.k === 'hand') A[loc.a].carry = t.key;
+}
+function pickupSpot(t) {
+  switch (t.loc.k) {
+    case 'tray': return SPOT.tray;
+    case 'desk': return A[t.loc.a].deliver;
+    case 'table': return SPOT.conference;
+    case 'hr': return SPOT.hr;
+    default: return null;
+  }
+}
+const short = (key) => String(key).split('-').pop();
+const statusName = (s) => (s || '').replace(/_/g, ' ');
+
+// ============================================================================ lines
+const DISPATCH = {
+  refinement: (k) => `Jim! ${k}. Write me a spec.`,
+  planning: (k) => `Dwight, plan ${k}. No beets.`,
+  development: (k, w) => `${w}, code ${k}. Go go go!`,
+  verification: (k) => `Oscar, verify ${k}. You're the smart one.`,
+  release_preparation: (k) => `Darryl! Get ${k} ready to ship.`,
+  release_verification: (k) => `Creed... check ${k} shipped okay?`,
+};
+const ACK = { jim: ['On it.', 'Sure thing.'], dwight: ['The plan will be flawless.', 'Finally, a worthy task.'],
+  ryan: ['On it. Like a startup.'], andy: ['Nard Dog is on it!'], stanley: ['Fine.', "It's not pretzel day, is it?"],
+  phyllis: ['Oh, how fun.'], oscar: ['Actually, happy to.'], darryl: ['Got it, Mike.'], creed: ['Who are you again?', 'Sure.'] };
+const DONE_LINE = { refinement: "Spec's on the table.", planning: 'Plan is on the table. Read it.',
+  development: 'Code is ready for review.', verification: 'Verified. Your call.',
+  release_preparation: 'Release is ready to go.', release_verification: 'All checked.' };
+const BANTER = {
+  michael: ["That's what she said!", 'Who wants a Dundie?', 'Conference room, five minutes!', "World's best boss. It's on the mug."],
+  dwight: ['Fact: my plans are flawless.', 'Bears. Beets. Battlestar.', 'Assistant TO the regional manager.'],
+  jim: ['...', 'Bears do not eat beets, Dwight.'],
+  pam: ['Dunder Mifflin, this is Pam.', 'Jelly bean?'],
+  kevin: ['Mmm. Chili.', 'The numbers are... numbers.'],
+  angela: ['Unacceptable.', 'Sprinkles would never.'],
+  oscar: ['Actually...', "That's not how any of this works."],
+  stanley: ['Is it pretzel day?', 'Did I stutter?'],
+  phyllis: ['Bob Vance says hi.', 'Oh, how fun.'],
+  andy: ['Nard Dog, reporting!', 'Rit-dit-dit-di-doo!'],
+  ryan: ["I'm basically a startup.", 'WUPHF!'],
+  creed: ['Where am I again?', 'I sprout mung beans.'],
+  darryl: ["Forklift's charged.", 'Mike, it is on the truck.'],
+  toby: ['Hi. Sorry.', 'HR is here to help.'],
+};
+
+// ============================================================================ beats -> animation
+// The longest to-do list in the office: replay and demo wait while it is long.
+function backlog() { return Math.max(...Object.values(A).map((a) => a.qlen)); }
+// Work on one ticket, in the order its beats arrived: Michael never takes a folder away
+// before the person holding it has finished what they were asked to do with it.
+function ticketTask(actor, t, fn) {
+  const id = ++t.seq;
+  t.open.add(id);
+  return actor.enqueue(async () => { try { await fn(); } finally { t.open.delete(id); } });
+}
+function stageWorkerOf(t, b) { return workerFor(t, b.stage || t.stage); }
+
+function animate(b) {
+  if (b.kind === 'boss_in') return A.michael.enqueue(async () => {
+    if (!A.michael.out) return;
+    A.michael.out = false; A.michael.hidden = false; [A.michael.x, A.michael.y] = tileXY(SPOT.door);
+    A.michael.say('Good morning, Dunder Mifflin!');
+    await A.michael.goHome();
+  });
+  if (b.kind === 'boss_out') return A.michael.enqueue(async () => {
+    if (A.michael.out) return;
+    A.michael.say("I'm going home.");
+    await A.michael.walkTo(SPOT.door);
+    A.michael.hidden = true; A.michael.out = true;
+  });
+  if (b.kind === 'break') {
+    breakTime = true;
+    A.michael.say("Claude's out. Coffee break!");
+    Object.values(A).forEach((a, i) => a.enqueue(async () => { if (!a.hidden) await a.walkTo(SPOT.kitchen[i % SPOT.kitchen.length]); }));
+    return;
+  }
+  if (b.kind === 'back') {
+    breakTime = false;
+    A.michael.say('Back to work, people!');
+    Object.values(A).forEach((a) => a.enqueue(async () => { if (!a.hidden) await a.goHome(); }));
+    return;
+  }
+  const t = ticketOf(b.ticket);
+  const k = b.ticket;
+  switch (b.kind) {
+    case 'arrive': {
+      const fresh = !t.stage;
+      t.stage = b.stage; t.last = 'arrive';
+      const w = workerFor(t, b.stage);
+      if (fresh) A.pam.say(`New ticket: ${k}!`);
+      const m = A.michael;
+      const before = t.seq;
+      m.enqueue(async () => {
+        if (m.out) { m.out = false; m.hidden = false; [m.x, m.y] = tileXY(SPOT.door); }
+        await waitUntil(() => t.loc.k !== 'hand' && ![...t.open].some((id) => id <= before), `michael: ${k} free`);
+        if (t.loc.k === 'desk' && t.loc.a === w.id) { m.say(`${w.name}, keep going on ${k}.`); return; }
+        const from = pickupSpot(t);
+        if (from) await m.walkTo(from);
+        place(t, { k: 'hand', a: 'michael' });
+        m.say((DISPATCH[b.stage] || DISPATCH.development)(k, w.name));
+        await m.walkTo(w.deliver);
+        place(t, { k: 'desk', a: w.id });
+        w.say(pick(ACK[w.id] || ['On it.']));
+        await m.goHome();
+      });
+      break;
+    }
+    case 'start': {
+      t.last = 'start';
+      const w = stageWorkerOf(t, b);
+      ticketTask(w, t, async () => {
+        await waitUntil(() => t.loc.k === 'desk' && t.loc.a === w.id, `${w.id}: ${k} on desk (${b.kind})`);
+        if (!w.atHome) await w.goHome();
+        w.working.add(k); t.startedAt = simNow;
+      });
+      break;
+    }
+    case 'publishing': { const w = stageWorkerOf(t, b); ticketTask(w, t, async () => w.say(`Writing up ${k}...`, 2200)); break; }
+    case 'push': { const w = stageWorkerOf(t, b); ticketTask(w, t, async () => w.say('git push!', 1600)); break; }
+    case 'pr': { const w = stageWorkerOf(t, b); ticketTask(w, t, async () => w.say(`Opened pull request ${b.number}.`)); break; }
+    case 'candidate': { const w = stageWorkerOf(t, b); ticketTask(w, t, async () => w.say(`${k} build is ready.`)); break; }
+    case 'checks': {
+      const w = stageWorkerOf(t, b);
+      A.kevin.enqueue(async () => {
+        const spot = A.kevin.id === w.id ? null : w.deliver;
+        if (spot) await A.kevin.walkTo(spot);
+        A.kevin.say(`Running the numbers on ${k}...`);
+        await sleep(1800);
+        A.kevin.say('Checks done. Mmm.');
+        await sleep(600);
+        await A.kevin.goHome();
+      });
+      if (b.stage === 'verification') A.angela.say(`I'll be reviewing ${short(k)}.`, 2500);
+      break;
+    }
+    case 'jira': A.pam.say(`Jira: ${k} is ${statusName(b.to)}.`, 2600); break;
+    case 'comment': {
+      const from = holderOf(t) || stageWorkerOf(t, b);
+      planes.push({ x0: from.x, y0: from.y - 16, x1: A.pam.x, y1: A.pam.y - 14, t: 0, dur: 1100 });
+      break;
+    }
+    case 'await': case 'done': case 'blocked': case 'failed': {
+      t.last = b.kind;
+      const w = stageWorkerOf(t, b);
+      ticketTask(w, t, async () => {
+        await waitUntil(() => t.loc.k === 'desk' && t.loc.a === w.id, `${w.id}: ${k} on desk (${b.kind})`);
+        const left = (t.startedAt || 0) + 2500 - simNow;
+        if (left > 0) await sleep(left);
+        w.working.delete(k);
+        place(t, { k: 'hand', a: w.id });
+        if (b.kind === 'await') {
+          w.say(DONE_LINE[b.stage] || 'Ready for review!');
+          await w.walkTo(SPOT.conference);
+          place(t, { k: 'table' });
+        } else if (b.kind === 'done') {
+          w.say('Taking it to the truck.');
+          await w.walkTo(SPOT.truck);
+          place(t, { k: 'shipped' }); shipped++;
+          confetti(25 * T, 16 * T);
+          A.darryl.say('BEEP BEEP. Shipped!');
+          A.michael.say(`${k} shipped! That's what she said.`);
+        } else {
+          w.say(b.kind === 'failed' ? `${k} failed...` : `${k} is blocked.`);
+          await w.walkTo(SPOT.hr);
+          place(t, { k: 'hr' });
+          A.toby.say(b.kind === 'failed' ? "I'll take a look." : "I'll hold on to it.");
+          A.michael.say(b.kind === 'failed' ? 'NO! GOD! NO!' : 'Toby has it. Great.');
+        }
+        await w.goHome();
+      });
+      break;
+    }
+    case 'interrupted': {
+      t.last = 'interrupted';
+      const w = stageWorkerOf(t, b);
+      ticketTask(w, t, async () => { w.working.delete(k); w.say(`${k}: paused, back soon.`); });
+      break;
+    }
+    case 'open': {
+      const w = stageWorkerOf(t, b);
+      ticketTask(w, t, async () => { await waitUntil(() => t.loc.k !== 'hand'); w.say(`Still here if you have questions on ${short(k)}.`, 3500); });
+      break;
+    }
+  }
+}
+
+// History applied without animation: where everything is now.
+function applyInstant(b) {
+  if (b.kind === 'boss_in') { A.michael.out = false; return; }
+  if (b.kind === 'boss_out') { A.michael.out = true; return; }
+  if (b.kind === 'break') { breakTime = true; return; }
+  if (b.kind === 'back') { breakTime = false; return; }
+  if (!b.ticket) return;
+  const t = ticketOf(b.ticket);
+  const w = () => workerFor(t, b.stage || t.stage);
+  switch (b.kind) {
+    case 'arrive': t.stage = b.stage; t.last = 'arrive'; Object.values(A).forEach((a) => a.working.delete(t.key)); place(t, { k: 'desk', a: w().id }); break;
+    case 'start': t.last = 'start'; w().working.add(t.key); break;
+    case 'await': t.last = 'await'; w().working.delete(t.key); place(t, { k: 'table' }); break;
+    case 'done': t.last = 'done'; w().working.delete(t.key); place(t, { k: 'shipped' }); shipped++; break;
+    case 'blocked': case 'failed': t.last = b.kind; w().working.delete(t.key); place(t, { k: 'hr' }); break;
+    case 'interrupted': t.last = 'interrupted'; w().working.delete(t.key); break;
+  }
+}
+function settleActors(michaelIn) {
+  A.michael.out = !michaelIn; A.michael.hidden = !michaelIn;
+  Object.values(A).forEach((a, i) => {
+    a.path = []; a.carry = null;
+    [a.x, a.y] = tileXY(breakTime ? SPOT.kitchen[i % SPOT.kitchen.length] : a.home);
+  });
+}
+
+// ============================================================================ effects
+function confetti(x, y) {
+  const cols = ['#f2c14e', '#ef6f6c', '#7bd389', '#7fb2ff', '#ffffff'];
+  for (let i = 0; i < 40; i++) particles.push({ x, y, vx: rand(-60, 60), vy: rand(-110, -30), life: rand(0.9, 1.6), col: pick(cols) });
+}
+function updateEffects(dt) {
+  for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 160 * dt; p.life -= dt; }
+  particles = particles.filter((p) => p.life > 0);
+  for (const p of planes) p.t += dt * 1000;
+  planes = planes.filter((p) => p.t < p.dur);
+}
+function scheduleBanter(gen) {
+  after(rand(9000, 16000), () => {
+    if (gen !== sceneGen) return;
+    if (banter) {
+      const idle = Object.values(A).filter((a) => !a.hidden && !a.walking && !a.bubble);
+      if (idle.length) { const a = pick(idle); a.say(pick(BANTER[a.id]), 2600); }
+    }
+    scheduleBanter(gen);
+  });
+}
+
+// ============================================================================ static background
+const bg = document.createElement('canvas'); bg.width = W; bg.height = H;
+function drawBackground() {
+  const c = bg.getContext('2d');
+  const floor = { m: ['#6d7b98', '#677591'], c: ['#7b6e60', '#74685b'], k: ['#dcd7ca', '#c9c3b4'],
+    a: ['#7f8b77', '#788471'], r: ['#a99378', '#a28c72'], '.': ['#7c8581', '#77807c'],
+    A: ['#8b867b', '#857f75'], w: ['#8f8c85', '#8a8780'], D: ['#9b7b52', '#9b7b52'], S: ['#6e6a62', '#6e6a62'] };
+  for (let y = 0; y < 20; y++) for (let x = 0; x < 30; x++) {
+    const ch = MAP[y][x];
+    const px = x * T, py = y * T;
+    if (ch === '#') {
+      c.fillStyle = '#bfb59b'; c.fillRect(px, py, T, T);
+      c.fillStyle = '#d6cdb5'; c.fillRect(px, py, T, 4);
+      if (y + 1 < 20 && MAP[y + 1][x] !== '#') { c.fillStyle = '#8c846f'; c.fillRect(px, py + T - 2, T, 2); }
+      continue;
+    }
+    if (ch === 'g') {
+      c.fillStyle = floor.m[0]; c.fillRect(px, py, T, T);
+      c.fillStyle = 'rgba(170,215,235,.55)'; c.fillRect(px, py, T, T);
+      c.fillStyle = '#56656e'; if (y === 5) c.fillRect(px, py + T - 3, T, 3); else c.fillRect(px + T - 3, py, 3, T);
+      c.fillStyle = 'rgba(255,255,255,.5)'; c.fillRect(px + 3, py + 2, 1, 6);
+      continue;
+    }
+    const pal = floor[ch] || floor['.'];
+    c.fillStyle = pal[(x + y) % 2]; c.fillRect(px, py, T, T);
+    if (ch === 'S') { c.fillStyle = '#4e4a43'; for (let i = 0; i < 4; i++) c.fillRect(px, py + i * 4, T, 1); }
+    if (ch === 'w' && (x * 7 + y * 3) % 11 === 0) { c.fillStyle = '#7d7a73'; c.fillRect(px + 4, py + 9, 5, 1); }
+  }
+  // safety lines and loading bay in the warehouse
+  c.fillStyle = '#d6b83a';
+  for (let x = 12; x < 24; x += 2) c.fillRect(x * T, 18 * T + 12, 16, 2);
+  c.fillRect(23 * T + 4, 15 * T, 2, 4 * T);
+  // windows on the outside wall
+  for (const [x0, x1] of [[1, 5], [9, 14], [25, 28]]) {
+    for (let x = x0; x <= x1; x++) {
+      c.fillStyle = '#9cc9e3'; c.fillRect(x * T + 2, 4, 12, 9);
+      c.fillStyle = '#cfe6f3'; c.fillRect(x * T + 3, 5, 3, 3);
+      c.fillStyle = '#5c6b73'; c.fillRect(x * T + 2, 12, 12, 2);
+    }
+  }
+  // wall signs
+  drawText(c, 'CONFERENCE ROOM', 11 * T + 4, 5 * T + 6, '#4a4436');
+  drawText(c, 'KITCHEN', 19 * T + 6, 5 * T + 6, '#4a4436');
+  drawText(c, 'ANNEX', 26 * T + 6, 5 * T + 6, '#4a4436');
+  drawText(c, 'WAREHOUSE', 11 * T, 14 * T + 6, '#4a4436');
+  drawText(c, 'MANAGER', 7 * T + 4, 5 * T + 6, '#4a4436');
+  const sign = (s, x, y) => { const w = textW(s) + 6; c.fillStyle = '#2b2b33'; c.fillRect(x, y, w, 9); drawText(c, s, x + 3, y + 2, '#f2e6c8'); };
+  sign('SALES', 7 * T + 2, 13 * T + 5);
+  sign('ACCOUNTING', 22 * T + 2, 13 * T + 5);
+  sign('RECEPTION', 1 * T + 2, 13 * T + 5);
+  sign('HR', 24 * T + 2, 2 * T + 0);
+  // rugs
+  c.fillStyle = 'rgba(120,40,40,.35)'; c.fillRect(1 * T + 4, 1 * T + 6, 4 * T, 3 * T);
+  c.fillStyle = 'rgba(40,40,40,.15)'; c.fillRect(8 * T + 6, 1 * T + 6, 8 * T - 12, 3 * T + 4);
+}
+
+// ============================================================================ furniture (depth-sorted with people)
+function deskDrawer(id) {
+  const d = CAST[id]; const [sx, sy] = d.seat;
+  const x0 = (sx - 1) * T + 1, y0 = (sy + 1) * T - 4;
+  return {
+    key: (sy + 1) * T + 10,
+    draw(c) {
+      const a = A[id];
+      const on = a.working.size > 0 && a.atHome;
+      c.fillStyle = id === 'darryl' ? '#7a7f86' : '#a88a61'; c.fillRect(x0, y0, 30, 6);
+      c.fillStyle = id === 'darryl' ? '#555a61' : '#7a6145'; c.fillRect(x0, y0 + 6, 30, 8);
+      c.fillStyle = '#4b3b2a'; c.fillRect(x0 + 1, y0 + 14, 2, 2); c.fillRect(x0 + 27, y0 + 14, 2, 2);
+      const nm = d.name.toUpperCase();
+      drawText(c, nm, x0 + 15 - Math.floor(textW(nm) / 2), y0 + 8, '#f2e6c8');
+      if (id !== 'darryl') {
+        // CRT monitor on the left of the desk
+        c.fillStyle = '#d6cfb8'; c.fillRect(x0 + 2, y0 - 9, 11, 10);
+        c.fillStyle = on ? ((a.frame % 6) ? '#3f9f6a' : '#56c787') : '#2b3a33'; c.fillRect(x0 + 3, y0 - 8, 9, 6);
+        if (on) { c.fillStyle = '#b8f5cf'; c.fillRect(x0 + 4, y0 - 7, (a.frame % 5) + 2, 1); c.fillRect(x0 + 4, y0 - 5, 4, 1); }
+        c.fillStyle = '#e8e2d0'; c.fillRect(x0 + 15, y0 + 2, 8, 2);
+      } else {
+        c.fillStyle = '#ffffff'; c.fillRect(x0 + 4, y0 + 1, 6, 4); c.fillStyle = '#6b4a2b'; c.fillRect(x0 + 6, y0, 2, 1);
+      }
+      // signature props
+      if (id === 'michael') { c.fillStyle = '#ffffff'; c.fillRect(x0 + 24, y0 - 1, 4, 4); c.fillRect(x0 + 28, y0, 1, 2); c.fillStyle = '#3a64b0'; c.fillRect(x0 + 25, y0, 2, 1); }
+      if (id === 'dwight') { c.fillStyle = 'rgba(244,224,77,.9)'; c.fillRect(x0 + 23, y0 - 3, 6, 6); c.fillStyle = '#5a5a5a'; c.fillRect(x0 + 24, y0, 4, 1); c.fillStyle = '#fff6a8'; c.fillRect(x0 + 23, y0 - 3, 2, 1); }
+      if (id === 'kevin') { c.fillStyle = '#3a3a3a'; c.fillRect(x0 + 23, y0 - 3, 6, 5); c.fillStyle = '#b5371f'; c.fillRect(x0 + 24, y0 - 3, 4, 1); c.fillStyle = '#3a3a3a'; c.fillRect(x0 + 22, y0 - 2, 1, 1); c.fillRect(x0 + 29, y0 - 2, 1, 1); }
+      if (id === 'stanley') { c.fillStyle = '#f3f0e6'; c.fillRect(x0 + 23, y0 + 1, 6, 4); c.fillStyle = '#222'; c.fillRect(x0 + 24, y0 + 2, 1, 1); c.fillRect(x0 + 26, y0 + 2, 1, 1); c.fillRect(x0 + 25, y0 + 3, 1, 1); c.fillRect(x0 + 27, y0 + 3, 1, 1); }
+      if (id === 'toby') { c.fillStyle = '#6b4a2b'; c.fillRect(x0 + 25, y0, 3, 3); c.fillStyle = '#6f8f4f'; c.fillRect(x0 + 26, y0 - 3, 1, 3); c.fillRect(x0 + 27, y0 - 2, 1, 1); }
+      if (id === 'creed') { c.fillStyle = '#e8e2d0'; c.fillRect(x0 + 23, y0, 6, 3); c.fillStyle = '#7da34f'; c.fillRect(x0 + 24, y0, 1, 1); c.fillRect(x0 + 26, y0, 1, 1); c.fillRect(x0 + 27, y0 + 1, 1, 1); }
+      if (id === 'jim') { c.fillStyle = '#d9772b'; c.fillRect(x0 + 25, y0 + 14, 4, 2); }
+      if (id === 'oscar') { c.fillStyle = '#e8e2d0'; c.fillRect(x0 + 23, y0, 5, 4); c.fillStyle = '#333'; c.fillRect(x0 + 24, y0 + 1, 3, 1); }
+      if (id === 'andy') { c.fillStyle = '#9e1b32'; c.fillRect(x0 + 24, y0 - 3, 1, 4); c.fillRect(x0 + 23, y0 - 4, 3, 1); }
+      if (id === 'ryan') { c.fillStyle = '#222'; c.fillRect(x0 + 24, y0 + 1, 3, 4); c.fillStyle = '#6fa8dc'; c.fillRect(x0 + 25, y0 + 2, 1, 2); }
+      drawFoldersAt((t) => t.loc.k === 'desk' && t.loc.a === id, (i) => [sx * T + 1 + i * 3, y0 - 3 - i]);
+    },
+  };
+}
+const FURNITURE = [
+  { key: 9 * T + 10, draw(c) { // reception counter
+    const x0 = 1 * T, y0 = 9 * T - 4;
+    c.fillStyle = '#c9b48a'; c.fillRect(x0, y0, 4 * T, 6);
+    c.fillStyle = '#6a5038'; c.fillRect(x0, y0 + 6, 4 * T, 9);
+    drawText(c, 'DUNDER MIFFLIN', x0 + 4, y0 + 8, '#f2e6c8');
+    c.fillStyle = '#d6cfb8'; c.fillRect(x0 + 18, y0 - 9, 11, 10); c.fillStyle = '#2b3a33'; c.fillRect(x0 + 19, y0 - 8, 9, 6);
+    // jelly bean jar
+    c.fillStyle = 'rgba(220,240,255,.7)'; c.fillRect(x0 + 4, y0 - 6, 6, 7);
+    for (const [x, y, col] of [[5, -4, '#e94f4f'], [7, -3, '#f2c14e'], [6, -2, '#7bd389'], [8, -5, '#7fb2ff'], [5, -1, '#c77dff'], [8, -1, '#e94f4f']]) { c.fillStyle = col; c.fillRect(x0 + x, y0 + y, 1, 1); }
+    // in-tray
+    c.fillStyle = '#5a5f6a'; c.fillRect(3 * T + 4, y0 - 1, 12, 3);
+    drawFoldersAt((t) => t.loc.k === 'tray', (i) => [3 * T + 6, y0 - 4 - i * 2]);
+  } },
+  { key: 3 * T + 14, draw(c) { // conference table
+    c.fillStyle = '#3d3d44';
+    for (let x = 9; x < 15; x++) { c.fillRect(x * T + 5, 1 * T + 10, 6, 5); }
+    c.fillStyle = '#6b4a2f'; c.fillRect(9 * T, 2 * T, 6 * T, 2 * T - 2);
+    c.fillStyle = '#7c5737'; c.fillRect(9 * T, 2 * T, 6 * T, 2);
+    c.fillStyle = '#4a3220'; c.fillRect(9 * T, 4 * T - 4, 6 * T, 2);
+    // the empty chair at the head of the table is yours
+    c.fillStyle = '#8c1c1c'; c.fillRect(15 * T + 2, 2 * T + 8, 7, 9);
+    drawText(c, 'YOU', 15 * T + 1, 2 * T + 1, '#f2c14e');
+    const glow = Math.floor(simNow / 400) % 2 === 0;
+    drawFoldersAt((t) => t.loc.k === 'table', (i) => [9 * T + 5 + (i % 5) * 18, 2 * T + 3 + Math.floor(i / 5) * 13], { glow, label: true });
+  } },
+  { key: 1 * T + 14, draw(c) { // kitchen counter
+    c.fillStyle = '#e8e6df'; c.fillRect(17 * T, 1 * T, 6 * T, 12);
+    c.fillStyle = '#b9b6ad'; c.fillRect(17 * T, 1 * T + 10, 6 * T, 3);
+    c.fillStyle = '#2f2f2f'; c.fillRect(17 * T + 4, 1 * T - 2, 7, 10); c.fillStyle = '#b5371f'; c.fillRect(17 * T + 6, 1 * T + 4, 3, 2);
+    c.fillStyle = '#9a9a9a'; c.fillRect(19 * T + 2, 1 * T, 12, 8); c.fillStyle = '#2a2a2a'; c.fillRect(19 * T + 3, 1 * T + 1, 7, 6);
+    c.fillStyle = '#f4f4f4'; c.fillRect(22 * T + 1, 1 * T - 10, 14, 24); c.fillStyle = '#c8c8c8'; c.fillRect(22 * T + 12, 1 * T - 4, 1, 6);
+  } },
+  { key: 3 * T + 12, draw(c) { // kitchen table
+    c.fillStyle = '#c9b48a'; c.fillRect(19 * T + 2, 3 * T, 28, 10); c.fillStyle = '#8a7656'; c.fillRect(19 * T + 2, 3 * T + 10, 28, 2);
+  } },
+  { key: 1 * T + 14, draw(c) { // filing cabinet and plant in the annex
+    c.fillStyle = '#9aa0a6'; c.fillRect(24 * T + 2, 1 * T - 6, 12, 20); c.fillStyle = '#6e747a'; c.fillRect(24 * T + 2, 1 * T + 1, 12, 1); c.fillRect(24 * T + 2, 1 * T + 7, 12, 1);
+    c.fillStyle = '#7a5a3a'; c.fillRect(28 * T + 4, 1 * T + 6, 7, 6); c.fillStyle = '#4f8a4f'; c.fillRect(28 * T + 2, 1 * T - 2, 11, 8);
+    drawFoldersAt((t) => t.loc.k === 'hr', (i) => [26 * T + 4 + (i % 3) * 3, 3 * T - 7 - i * 2], { label: false });
+  } },
+  { key: 7 * T + 14, draw(c) { // copier and water cooler
+    c.fillStyle = '#cfcfc8'; c.fillRect(18 * T + 1, 7 * T - 4, 30, 18); c.fillStyle = '#6a6a6a'; c.fillRect(18 * T + 1, 7 * T - 4, 30, 3);
+    c.fillStyle = '#3f9f6a'; c.fillRect(18 * T + 24, 7 * T + 2, 3, 2); drawText(c, 'COPY', 18 * T + 6, 7 * T + 4, '#555');
+    c.fillStyle = '#e8e8e8'; c.fillRect(20 * T + 4, 7 * T + 2, 8, 12); c.fillStyle = '#8fc4ec'; c.fillRect(20 * T + 5, 7 * T - 6, 6, 8);
+  } },
+  { key: 8 * T + 12, draw(c) { // Angela's cat
+    const tail = Math.floor(simNow / 500) % 2;
+    const x = 27 * T + 4, y = 8 * T + 6;
+    c.fillStyle = '#e9e4da'; c.fillRect(x, y, 7, 5); c.fillRect(x + 1, y - 3, 4, 3);
+    c.fillRect(x + 1, y - 4, 1, 1); c.fillRect(x + 4, y - 4, 1, 1);
+    c.fillStyle = '#222'; c.fillRect(x + 2, y - 2, 1, 1); c.fillRect(x + 4, y - 2, 1, 1);
+    c.fillStyle = '#e9e4da'; c.fillRect(x + 7, y + 2 - tail, 2, 1); c.fillRect(x + 8, y + 1 - tail, 1, 1);
+  } },
+  { key: 15 * T + 14, draw(c) { // warehouse shelves
+    for (let x = 1; x <= 10; x++) {
+      c.fillStyle = '#5a6a7a'; c.fillRect(x * T, 15 * T - 10, T, 24);
+      c.fillStyle = '#c9a86a'; c.fillRect(x * T + 2, 15 * T - 8, 12, 7); c.fillRect(x * T + 2, 15 * T + 2, 12, 7);
+      c.fillStyle = '#a9884a'; c.fillRect(x * T + 7, 15 * T - 8, 1, 7); c.fillRect(x * T + 7, 15 * T + 2, 1, 7);
+    }
+    drawText(c, 'PAPER', 4 * T, 15 * T + 3, '#5a3b1e');
+  } },
+  { key: 17 * T + 14, draw(c) { // forklift
+    const x = 13 * T, y = 17 * T - 4;
+    c.fillStyle = '#e0a526'; c.fillRect(x + 4, y, 22, 14); c.fillStyle = '#2a2a2a'; c.fillRect(x + 6, y + 13, 5, 4); c.fillRect(x + 19, y + 13, 5, 4);
+    c.fillStyle = '#3a3a3a'; c.fillRect(x, y - 4, 2, 18); c.fillRect(x + 2, y + 12, 6, 2);
+    c.fillStyle = '#9cc9e3'; c.fillRect(x + 12, y + 2, 8, 5);
+  } },
+  { key: 18 * T + 14, draw(c) { // truck and shipped boxes
+    const x = 25 * T, y = 15 * T;
+    c.fillStyle = '#e9e6dc'; c.fillRect(x, y, 4 * T - 2, 3 * T + 4);
+    c.fillStyle = '#c9c4b5'; c.fillRect(x, y, 4 * T - 2, 3);
+    c.fillStyle = '#3a6ea5'; c.fillRect(x + 4, y + 16, 54, 16);
+    drawText(c, 'DUNDER', x + 8, y + 18, '#ffffff'); drawText(c, 'MIFFLIN', x + 8, y + 25, '#ffffff');
+    c.fillStyle = '#2a2a2a'; c.fillRect(x + 6, y + 3 * T + 2, 10, 6); c.fillRect(x + 44, y + 3 * T + 2, 10, 6);
+    for (let i = 0; i < Math.min(shipped, 9); i++) {
+      const bx = 21 * T + 4 + (i % 3) * 10, by = 18 * T + 4 - Math.floor(i / 3) * 7;
+      c.fillStyle = '#c9a86a'; c.fillRect(bx, by, 9, 7); c.fillStyle = '#a9884a'; c.fillRect(bx + 4, by, 1, 7);
+    }
+  } },
+];
+for (const id of Object.keys(CAST)) if (id !== 'pam') FURNITURE.push(deskDrawer(id));
+
+function drawFoldersAt(match, posAt, opts = {}) {
+  const list = [...tickets.values()].filter(match);
+  list.forEach((t, i) => {
+    const [x, y] = posAt(i);
+    const glow = opts.glow || t.key === focusKey;
+    drawFolder(ctx, x, y, { glow });
+    if (opts.label || t.key === focusKey) drawTextOutlined(ctx, short(t.key), x + 4 - Math.floor(textW(short(t.key)) / 2), y + 7, '#fff8d8', '#2a2015');
+  });
+}
+
+// ============================================================================ frame
+let hoverables = [];
+function draw() {
+  ctx.drawImage(bg, 0, 0);
+  // Dundies on Michael's wall, one per shipped ticket
+  for (let i = 0; i < Math.min(shipped, 8); i++) {
+    const x = 1 * T + 4 + i * 8, y = 1 * T - 2;
+    ctx.fillStyle = '#d9a520'; ctx.fillRect(x + 1, y, 3, 5); ctx.fillRect(x, y + 5, 5, 2); ctx.fillStyle = '#ffe27a'; ctx.fillRect(x + 1, y, 1, 2);
+  }
+  // conference room screen: what is waiting for you
+  const waiting = [...tickets.values()].filter((t) => t.loc.k === 'table').length;
+  ctx.fillStyle = '#f4f4f0'; ctx.fillRect(10 * T, 1, 4 * T, 14); ctx.fillStyle = '#555'; ctx.fillRect(10 * T, 15, 4 * T, 1);
+  drawText(ctx, waiting ? `YOUR TURN: ${waiting}` : 'ALL CLEAR', 10 * T + 32 - Math.floor(textW(waiting ? `YOUR TURN: ${waiting}` : 'ALL CLEAR') / 2), 5, waiting ? '#b5371f' : '#3f7f4f');
+  // people and furniture, back to front
+  hoverables = [];
+  const items = FURNITURE.map((f) => ({ key: f.key, draw: f.draw }));
+  for (const a of Object.values(A)) items.push({ key: a.y, draw: (c) => { const box = a.draw(c); if (box) hoverables.push({ a, box }); } });
+  items.sort((p, q) => p.key - q.key).forEach((it) => it.draw(ctx));
+  // paper planes: comments flying to reception
+  for (const p of planes) {
+    const k = p.t / p.dur, x = p.x0 + (p.x1 - p.x0) * k, y = p.y0 + (p.y1 - p.y0) * k - Math.sin(k * Math.PI) * 18;
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(Math.round(x), Math.round(y), 4, 2); ctx.fillStyle = '#cfcfcf'; ctx.fillRect(Math.round(x) + 1, Math.round(y) + 2, 2, 1);
+  }
+  for (const p of particles) { ctx.fillStyle = p.col; ctx.fillRect(Math.round(p.x), Math.round(p.y), 2, 2); }
+  // names and bubbles on top
+  for (const a of Object.values(A)) {
+    if (a.hidden) continue;
+    const top = a.y - (15 + 5 + (a.d.tall ? 2 : 0) - (a.d.short ? 2 : 0)) - 3;
+    if (showNames) drawTextOutlined(ctx, a.name, Math.round(a.x) - Math.floor(textW(a.name) / 2), top - 7 - (a.d.tall ? 1 : 0), '#ffffff');
+    if (a.working.size && a.atHome) drawTextOutlined(ctx, short([...a.working][0]), Math.round(a.x) + 7, top + 2, '#f2c14e', '#2a2015');
+  }
+  for (const a of Object.values(A)) if (!a.hidden && a.bubble) drawBubble(a);
+  // lights off when the coordinator is not running
+  if (A.michael.out) {
+    ctx.fillStyle = 'rgba(8,12,35,.45)'; ctx.fillRect(0, 0, W, H);
+    const s = 'COORDINATOR IS OFF - OFFICE CLOSED';
+    ctx.fillStyle = '#111'; ctx.fillRect(W / 2 - textW(s) / 2 - 6, 150, textW(s) + 12, 13);
+    drawText(ctx, s, W / 2 - textW(s) / 2, 154, '#f2c14e');
+  } else if (breakTime) {
+    const s = 'WAITING FOR CLAUDE - COFFEE BREAK';
+    ctx.fillStyle = '#111'; ctx.fillRect(W / 2 - textW(s) / 2 - 6, 150, textW(s) + 12, 13);
+    drawText(ctx, s, W / 2 - textW(s) / 2, 154, '#f2c14e');
+  }
+}
+function drawBubble(a) {
+  const lines = wrap(a.bubble.text, 26);
+  const w = Math.max(...lines.map(textW)) + 8, h = lines.length * 7 + 5;
+  const headTop = a.y - 20 - (a.d.tall ? 2 : 0) + (a.d.short ? 2 : 0) - (showNames ? 9 : 2);
+  let x = Math.round(a.x - w / 2), y = Math.round(headTop - h - 4);
+  x = Math.max(2, Math.min(W - w - 2, x)); y = Math.max(2, y);
+  ctx.fillStyle = '#111'; ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
+  ctx.fillStyle = '#fffbe8'; ctx.fillRect(x, y, w, h);
+  const tx = Math.max(x + 3, Math.min(x + w - 6, Math.round(a.x) - 2));
+  ctx.fillStyle = '#111'; ctx.fillRect(tx - 1, y + h, 5, 1); ctx.fillRect(tx, y + h + 1, 3, 2); ctx.fillRect(tx + 1, y + h + 3, 1, 1);
+  ctx.fillStyle = '#fffbe8'; ctx.fillRect(tx, y + h - 1, 3, 1); ctx.fillRect(tx + 1, y + h, 1, 2);
+  lines.forEach((l, i) => drawText(ctx, l, x + 4, y + 3 + i * 7, '#1a1a1a'));
+}
+
+let lastFrame = performance.now();
+function loop(now) {
+  const dt = Math.min(0.1, (now - lastFrame) / 1000) * speed;
+  lastFrame = now;
+  simNow += dt * 1000;
+  for (const a of Object.values(A)) a.update(dt);
+  updateEffects(dt);
+  tickTimers();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// ============================================================================ side panel
+function stateLabel(t) {
+  switch (t.loc.k) {
+    case 'table': return ['waiting', 'In the conference room: waiting for you'];
+    case 'hr': return ['bad', t.last === 'failed' ? 'Failed: on Toby\'s desk' : 'Blocked: on Toby\'s desk'];
+    case 'shipped': return ['done', 'Shipped'];
+    case 'tray': return ['', "In Pam's in-tray"];
+    case 'hand': return ['', `${A[t.loc.a].name} is carrying it`];
+    case 'desk': {
+      const a = A[t.loc.a];
+      const verb = a.working.has(t.key) ? 'working on it' : t.last === 'interrupted' ? 'paused' : 'has it';
+      return ['', `${a.name} ${verb} (${STAGE_NAME[t.stage] || t.stage})`];
+    }
+  }
+  return ['', ''];
+}
+function renderTickets() {
+  const box = $('#tickets');
+  const list = [...tickets.values()].reverse();
+  if (!list.length) { box.innerHTML = '<span class="empty">No tickets yet.</span>'; return; }
+  box.innerHTML = '';
+  for (const t of list) {
+    const [cls, where] = stateLabel(t);
+    const m = meta.get(t.key) || {};
+    const el = document.createElement('div');
+    el.className = `ticket ${cls}${t.key === focusKey ? ' focus' : ''}`;
+    el.innerHTML = `<span class="k"></span> <span class="t"></span><div class="w"></div>`;
+    el.querySelector('.k').textContent = t.key;
+    el.querySelector('.t').textContent = m.title || '';
+    el.querySelector('.w').textContent = where;
+    el.onclick = () => { focusKey = focusKey === t.key ? null : t.key; renderTickets(); };
+    box.appendChild(el);
+  }
+}
+function renderWho() {
+  const box = $('#who'); box.innerHTML = '';
+  for (const [id, d] of Object.entries(CAST)) {
+    const el = document.createElement('div');
+    const pc = document.createElement('canvas'); pc.width = 14; pc.height = 24;
+    const c2 = pc.getContext('2d');
+    drawPerson(c2, d, 7, 23, { noShadow: true });
+    el.appendChild(pc);
+    const txt = document.createElement('span');
+    txt.innerHTML = '<b></b><small></small>';
+    txt.querySelector('b').textContent = d.name;
+    txt.querySelector('small').textContent = d.tag;
+    el.title = d.role;
+    el.appendChild(txt);
+    box.appendChild(el);
+  }
+}
+const logEl = $('#log');
+function fmtTime(at) {
+  if (!at) return '';
+  const d = new Date(at);
+  return d.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+function describe(b) {
+  const t = b.ticket && tickets.get(b.ticket);
+  const w = t ? (b.stage ? workerFor(t, b.stage) : null) : null;
+  const k = b.ticket, who = w ? w.name : '';
+  switch (b.kind) {
+    case 'arrive': return `Michael hands ${k} to ${who} for ${STAGE_NAME[b.stage] || b.stage}`;
+    case 'start': return `${who} starts on ${k}`;
+    case 'await': return `${who} leaves ${k} in the conference room: your turn`;
+    case 'done': return `${k} shipped!`;
+    case 'blocked': return `${k} is blocked: sent to Toby`;
+    case 'failed': return `${k} failed: sent to Toby`;
+    case 'interrupted': return `${k} paused`;
+    case 'jira': return `Pam moves ${k} to ${statusName(b.to)}`;
+    case 'pr': return `${who} opens PR #${b.number} for ${k}`;
+    case 'push': return `${who} pushes ${k}`;
+    case 'checks': return `Kevin runs the checks on ${k}`;
+    case 'comment': return `${who} comments on ${k}`;
+    case 'publishing': return `${who} writes up ${k}`;
+    case 'candidate': return `${k}: a new build is ready`;
+    case 'open': return `${who} stays on for questions about ${k}`;
+    case 'boss_in': return 'Michael arrives (coordinator started)';
+    case 'boss_out': return 'Michael goes home (coordinator stopped)';
+    case 'break': return 'Claude unavailable: coffee break';
+    case 'back': return 'Claude is back: back to work';
+  }
+  return b.kind;
+}
+const MINOR = new Set(['comment', 'push', 'publishing', 'jira', 'candidate', 'start']);
+function logBeat(b) {
+  const li = document.createElement('li');
+  if (MINOR.has(b.kind)) li.className = 'minor';
+  const time = document.createElement('time'); time.textContent = fmtTime(b.at);
+  li.append(time, document.createTextNode(describe(b)));
+  logEl.prepend(li);
+  while (logEl.children.length > 80) logEl.lastChild.remove();
+  if (b.at) $('#clock').textContent = fmtTime(b.at);
+}
+setInterval(renderTickets, 600);
+setInterval(() => { if (mode === 'live') $('#clock').textContent = new Date().toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' }); }, 1000);
+
+// tooltips
+const tip = $('#tip');
+cv.addEventListener('mousemove', (e) => {
+  const r = cv.getBoundingClientRect();
+  const mx = ((e.clientX - r.left) / r.width) * W, my = ((e.clientY - r.top) / r.height) * H;
+  const hit = hoverables.slice().reverse().find(({ box }) => mx >= box.x && mx <= box.x + box.w && my >= box.y && my <= box.y + box.h);
+  if (!hit) { tip.style.display = 'none'; return; }
+  const a = hit.a;
+  const jobs = [...tickets.values()].filter((t) => (t.loc.k === 'desk' || t.loc.k === 'hand') && t.loc.a === a.id);
+  tip.innerHTML = '<b></b><div class="r"></div><div class="j"></div>';
+  tip.querySelector('b').textContent = a.name;
+  tip.querySelector('.r').textContent = a.d.role;
+  tip.querySelector('.j').textContent = jobs.length ? 'Has: ' + jobs.map((t) => `${t.key}${meta.get(t.key)?.title ? ' (' + meta.get(t.key).title + ')' : ''}`).join(', ') : '';
+  tip.style.display = 'block';
+  tip.style.left = Math.min(window.innerWidth - 300, e.clientX + 14) + 'px';
+  tip.style.top = e.clientY + 14 + 'px';
+});
+cv.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+
+// ============================================================================ modes
+let mode = null, source = null, journal = [], lastSeq = 0, server = false, stale = false;
+function setPressed(sel, attr, val) { document.querySelectorAll(sel).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset[attr] === String(val)))); }
+function banner(s) { $('#banner').textContent = s; }
+
+function handle(b) { animate(b); logBeat(b); }
+
+function startLive(state) {
+  resetScene();
+  stale = false;
+  logEl.innerHTML = '';
+  for (const b of state.beats) applyInstant(b);
+  settleActors(state.supervisor.running);
+  breakTime = state.supervisor.claude_unavailable;
+  if (breakTime) settleActors(state.supervisor.running);
+  state.beats.slice(-25).forEach(logBeat);
+  lastSeq = state.beats.length ? state.beats[state.beats.length - 1].seq : 0;
+  source = new EventSource(`/api/events?after=${lastSeq}`);
+  source.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    (data.tickets || []).forEach((t) => meta.set(t.key, t));
+    for (const b of data.beats) {
+      lastSeq = b.seq; journal.push(b);
+      // A hidden tab does not animate; it catches up from the journal when you come back.
+      if (document.hidden) { stale = true; logBeat(b); } else handle(b);
+    }
+  };
+  banner(state.supervisor.running ? 'Live: watching the coordinator. New work animates as it happens.' : 'Live: the coordinator is not running. Start it with `coordinator`.');
+}
+
+function startReplay(only) {
+  resetScene();
+  logEl.innerHTML = '';
+  const beats = journal.filter((b) => (only ? b.ticket === only : true));
+  if (only) { A.michael.out = false; A.michael.hidden = false; [A.michael.x, A.michael.y] = tileXY(A.michael.home); }
+  const gen = sceneGen;
+  let i = 0;
+  const next = async () => {
+    if (gen !== sceneGen) return;
+    if (i >= beats.length) { banner('Replay finished.'); return; }
+    // Time stretches while the office catches up, so hand-offs never pile up.
+    await waitUntil(() => gen !== sceneGen || backlog() <= 2, 'replay pacing');
+    if (gen !== sceneGen) return;
+    const b = beats[i++];
+    handle(b);
+    const n = beats[i];
+    const gap = n ? (Date.parse(n.at) - Date.parse(b.at)) / 60 : 0; // a real minute plays in a second
+    after(Math.max(0, Math.min(2500, gap)), next);
+  };
+  banner(`Replay: ${only || 'every ticket'} from the journal. A real minute plays in about a second.`);
+  next();
+}
+
+const DEMO_TITLES = ['Add a "Starred only" filter', 'Search tasks by title', 'Rename the page heading',
+  'Dark mode for the task list', 'Export tasks as CSV', 'Due dates on tasks', 'Keyboard shortcuts', 'Undo delete'];
+const IN_PROGRESS = { refinement: 'refining', planning: 'planning', development: 'developing', verification: 'verifying',
+  release_preparation: 'preparing_release', release_verification: 'verifying_release' };
+const REVIEW = { refinement: 'specification_review', planning: 'plan_review', development: 'ready_verification',
+  verification: 'code_review', release_preparation: 'release_review', release_verification: 'done' };
+function startDemo() {
+  resetScene();
+  logEl.innerHTML = '';
+  const gen = sceneGen;
+  let n = 0, active = 0, pr = 40;
+  const clock0 = Date.now();
+  const emit = (b) => { if (gen !== sceneGen) return; b.at = new Date(clock0 + simNow * 30).toISOString(); handle(b); };
+  emit({ kind: 'boss_in' });
+  const run = async (key) => {
+    active++;
+    const stages = ['refinement', 'planning', 'development', 'verification', 'release_preparation', 'release_verification'];
+    for (let s = 0; s < stages.length; s++) {
+      const stage = stages[s];
+      await waitUntil(() => gen !== sceneGen || backlog() <= 2, 'demo pacing');
+      emit({ kind: 'arrive', ticket: key, stage });
+      await sleep(1200); emit({ kind: 'jira', ticket: key, stage, to: IN_PROGRESS[stage] });
+      emit({ kind: 'start', ticket: key, stage });
+      await sleep(rand(5000, 9000));
+      if (stage === 'verification' || stage === 'release_verification') { emit({ kind: 'checks', ticket: key, stage }); await sleep(3000); }
+      if (Math.random() < 0.1 && s > 1) {
+        emit({ kind: Math.random() < 0.5 ? 'failed' : 'blocked', ticket: key, stage });
+        await sleep(rand(9000, 14000)); s--; continue;
+      }
+      emit({ kind: 'publishing', ticket: key, stage });
+      emit({ kind: 'comment', ticket: key, stage });
+      if (stage === 'development') { emit({ kind: 'push', ticket: key, stage }); await sleep(800); emit({ kind: 'pr', ticket: key, stage, number: ++pr }); }
+      await sleep(1000);
+      if (stage === 'release_verification') { emit({ kind: 'done', ticket: key, stage }); break; }
+      emit({ kind: 'await', ticket: key, stage });
+      emit({ kind: 'jira', ticket: key, stage, to: REVIEW[stage] });
+      await sleep(rand(6000, 12000)); // you, reviewing
+    }
+    active--;
+  };
+  const spawn = () => {
+    if (gen !== sceneGen) return;
+    if (active < 4 && backlog() <= 2) { const key = `DEMO-${++n}`; meta.set(key, { title: DEMO_TITLES[(n - 1) % DEMO_TITLES.length] }); run(key); }
+    after(rand(7000, 12000), spawn);
+  };
+  after(1500, spawn);
+  banner('Demo: made-up tickets, so you can see every hand-off.');
+}
+
+function setMode(m) {
+  if (source) { source.close(); source = null; }
+  if ((m === 'live' || m === 'replay') && !server) m = 'demo';
+  mode = m;
+  setPressed('[data-mode]', 'mode', m);
+  $('#replayTicket').style.display = m === 'replay' ? '' : 'none';
+  if (m === 'live') fetch('/api/state').then((r) => r.json()).then((s) => { journal = s.beats; s.tickets.forEach((t) => meta.set(t.key, t)); startLive(s); });
+  else if (m === 'replay') startReplay($('#replayTicket').value || null);
+  else startDemo();
+  const u = new URL(location.href); u.searchParams.set('mode', m); replaceUrl(u);
+}
+function replaceUrl(u) { try { window.history.replaceState(null, '', u); } catch (e) { /* file:// */ } }
+
+document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+document.querySelectorAll('[data-speed]').forEach((b) => b.addEventListener('click', () => { speed = Number(b.dataset.speed); setPressed('[data-speed]', 'speed', speed); }));
+$('#replayTicket').addEventListener('change', () => setMode('replay'));
+document.addEventListener('visibilitychange', () => { if (!document.hidden && mode === 'live' && stale) setMode('live'); });
+$('#namesBtn').addEventListener('click', (e) => { showNames = !showNames; e.target.setAttribute('aria-pressed', String(showNames)); });
+$('#quipsBtn').addEventListener('click', (e) => { banter = !banter; e.target.setAttribute('aria-pressed', String(banter)); });
+
+drawBackground();
+renderWho();
+setPressed('[data-speed]', 'speed', 1);
+resetScene();
+requestAnimationFrame(loop);
+const wanted = new URL(location.href).searchParams.get('mode');
+fetch('/api/state').then((r) => (r.ok ? r.json() : Promise.reject(r))).then((s) => {
+  server = true; journal = s.beats;
+  s.tickets.forEach((t) => meta.set(t.key, t));
+  const keys = [...new Set(s.beats.filter((b) => b.ticket).map((b) => b.ticket))];
+  for (const k of keys) { const o = document.createElement('option'); o.value = k; o.textContent = `${k} ${meta.get(k)?.title || ''}`; $('#replayTicket').appendChild(o); }
+  setMode(wanted || 'live');
+}).catch(() => {
+  document.querySelectorAll('[data-mode="live"],[data-mode="replay"]').forEach((b) => { b.disabled = true; b.title = 'Needs `coordinator office`'; });
+  setMode('demo');
+});
+</script>
+</body>
+</html>
