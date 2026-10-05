@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from delivery.alerts import Alerts
-from delivery.claude_version import VersionGuard, proven
+from delivery.claude_version import VersionGuard, proven, write_stamp
 from delivery.coordinator import RETRY
 from delivery.models import RunRecord, RunState, utcnow
 from delivery.supervisor import Supervisor
@@ -148,7 +148,8 @@ async def test_a_changed_claude_code_is_probed_before_new_sessions_start(
     w.submit(KEY)
     version = {"now": "2.1.300 (Claude Code)"}
     release = asyncio.Event()
-    results = [(True, ""), (False, "secret read: NOT prevented")]
+    # Passes on the first version; fails twice on the next (a single failure is run again).
+    results = [(True, ""), (False, "secret read: NOT prevented"), (False, "secret read: NOT prevented")]
 
     async def current() -> str:
         return version["now"]
@@ -178,8 +179,15 @@ async def test_a_changed_claude_code_is_probed_before_new_sessions_start(
         clock["t"] += 1000
         await guard.tick()
         await asyncio.sleep(0.05)
+        await guard.tick()  # first failure: run once more
+        assert sup.launch_hold and "checking its sandbox" in sup.launch_hold
+        await asyncio.sleep(0.05)
         await guard.tick()
         assert sup.launch_hold and "failed the sandbox probe" in sup.launch_hold
+        # A pass recorded afterwards by `delivery doctor --claude-probe` ends the wait at once.
+        write_stamp(w.cfg, "2.1.301 (Claude Code)")
+        await guard.tick()
+        assert sup.launch_hold is None
     assert any("2.1.301" in p and "NOT prevented" in p for p in posts)
 
 
