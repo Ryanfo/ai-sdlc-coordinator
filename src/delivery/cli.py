@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -632,6 +633,21 @@ async def _figma_whoami(token: str) -> str | None:
     finally:
         await client.close()
     return f"{me.get('handle', '?')} ({me.get('email', '?')})"
+
+
+def cmd_office(args: argparse.Namespace) -> int:
+    """The animated office: a read-only, local web page of the coordinator at work."""
+    from delivery.office import OfficeServer
+
+    cfg = _load(args)
+    server = OfficeServer(cfg.runtime.state_dir, cfg.identity_key, port=args.port)
+    url = server.url + (f"?mode={args.mode}" if args.mode else "")
+    print(f"The office is open at {url} (Ctrl-C closes it). It only reads the coordinator's journal.")
+    if not args.no_browser:
+        subprocess.run(["open", url], check=False)
+    with contextlib.suppress(KeyboardInterrupt):
+        server.serve_forever()
+    return 0
 
 
 def cmd_credentials(args: argparse.Namespace) -> int:
@@ -1407,6 +1423,13 @@ def parser(prog: str = "delivery") -> argparse.ArgumentParser:
     sp.set_defaults(afunc=_run)
     sp = with_config(sub.add_parser("status", help="sessions, states and next human actions"))
     sp.set_defaults(afunc=_status)
+    sp = with_config(sub.add_parser("office", help="watch the coordinator at work as an animated office"))
+    sp.add_argument("--port", type=int, default=0, help="local port (default: any free one)")
+    sp.add_argument(
+        "--mode", choices=["live", "replay", "demo"], help="what the page starts with (default: live)"
+    )
+    sp.add_argument("--no-browser", action="store_true", help="print the address without opening a browser")
+    sp.set_defaults(func=cmd_office)
     sp = with_config(
         sub.add_parser("team", help="every in-flight ticket in the project and what it waits on")
     )
