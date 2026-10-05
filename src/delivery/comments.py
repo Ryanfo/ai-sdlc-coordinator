@@ -351,15 +351,16 @@ def claude_unavailable(stage: str, kind: str, worker_id: str) -> str:
     )
 
 
-def internal_error(stage: str, run_id: str, worker_id: str, error: str, key: str) -> str:
+def internal_error(stage: str, run_id: str, worker_id: str, key: str) -> str:
+    # The error text itself stays in the coordinator log: it can name local paths or carry
+    # fragments of data that do not belong on a ticket.
     return "\n".join(
         [
             f"## {STAGE_TITLES.get(stage, stage)} stopped: coordinator error",
             "The coordinator hit an internal error and stopped this run. Nothing else was "
             f"published and the ticket stays where it is. {_session_line(run_id, worker_id)}",
-            f"**Error**: {error[:300]}",
             f"**Next action**: on `{worker_id}`, run `coordinator recover {key} --resume` to continue "
-            "from where it stopped. `coordinator logs` shows the full error.",
+            "from where it stopped. `coordinator logs` shows the error.",
         ]
     )
 

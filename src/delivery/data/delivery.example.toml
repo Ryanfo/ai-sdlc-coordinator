@@ -42,6 +42,9 @@ token_keychain_service = "delivery-jira"
 email_env = "JIRA_EMAIL"
 token_env = "JIRA_API_TOKEN"
 # cloud_id = ""
+# Linked tickets give Claude context. Only links within this project are read, plus these
+# projects; a link into any other project is left out.
+# linked_projects = ["PLATFORM"]
 
 [jira.attachments]
 # Ticket attachments (designs, screenshots, PDFs) are downloaded by the coordinator and given
@@ -66,6 +69,12 @@ checkout_path = "~/src/your-app"
 # Managed worktrees, one per run. Must be outside the checkout.
 worktree_root = "~/delivery-worktrees"
 github_auth_profile = "gh"
+# Sign the coordinator's commits with your own Git signing setup (user.signingkey,
+# gpg.format). Needed when the base branch requires signed commits; `delivery doctor` says so.
+# sign_commits = false
+# Run the repository's Git hooks (pre-commit, commit-msg) on the coordinator's commits. They run
+# as you, outside Claude's sandbox, like the checks. Off: hooks are skipped.
+# run_git_hooks = false
 
 [runtime]
 # Local recovery journal, logs and locks. Must be outside any Git checkout.
@@ -76,6 +85,16 @@ poll_jitter_seconds = 10
 timeout_seconds = 1800
 check_timeout_seconds = 1800
 heartbeat_seconds = 30
+# New sessions wait (running ones carry on) while the disk holding worktree_root has less free
+# space than this (0: not checked), or macOS reports critical memory pressure.
+# min_free_disk_gb = 5
+# hold_on_memory_pressure = true
+# Keep the Mac from idle sleep while sessions run. Closing the lid still sleeps it; work
+# interrupted that way resumes afterwards.
+# keep_awake = true
+# Local logs and worktrees of runs finished longer ago than this are removed once a day
+# (Jira and Git keep the durable record). 0: keep them until `coordinator clean`.
+# retention_days = 30
 
 [claude]
 executable = "claude"
@@ -86,6 +105,10 @@ auth_profile = "subscription"
 max_turns = 150
 allow_paid_api_fallback = false
 permission_profile = "local_pilot"
+# Claude Code updates itself. When `claude --version` is not the version the sandbox probe last
+# passed on here (`delivery doctor --claude-probe` records it), new sessions wait while the
+# coordinator runs that probe again, and start once it passes.
+# probe_on_version_change = true
 # Model for every procedure. Unset means Claude Code's own default for your plan.
 # Aliases ("opus", "sonnet") or full names ("claude-opus-5-5") both work.
 # model = "sonnet"
@@ -227,3 +250,16 @@ max_image_mb = 20
 # max_reminders = 3
 # weekdays_only = true
 # webhook_env = "DELIVERY_SLACK_WEBHOOK"   # optional: also post to this Slack incoming webhook URL
+#                                          # (default: [notifications] webhook_env)
+
+# Notices about the coordinator itself rather than a ticket.
+# [notifications]
+# "jira": Claude's login or usage limit and internal coordinator errors are also commented on
+# the affected ticket. "operator": they only go to the coordinator window, a desktop
+# notification and the webhook, so tickets a client reads carry nothing about your machine.
+# operational = "jira"
+# Environment variable holding a Slack (or compatible) incoming-webhook URL for those notices
+# and for alerts: the coordinator stopped unexpectedly or hit an internal error, Claude Code
+# changed and failed its probe, the machine is short of disk or memory.
+# webhook_env = "DELIVERY_ALERTS_WEBHOOK"
+# desktop = true                    # the same alerts as macOS notifications

@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import Field
 
+from delivery.alerts import Alerts
 from delivery.claude import ChildHandle, ClaudeRunner
 from delivery.config import Config
 from delivery.figma import FigmaPort
@@ -47,6 +48,8 @@ class Deps:
     locks: RepoLocks
     ports: PortRegistry = field(default_factory=PortRegistry)
     figma: FigmaPort | None = None
+    # Set by the supervisor when not given (delivery.alerts).
+    alerts: Alerts | None = None
 
 
 class Decision(Model):

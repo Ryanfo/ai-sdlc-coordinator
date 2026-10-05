@@ -416,6 +416,54 @@ def check_preview(cfg: Config, report: Report) -> None:
         )
 
 
+def check_probe_stamp(cfg: Config, report: Report, version: str) -> None:
+    """Whether the sandbox probe has passed on the installed Claude Code (delivery.claude_version)."""
+    from delivery.claude_version import mode, proven, read_stamp
+
+    if proven(cfg, version):
+        stamp = read_stamp(cfg.runtime.state_dir) or {}
+        report.add(
+            "claude",
+            "sandbox probe",
+            "ok",
+            f"passed on {version} ({mode(cfg)}) {stamp.get('passed_at', '')[:16]}",
+        )
+        return
+    then = (read_stamp(cfg.runtime.state_dir) or {}).get("version")
+    report.add(
+        "claude",
+        "sandbox probe",
+        "warn",
+        f"not yet passed on {version} ({mode(cfg)})" + (f"; last passed on {then}" if then else ""),
+        "Run `delivery doctor --claude-probe`; otherwise the coordinator runs it before new sessions start."
+        if cfg.claude.probe_on_version_change
+        else "Run `delivery doctor --claude-probe`.",
+    )
+
+
+def check_notifications(cfg: Config, report: Report) -> None:
+    n = cfg.notifications
+    if n.webhook_env and not os.environ.get(n.webhook_env):
+        report.add(
+            "notifications",
+            "webhook",
+            "warn",
+            f"{n.webhook_env} is not set in this environment; alerts go to the desktop and the "
+            "coordinator window only",
+            f"Export {n.webhook_env} (the webhook URL) in the shell that starts the coordinator.",
+        )
+    elif n.webhook_env:
+        report.add("notifications", "webhook", "ok", f"alerts are posted to the webhook in {n.webhook_env}")
+    report.add(
+        "notifications",
+        "operational notices",
+        "info",
+        "commented on the affected ticket as well"
+        if n.operational == "jira"
+        else "kept off tickets (coordinator window, desktop and webhook only)",
+    )
+
+
 async def check_claude(cfg: Config, report: Report) -> None:
     check_models(cfg, report)
     check_interactive(cfg, report)
@@ -436,6 +484,7 @@ async def check_claude(cfg: Config, report: Report) -> None:
     else:
         level: Level = "ok" if version_in_range(caps.version, cfg.claude.supported_versions) else "warn"
         report.add("claude", "cli", level, f"{caps.version} (supported {cfg.claude.supported_versions})")
+        check_probe_stamp(cfg, report, caps.version)
     auth = await auth_report(exe, Path.home())
     if auth.ok:
         report.add(
@@ -654,6 +703,34 @@ async def check_github(cfg: Config, gh: GitHubPort | None, report: Report) -> No
         "; ".join(gaps) or f"protected via {prot.source}",
         "Tighten the protection rules (setup checklist)." if gaps else "",
     )
+    check_signing(cfg, report, prot.require_signed_commits)
+
+
+def check_signing(cfg: Config, report: Report, required: bool) -> None:
+    """Signed commits: required by the base branch, asked for in the config, and set up in Git."""
+    repo = cfg.repository
+    if required and not repo.sign_commits:
+        report.add(
+            "github",
+            "signed commits",
+            "fail",
+            f"{repo.base_branch} requires signed commits, but the coordinator's commits are unsigned",
+            "Set [repository] sign_commits = true and set up Git commit signing on this machine.",
+        )
+        return
+    if not repo.sign_commits:
+        return
+    where = repo.checkout_path if repo.checkout_path.is_dir() else Path.home()
+    key = _git("config", "--get", "user.signingkey", cwd=where)
+    report.add(
+        "github",
+        "signed commits",
+        "ok" if key else "fail",
+        "commits are signed with your Git signing key"
+        if key
+        else "sign_commits is on but Git has no user.signingkey",
+        "" if key else "Set up commit signing (git config user.signingkey, gpg.format), then check again.",
+    )
 
 
 async def check_figma(cfg: Config, report: Report, client: Any = None) -> None:
@@ -758,6 +835,7 @@ async def run_doctor(
     check_paths(cfg, report)
     check_plugin(cfg, report)
     await check_claude(cfg, report)
+    check_notifications(cfg, report)
     await check_jira(cfg, jira, report, credentials_problem)
     await check_github(cfg, gh, report)
     await check_git_push(cfg, report)
@@ -803,7 +881,23 @@ async def probe_models(cfg: Config, report: Report) -> None:
 
 
 async def claude_probe(cfg: Config, report: Report) -> None:
-    """Spend a little subscription usage to prove plugin loading and permission denials."""
+    """Spend a little subscription usage to prove plugin loading and permission denials.
+
+    A pass is recorded with the Claude Code version (delivery.claude_version), so that the
+    coordinator knows to probe again when Claude Code updates itself.
+    """
+    await _claude_probe(cfg, report)
+    probed = [c for c in report.checks if c.area == "probe"]
+    if probed and not any(c.level == "fail" for c in probed):
+        from delivery.claude_version import cli_version, write_stamp
+
+        version = await cli_version(cfg)
+        if version:
+            write_stamp(cfg, version)
+            report.add("probe", "recorded", "info", f"passed on Claude Code {version}")
+
+
+async def _claude_probe(cfg: Config, report: Report) -> None:
     await probe_models(cfg, report)
     interactive = cfg.claude.interactive.enabled
     # An interactive session needs a folder Claude Code trusts: the worktree root.

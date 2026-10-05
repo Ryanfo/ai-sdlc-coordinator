@@ -254,6 +254,7 @@ class BranchProtection:
     allow_force_pushes: bool = True
     allow_deletions: bool = True
     source: str = "branch_protection"
+    require_signed_commits: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
 
