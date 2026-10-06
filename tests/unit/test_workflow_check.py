@@ -4,8 +4,8 @@ import pytest
 
 from conftest import DEV, STATUS_IDS, ConfigFactory
 from delivery.ownership import evaluate_eligibility
-from delivery.workflow import STATUS_NAMES, Action, Status, route_for_action
-from delivery.workflow_check import CHECK_LABEL, WALK, verify_workflow
+from delivery.workflow import OPTIONAL_STATUSES, STATUS_NAMES, Action, Status, route_for_action
+from delivery.workflow_check import CHECK_LABEL, WALK, _with_resolution, verify_workflow
 from fakes.jira import FakeJira
 
 
@@ -13,15 +13,19 @@ def fake() -> FakeJira:
     return FakeJira(STATUS_IDS, me=DEV)
 
 
-def test_walk_follows_permitted_routes_and_visits_every_status() -> None:
+@pytest.mark.parametrize(
+    ("walk", "unreached"),
+    [(WALK, {Status.CANCELLED, *OPTIONAL_STATUSES}), (_with_resolution(WALK), {Status.CANCELLED})],
+)
+def test_walk_follows_permitted_routes_and_visits_every_status(walk, unreached) -> None:  # type: ignore[no-untyped-def]
     status, seen = Status.BACKLOG, {Status.BACKLOG}
-    for action, _ in WALK:
+    for action, _ in walk:
         route = route_for_action(status, action)
         assert route is not None, f"{action} from {status}"
         status = route.target
         seen.add(status)
     assert status is Status.DONE
-    assert set(Status) - seen == {Status.CANCELLED}  # reached by the second ticket
+    assert set(Status) - seen == unreached  # Cancelled is reached by the second ticket
 
 
 async def test_matching_workflow_passes_and_leaves_unassigned_labelled_tickets(
@@ -32,7 +36,7 @@ async def test_matching_workflow_passes_and_leaves_unassigned_labelled_tickets(
     assert report.ok, report.problems
     assert report.warnings == []
     assert set(report.findings) == {s.value for s in Status}
-    assert report.transitions_done == len(WALK) + 1
+    assert report.transitions_done == len(_with_resolution(WALK)) + 1
     done, cancelled = (jira.issues[k] for k in report.tickets)
     assert (done.status, cancelled.status) == (Status.DONE, Status.CANCELLED)
     for issue in (done, cancelled):
@@ -91,7 +95,8 @@ async def test_without_resume_field_jira_cannot_hide_wrong_resumes(make_config: 
     )
     report = await verify_workflow(cfg, fake(), emit=lambda _: None)
     assert report.ok
-    assert sum("resume field not configured" in w for w in report.warnings) == 2
+    # Blocked, Needs clarification and (with resolution) Resolving each show every resume action.
+    assert sum("resume field not configured" in w for w in report.warnings) == 3
 
 
 @pytest.mark.parametrize("status", [Status.READY_REFINEMENT])
@@ -113,7 +118,7 @@ async def test_supported_issue_type_without_the_workflow_fails(make_config: Conf
     jira.type_statuses["Task"] = {"90001", "90002", STATUS_IDS[Status.DONE]}
     report = await verify_workflow(make_config(), jira, emit=lambda _: None)
     assert report.problems == [
-        "issue type Task does not use the delivery workflow (1 of 24 statuses): give it the "
+        f"issue type Task does not use the delivery workflow (1 of {len(Status)} statuses): give it the "
         "workflow or remove it from jira.supported_issue_types"
     ]
     assert jira.issues[report.tickets[0]].issue_type == "Story"
@@ -146,3 +151,31 @@ async def test_jira_failure_mid_walk_is_reported_not_raised(make_config: ConfigF
     report = await verify_workflow(make_config(), jira, emit=lambda _: None)
     assert report.problems == ["stopped: Jira call failed (Jira 401)"]
     assert len(report.tickets) == 1
+
+
+async def test_resolution_is_not_walked_or_required_when_the_statuses_are_not_mapped(
+    make_config: ConfigFactory,
+) -> None:
+    cfg = make_config()
+    cfg = cfg.model_copy(
+        update={
+            "workflow": cfg.workflow.model_copy(
+                update={
+                    "statuses": {s: i for s, i in cfg.workflow.statuses.items() if s not in OPTIONAL_STATUSES}
+                }
+            )
+        }
+    )
+    jira = FakeJira({s: i for s, i in STATUS_IDS.items() if s not in OPTIONAL_STATUSES}, me=DEV)
+    report = await verify_workflow(cfg, jira, emit=lambda _: None)
+    assert report.ok, report.problems
+    assert report.transitions_done == len(WALK) + 1
+    assert not any("not reached" in w for w in report.warnings)
+
+
+async def test_missing_resolved_action_is_reported_at_resolving(make_config: ConfigFactory) -> None:
+    jira = fake()
+    jira.drop_routes.add((Status.RESOLVING, Status.READY_PLANNING))
+    report = await verify_workflow(make_config(), jira, emit=lambda _: None)
+    assert not report.ok
+    assert any("Resolving: missing transition Resolved: resume planning" in p for p in report.problems)

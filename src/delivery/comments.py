@@ -29,6 +29,7 @@ STAGE_TITLES = {
     "verification": "Verification",
     "release_preparation": "Release preparation",
     "release_verification": "Release verification",
+    "resolution": "Resolution",
 }
 
 
@@ -316,6 +317,94 @@ def blocked(stage: str, reason: str, action: str, resume_stage: str) -> str:
             NOTE_HINT,
         ]
     )
+
+
+def _cell(text: str) -> str:
+    return " ".join(text.split()).replace("|", "\\|")
+
+
+def _resolution_body(
+    summary: str, actions: list[str], decisions: list[dict[str, str]], follow_ups: list[str], developer: str
+) -> list[str]:
+    """The part of a resolution comment shared by both outcomes: what Claude did and who decided.
+
+    ``decisions`` are dicts with id, question, decision, decided_by ("developer" or "claude") and
+    basis (how the coordinator knows: asked in the session, told Claude, or only Claude's say-so).
+    """
+    lines = [summary.strip(), ""]
+    lines.append("**What Claude did**")
+    lines += [f"{n}. {a}" for n, a in enumerate(actions, 1)] or ["- No changes were made."]
+    lines += ["", "**Decisions**"]
+    if decisions:
+        lines += ["| | Decision | Decided by | How we know |", "|---|---|---|---|"]
+        for d in decisions:
+            who = developer if d["decided_by"] == "developer" else "Claude"
+            lines.append(
+                f"| {d['id']} | **{_cell(d['question'])}** {_cell(d['decision'])} | {_cell(who)} | "
+                f"{_cell(d.get('basis', ''))} |"
+            )
+    else:
+        lines.append("None: Claude made no choices that needed deciding.")
+    if follow_ups:
+        lines += ["", "**Left for people**", *[f"- {f}" for f in follow_ups]]
+    return lines
+
+
+def resolved(
+    *,
+    resume_stage: str,
+    run_id: str,
+    worker_id: str,
+    summary: str,
+    actions: list[str],
+    decisions: list[dict[str, str]],
+    follow_ups: list[str],
+    developer: str,
+    questions_asked: int,
+) -> str:
+    title = STAGE_TITLES.get(resume_stage, resume_stage)
+    ready = STATUS_NAMES[_stage_def(resume_stage).ready]
+    lines = [
+        f"## Blocker resolved: {title.lower()} resumes",
+        f"**Back in {ready}**: {title.lower()} starts again by itself within a minute. "
+        "Nothing to do in Jira.",
+        "",
+        *_resolution_body(summary, actions, decisions, follow_ups, developer),
+        "",
+        f"Claude asked {developer} {questions_asked} question{'s' if questions_asked != 1 else ''} "
+        f"in the session. {_session_line(run_id, worker_id)}",
+        NOTE_HINT,
+    ]
+    return "\n".join(lines)
+
+
+def unresolved(
+    *,
+    resume_stage: str,
+    run_id: str,
+    worker_id: str,
+    reason: str,
+    actions: list[str],
+    decisions: list[dict[str, str]],
+    follow_ups: list[str],
+    developer: str,
+    questions_asked: int,
+) -> str:
+    title = STAGE_TITLES.get(resume_stage, resume_stage).lower()
+    resume = _stage_def(resume_stage).resume_action
+    lines = [
+        "## Blocker not resolved",
+        f"**Back in Blocked**: {reason.strip()}",
+        "",
+        *_resolution_body("What was found and tried:", actions, decisions, follow_ups, developer),
+        "",
+        f"Claude asked {developer} {questions_asked} question{'s' if questions_asked != 1 else ''} "
+        f"in the session. {_session_line(run_id, worker_id)}",
+        f"When the cause is dealt with, choose **Resume {title}** {_moves(Status.BLOCKED, resume)}, or "
+        f"**Request resolution** {_moves(Status.BLOCKED, Action.REQUEST_RESOLUTION)} to try again.",
+        NOTE_HINT,
+    ]
+    return "\n".join(lines)
 
 
 def waiting(stage: str, reason: str, action: str) -> str:

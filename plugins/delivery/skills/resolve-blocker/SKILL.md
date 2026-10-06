@@ -1,0 +1,91 @@
+---
+name: resolve-blocker
+description: Clear the blocker that stopped a delivery ticket, working with the developer in this session. Invoked by the delivery coordinator when a developer asks for a Blocked ticket to be resolved.
+argument-hint: <absolute path to envelope.json>
+arguments: [envelope]
+disable-model-invocation: true
+---
+
+> Ports: `PORT` and `E2E_PORT` are already exported for this run. Run commands as plain
+> `npm run …` / `npx …` without `VAR=value` prefixes (prefixed commands are denied).
+
+# Procedure: resolve-blocker
+
+contract_id: `delivery.resolve-blocker/v1`
+
+Read `${CLAUDE_PLUGIN_ROOT}/references/stage-contract.md`, then the envelope at `$envelope`.
+
+## Goal
+
+A stage of this ticket stopped and the ticket is Blocked. The developer who runs the
+coordinator asked for it to be resolved with you. Find out why it blocked and clear the cause so
+that the stage (`resolution.blocked_stage`) can run again. The coordinator moves the ticket back
+to that stage when you finish; if you could not clear the cause it goes back to Blocked with what
+you found. Either way, the coordinator writes what you did, and who made each decision, in the
+ticket.
+
+A person is in this session. Use that: it is what makes this different from a normal stage.
+
+## Steps
+
+1. Read `resolution.briefing_path`: the blocker as the coordinator recorded it
+   (`resolution.blocker_reason`, `blocker_kind`, `next_action`), the blocked run's result,
+   the end of its transcript, its failed check logs and the recent Jira comments. If `prior_work`
+   is set, the blocked stage left unfinished changes in the working copy; read
+   `prior_work.session_tail_path` to see where it stopped.
+2. Work out the cause. Look at the code, the approved specification and plan in
+   `approved_artefacts`, and the evidence. Do not guess: say what you checked.
+3. Decide whether you can clear it from here (see *What you can and cannot change*). If you can,
+   do it in small steps and run the relevant tests or checks to show it worked.
+4. **Ask the developer** with the AskUserQuestion tool whenever the cause or the fix depends on a
+   choice that is theirs to make: which of two reasonable fixes, whether to change behaviour the
+   specification leaves open, whether to accept a trade-off, anything you would otherwise assume.
+   Ask one decision at a time, offer the options you found with a recommendation, and wait. Ask
+   *before* you act on it, not after. Do not ask what you can find out yourself, and do not ask
+   for approval of every step: ask about decisions, not about progress.
+5. When the cause is cleared, or you are sure it cannot be cleared from here, tell the developer
+   in a few lines what you found and did, then write the result. Ask every question first: the
+   session is closed when you hand over the result.
+
+## What you can and cannot change
+
+- You work in the ticket's feature worktree. `resolution.code_changes_carried` says whether
+  changes you make there are carried into the stage that blocked. When it is false, do not change
+  files: explain what must change and return `blocked` (see below), or fix the cause by other
+  means that the developer does for themselves and you confirm.
+- Never change the approved specification or plan, or the acceptance criteria, to make a blocker
+  go away. If the real fix is a change of scope, return `blocked` and say that the developer
+  should use **Revise scope** (or request specification or plan changes) in Jira, and why.
+- Do not edit `.github/`, `.claude/`, `CLAUDE.md`, `.mcp.json` or `docs/delivery/`. Do not
+  commit, push or change Git configuration: the coordinator commits. Do not weaken, skip or
+  delete tests to make them pass.
+- You cannot reach Jira or GitHub. The coordinator posts to Jira. If the cause is outside this
+  worktree (the coordinator's configuration, a GitHub setting, a credential), tell the developer
+  exactly what to do and return `blocked`; do not look for workarounds.
+
+## Recording decisions (this is how the ticket shows who decided)
+
+Every choice that shaped the fix goes in `resolution.decisions`, each with an ID `D1`, `D2`, ...:
+
+- `decided_by: "developer"` only for a choice the developer made in this session: they picked an
+  option when you asked, or told you what to do. Put their words, or the option they picked, in
+  `decision`. Never mark a choice as the developer's because they did not object.
+- `decided_by: "claude"` for a choice you made yourself without asking, with the reason in
+  `rationale`. Keep these few and small; a choice that matters is one to ask about.
+
+The coordinator checks `developer` decisions against the session. A decision marked
+`developer` that the session does not show is recorded in the ticket as Claude's.
+
+## Result
+
+`procedure`: `resolve-blocker`. Put what you did in `resolution.actions` (one short sentence each,
+in the order done, naming files where you changed them) and anything left for people in
+`resolution.follow_ups`.
+
+- `outcome: completed`: the cause is cleared and the stage can run again. `summary` says what the
+  cause was and how it is cleared, in two or three sentences for someone reading the ticket.
+- `outcome: blocked`: it cannot be cleared from here. `blocker_reason` says why, what you found
+  and what a person has to do. `summary` is the same in brief. Changes you made in the working copy
+  are kept for the stage either way, so leave it tidy.
+
+Never return `needs_clarification`: questions belong in this session.

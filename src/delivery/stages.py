@@ -50,6 +50,8 @@ from delivery.models import (
     OverlapContext,
     PauseInfo,
     PriorWork,
+    ResolutionInput,
+    ResolutionReport,
     RunState,
     SelectedComment,
     Severity,
@@ -69,18 +71,20 @@ from delivery.open_sessions import (
 )
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
-from delivery.permissions import PROCEDURE_ROLES, PROTECTED_WORKTREE_PATHS, build_profile
+from delivery.permissions import PROCEDURE_ROLES, PROTECTED_WORKTREE_PATHS, Role, build_profile
 from delivery.ports import JiraComment
 from delivery.proposals import dump as dump_proposals
 from delivery.proposals import proposals_path
 from delivery.publication import Posted
+from delivery.resolution import asked_in_session, attribute, typed_by_developer
+from delivery.resolution import write_briefing as write_blocker_briefing
 from delivery.resources import port_env
 from delivery.results import OutputInvalid, validate_result
 from delivery.runtime import Decision, RunContext
 from delivery.session_hook import read_events
 from delivery.tmux import for_config as tmux_for
-from delivery.transcript import write_transcript
-from delivery.workflow import Action, Requirement, Stage, Status
+from delivery.transcript import render_file, write_transcript
+from delivery.workflow import RESOLVED_ACTIONS, STAGES, Action, Requirement, Stage, Status
 
 MAX_OUTPUT_FILE_BYTES = 2_000_000
 # Written by verify-ticket next to its report: how a person checks each criterion by hand.
@@ -173,7 +177,7 @@ CHANGES_BY_PROCEDURE = {
 
 # Procedures whose interactive session closes once it has handed over its result: the stage
 # carries on with another procedure (a development session must not be mistaken for it).
-CLOSED_AT_HAND_OFF = frozenset({"amend-spec", "resolve-conflicts"})
+CLOSED_AT_HAND_OFF = frozenset({"amend-spec", "resolve-conflicts", "resolve-blocker"})
 
 
 def change_ids(items: dict[str, str]) -> list[str]:
@@ -418,7 +422,7 @@ class StageStrategy:
     def notes(self) -> list[SelectedComment]:
         """`FOR CLAUDE` comments for this stage. Not part of the run's material inputs: a note
         never starts or restarts work, it guides the next session that runs."""
-        return [
+        notes = [
             SelectedComment(
                 id=c.id,
                 author_account_id=c.author_account_id,
@@ -429,6 +433,45 @@ class StageStrategy:
             )
             for c, text in notes_for(self.ctx)
         ]
+        resolved = self.resolution_note()
+        return [resolved, *notes] if resolved else notes
+
+    def resolution_note(self) -> SelectedComment | None:
+        """What the developer and Claude settled when they cleared the blocker this run resumes
+        from: only the first run after a resolution gets it (the ticket came from Resolving)."""
+        ctx = self.ctx
+        if ctx.intake.requirement is not Requirement.RESOLVED:
+            return None
+        for e in reversed(self.deps.store.runs_for_ticket(ctx.key)):
+            rec = e.record
+            info = rec.outputs.get("resolution") if rec is not None else None
+            if rec is None or rec.stage is not Stage.RESOLUTION or not info:
+                continue
+            lines = [
+                f"The previous attempt at this stage was blocked, and the developer cleared the blocker "
+                f"with Claude in a resolution session ({e.run_id}).",
+                f"What was found and done: {info.get('summary', '')}",
+                *[f"- Did: {a}" for a in info.get("actions", [])],
+                *[
+                    f"- Decision {d['id']} by "
+                    f"{'the developer' if d['decided_by'] == 'developer' else 'Claude'}: "
+                    f"{d['question']} {d['decision']} ({d.get('basis', '')})"
+                    for d in info.get("decisions", [])
+                ],
+                *[f"- Left for people: {f}" for f in info.get("follow_ups", [])],
+                "Follow these where they fit the approved specification and plan; they never widen scope.",
+            ]
+            text = "\n".join(lines)
+            now = utcnow()
+            return SelectedComment(
+                id=f"resolution:{e.run_id}",
+                author_account_id=ctx.cfg.identity.developer_jira_account_id,
+                created=now,
+                updated=now,
+                body=text,
+                digest=digest(text),
+            )
+        return None
 
     def source_refs(self, **kw: str | None) -> SourceRefs:
         ctx = self.ctx
@@ -442,6 +485,28 @@ class StageStrategy:
             feature_commit=kw.get("feature_commit"),
             candidate_sha=kw.get("candidate_sha") or ctx.shared.candidate_sha,
         )
+
+    async def _save_unfinished(
+        self, wt: Path, start_sha: str, spec: ArtefactPointer, plan: ArtefactPointer
+    ) -> None:
+        """Keep a session's unfinished changes so the next development run continues from them."""
+        ctx, repo = self.ctx, self.deps.repo
+        try:
+            await repo.git("add", "-A", cwd=wt)
+            target = ctx.journal.dir / "wip"
+            target.mkdir(mode=0o700, exist_ok=True)
+            patch = target / "changes.patch"
+            await repo.git("diff", "--cached", "--binary", f"--output={patch}", start_sha, cwd=wt)
+            files = await repo.changed_paths(wt, start_sha)
+        except (GitError, OSError) as exc:
+            ctx.journal.events.append("wip_not_saved", {"error": str(exc)[:300]})
+            return
+        if not files or not patch.exists() or patch.stat().st_size == 0:
+            return
+        patch.chmod(0o600)
+        meta = {"start_sha": start_sha, "spec": _ref(spec), "plan": _ref(plan), "files": files}
+        ctx.record.outputs["wip"] = meta
+        ctx.save("wip_saved", files=len(files))
 
     # ------------------------------------------------------------------ procedures
     async def run_procedure(
@@ -480,6 +545,8 @@ class StageStrategy:
             schema=result_json_schema(),
             settings_path=settings_path,
             tools=profile.tools,
+            permission_mode=profile.permission_mode,
+            human_present=role is Role.RESOLVER,
             add_dirs=profile.add_dirs,
             timeout=ctx.cfg.claude.timeout_for(procedure, ctx.cfg.runtime.timeout_seconds),
             stdout_path=ctx.logs_dir / f"claude-{procedure}.jsonl",
@@ -909,7 +976,7 @@ class StageStrategy:
         }
         return json.dumps(data, indent=2, sort_keys=True, default=str) + "\n"
 
-    async def publish_block(self, d: Decision, source: Status) -> None:
+    async def publish_block(self, d: Decision, source: Status, markdown: str | None = None) -> None:
         """Move an active stage to Blocked with the resume stage recorded first."""
         ctx = self.ctx
         pub = ctx.publisher()
@@ -931,7 +998,9 @@ class StageStrategy:
             }
         )
         await self.announce(
-            "blocked", comments.blocked(self.stage.value, d.reason, d.action, resume.value), pause=True
+            "blocked",
+            markdown or comments.blocked(self.stage.value, d.reason, d.action, resume.value),
+            pause=True,
         )
         await pub.set_resume_field(ctx.key, resume.value, "blocked")
         await pub.save_record(ctx.key, ctx.shared, "blocked")
@@ -1828,28 +1897,6 @@ class DevelopmentStage(StageStrategy):
         ctx.save("conflicts_resolved", paths=paths)
         return True
 
-    async def _save_unfinished(
-        self, wt: Path, start_sha: str, spec: ArtefactPointer, plan: ArtefactPointer
-    ) -> None:
-        """Keep a session's unfinished changes so the next development run continues from them."""
-        ctx, repo = self.ctx, self.deps.repo
-        try:
-            await repo.git("add", "-A", cwd=wt)
-            target = ctx.journal.dir / "wip"
-            target.mkdir(mode=0o700, exist_ok=True)
-            patch = target / "changes.patch"
-            await repo.git("diff", "--cached", "--binary", f"--output={patch}", start_sha, cwd=wt)
-            files = await repo.changed_paths(wt, start_sha)
-        except (GitError, OSError) as exc:
-            ctx.journal.events.append("wip_not_saved", {"error": str(exc)[:300]})
-            return
-        if not files or not patch.exists() or patch.stat().st_size == 0:
-            return
-        patch.chmod(0o600)
-        meta = {"start_sha": start_sha, "spec": _ref(spec), "plan": _ref(plan), "files": files}
-        ctx.record.outputs["wip"] = meta
-        ctx.save("wip_saved", files=len(files))
-
     def _carried_feedback(self) -> dict[str, str]:
         """This run's change items or, when it resumes a blocked development run, that run's:
         a blocker (such as a merge conflict resolved by hand) must not drop what was asked."""
@@ -1877,7 +1924,11 @@ class DevelopmentStage(StageStrategy):
         ctx = self.ctx
         for e in reversed(self.deps.store.runs_for_ticket(ctx.key)):
             rec = e.record
-            if e.run_id == ctx.run_id or rec is None or rec.stage is not Stage.DEVELOPMENT:
+            if (
+                e.run_id == ctx.run_id
+                or rec is None
+                or rec.stage not in (Stage.DEVELOPMENT, Stage.RESOLUTION)
+            ):
                 continue
             meta = rec.outputs.get("wip")
             patch = e.journal.dir / "wip" / "changes.patch"
@@ -3162,6 +3213,296 @@ class ReleaseVerificationStage(StageStrategy):
         await pub.transition(ctx.key, Status.VERIFYING_RELEASE, Action.COMPLETE_RELEASE_VERIFICATION)
 
 
+class ResolutionStage(StageStrategy):
+    """Clear a blocker with the developer, then send the ticket back to the stage that blocked.
+
+    Not a lifecycle stage: it runs when a person moves a Blocked ticket to Ready for resolution.
+    Claude works in the ticket's feature worktree and asks the developer in the session for the
+    decisions that are theirs. The coordinator writes what was done, and who decided what, in the
+    ticket. The changes it makes are carried into development like a blocked run's unfinished work.
+    """
+
+    stage = Stage.RESOLUTION
+    PROCEDURE = "resolve-blocker"
+
+    @property
+    def resume(self) -> Stage:
+        resume = self.ctx.intake.resume_stage
+        if resume is None or resume is Stage.RESOLUTION:
+            raise OutputInvalid("no stage to return to is recorded")
+        return resume
+
+    def _blocked(self, d: Decision, why: str, action: str, kind: str, **extra: Any) -> Decision:
+        return d.model_copy(
+            update={
+                "outcome": "blocked",
+                "reason": why,
+                "action": action,
+                "blocker_kind": kind,
+                "resume_stage": self.resume.value,
+                "extra": {**d.extra, **extra},
+            }
+        )
+
+    async def preflight(self) -> Decision | None:
+        ctx = self.ctx
+        if not ctx.cfg.claude.interactive.enabled:
+            return Decision(
+                outcome="blocked",
+                reason="resolution needs an interactive Claude session, and [claude.interactive] is off",
+                action="Set `enabled = true` under [claude.interactive], restart the coordinator, then "
+                "choose Request resolution again.",
+                blocker_kind="needs_interactive",
+                resume_stage=self.resume.value,
+            )
+        if SessionRegistry(ctx.cfg.runtime.state_dir).development(ctx.key) is not None:
+            return Decision(
+                outcome="blocked",
+                reason="a development session for this ticket is still open and holds its working copy",
+                action=f"Close it (`delivery close {ctx.key}`), then choose Request resolution again.",
+                blocker_kind="open_session",
+                resume_stage=self.resume.value,
+            )
+        return None
+
+    def _blocked_run(self) -> Any:
+        """The latest run of the stage that blocked (this machine's journal), if any."""
+        for e in reversed(self.deps.store.runs_for_ticket(self.ctx.key)):
+            if e.record is not None and e.record.stage is self.resume and e.record.state is RunState.BLOCKED:
+                return e
+        return None
+
+    def _transcript_tail(self, entry: Any) -> list[str]:
+        if entry is None:
+            return []
+        lines: list[str] = []
+        for proc in STAGES[self.resume].procedures:
+            log = entry.journal.dir / "logs" / f"claude-{proc}.jsonl"
+            if log.exists():
+                try:
+                    lines += [ln for ln in render_file(log) if ln.strip()]
+                except (OSError, ValueError):
+                    continue
+        return lines[-80:]
+
+    def _failed_logs(self, entry: Any) -> list[tuple[str, str]]:
+        if entry is None:
+            return []
+        out = []
+        for path in sorted((entry.journal.dir / "logs").glob("*.err.log")):
+            try:
+                if path.stat().st_size:
+                    out.append((path.name, path.read_text(errors="replace")[-6000:]))
+            except OSError:
+                continue
+        return out[:3]
+
+    async def _carry_unfinished(self, wt: Path, start_sha: str, entry: Any) -> PriorWork | None:
+        """Apply the blocked development run's unfinished changes, so the session starts from them."""
+        if entry is None or entry.record is None:
+            return None
+        meta = entry.record.outputs.get("wip")
+        patch = entry.journal.dir / "wip" / "changes.patch"
+        if not meta or not patch.exists():
+            return None
+        if meta.get("start_sha") != start_sha:
+            self.ctx.journal.events.append(
+                "wip_not_applied", {"from": entry.run_id, "error": "the branch moved on since it was saved"}
+            )
+            return None
+        applied = await self.deps.repo.git("apply", "--index", "--binary", str(patch), cwd=wt, check=False)
+        if applied.returncode != 0:
+            self.ctx.journal.events.append(
+                "wip_not_applied", {"from": entry.run_id, "error": applied.stderr[:300]}
+            )
+            return None
+        self.ctx.record.outputs["continued_from"] = entry.run_id
+        self.ctx.save("wip_applied", source=entry.run_id, files=len(meta.get("files", [])))
+        tail = self.ctx.inputs_dir / "prior-session-tail.txt"
+        tail.write_text("\n".join(self._transcript_tail(entry)) + "\n")
+        return PriorWork(run_id=entry.run_id, files=list(meta.get("files", [])), session_tail_path=str(tail))
+
+    async def work(self) -> Decision:
+        ctx, repo = self.ctx, self.deps.repo
+        resume = self.resume
+        base = ctx.cfg.repository.base_branch
+        entry = self._blocked_run()
+        wt = ctx.worktree_path("feature")
+        fresh = not wt.exists()
+        if fresh:
+            exists = await repo.remote_sha(ctx.feature_branch)
+            start = f"origin/{ctx.feature_branch}" if exists else f"origin/{base}"
+            await repo.add_worktree(wt, start=start, branch=ctx.feature_branch)
+            ctx.record.worktrees["feature"] = str(wt)
+        start_sha = ctx.record.outputs.get("start_sha") or await repo.worktree_head(wt)
+        ctx.record.outputs["start_sha"] = start_sha
+        ctx.save("worktree_ready", start_sha=start_sha)
+        carry = resume is Stage.DEVELOPMENT
+        spec = await self.spec_input()
+        plan = await self.approved_input(GateKind.PLAN, ArtifactKind.PLAN)
+        prior = await self._carry_unfinished(wt, start_sha, entry) if carry and fresh else None
+        if carry and not fresh:
+            files = await repo.changed_paths(wt, start_sha)
+            prior = PriorWork(run_id=ctx.run_id, files=files) if files else None
+        pause = ctx.shared.pause
+        reason = pause.reason if pause else ctx.intake.reason
+        record = entry.record if entry is not None else None
+        briefing = write_blocker_briefing(
+            ctx.inputs_dir / "briefing.md",
+            key=ctx.key,
+            summary=ctx.ticket.issue.view.summary,
+            blocked_stage=resume.value,
+            blocker_kind=ctx.intake.blocker_kind,
+            blocker_reason=reason,
+            next_action=(record.next_action if record else "") or "",
+            blocked_run={
+                "run": entry.run_id,
+                "state": record.state.value,
+                "outcome": record.outcome.value if record.outcome else "",
+                "reason": record.reason,
+            }
+            if entry is not None and record is not None
+            else None,
+            comments=[
+                (f"{c.author_name or c.author_account_id}, {c.created:%a %d %b %H:%M}", c.body_text)
+                for c in ctx.ticket.comments
+            ],
+            logs=self._failed_logs(entry),
+            transcript_tail=self._transcript_tail(entry),
+        )
+        ports = ctx.record.ports or self.deps.ports.allocate(ctx.run_id)
+        ctx.record = ctx.record.model_copy(update={"ports": ports})
+        out = ctx.output_dir(self.PROCEDURE)
+        env = self.envelope(
+            self.PROCEDURE,
+            out,
+            required=[],
+            approved=[a for a in (spec, plan) if a is not None],
+            ports=ports,
+            source=self.source_refs(feature_commit=start_sha),
+            write_globs=[f"{wt}/**", f"{out}/**"],
+            prior_work=prior,
+        ).model_copy(
+            update={
+                "resolution": ResolutionInput(
+                    blocked_stage=resume,
+                    blocker_kind=ctx.intake.blocker_kind,
+                    blocker_reason=reason or "No reason recorded.",
+                    next_action=(record.next_action if record else "") or "",
+                    blocked_run_id=entry.run_id if entry is not None else None,
+                    briefing_path=str(briefing),
+                    code_changes_carried=carry and spec is not None and plan is not None,
+                )
+            }
+        )
+        can_keep = carry and spec is not None and plan is not None
+        try:
+            result = await self.run_procedure(self.PROCEDURE, wt, env, ports=ports)
+        except WorkerFailure:
+            if can_keep:
+                await self._save_unfinished(wt, start_sha, spec, plan)  # type: ignore[arg-type]
+            raise
+        head = await repo.worktree_head(wt)
+        if head != start_sha:
+            await repo.git("reset", "--soft", start_sha, cwd=wt)  # the coordinator commits, not Claude
+            ctx.journal.events.append("worker_commits_folded", {"head": head})
+        changed = await repo.changed_paths(wt, start_sha)
+        report = result.resolution or ResolutionReport()
+        asked = asked_in_session(ctx.logs_dir / f"claude-{self.PROCEDURE}.jsonl")
+        typed = typed_by_developer(read_events(ctx.journal.dir / "sessions" / self.PROCEDURE))
+        info = {
+            "summary": result.summary,
+            "actions": report.actions,
+            "decisions": attribute(report.decisions, asked, typed),
+            "follow_ups": report.follow_ups,
+            "questions_asked": len(asked),
+            "messages_typed": len(typed),
+            "resume_stage": resume.value,
+            "changed": changed,
+        }
+        ctx.record.outputs["resolution"] = info
+        ctx.save(
+            "resolution_recorded", questions=len(asked), typed=len(typed), decisions=len(report.decisions)
+        )
+        done = Decision(
+            outcome="success",
+            reason=result.summary,
+            result=result.model_dump(mode="json"),
+            resume_stage=resume.value,
+            extra={"resolution": info},
+        )
+        protected = [p for p in changed if is_protected(p)]
+        if protected:
+            return self._blocked(
+                done,
+                f"the resolution changed protected paths: {protected}",
+                "Protected policy files cannot change here; raise a separate human-owned change, then "
+                "choose Request resolution again.",
+                "protected_paths",
+            )
+        if changed and not can_keep:
+            return self._blocked(
+                done,
+                f"the resolution changed {len(changed)} files, but {resume.value.replace('_', ' ')} "
+                "does not carry code changes, so they were not kept",
+                "Make the change by hand (or through development), then Resume.",
+                "changes_not_carried",
+            )
+        if changed:
+            await self._save_unfinished(wt, start_sha, spec, plan)  # type: ignore[arg-type]
+        if result.outcome is not Outcome.COMPLETED:
+            why = result.blocker_reason or result.summary
+            return self._blocked(
+                done,
+                why,
+                "Deal with what the report above says, then Resume or Request resolution again.",
+                "unresolved",
+            )
+        return done
+
+    async def publish(self, d: Decision) -> None:
+        ctx = self.ctx
+        pub = ctx.publisher()
+        resume = self.resume
+        info = d.extra.get("resolution") or {}
+        developer = next(
+            (
+                c.author_name
+                for c in reversed(ctx.ticket.comments)
+                if c.author_account_id == ctx.cfg.identity.developer_jira_account_id and c.author_name
+            ),
+            "the developer",
+        )
+        report: dict[str, Any] = {
+            "resume_stage": resume.value,
+            "run_id": ctx.run_id,
+            "worker_id": ctx.cfg.identity.worker_id,
+            "actions": [str(a) for a in info.get("actions") or []],
+            "decisions": list(info.get("decisions") or []),
+            "follow_ups": [str(f) for f in info.get("follow_ups") or []],
+            "developer": developer,
+            "questions_asked": int(info.get("questions_asked") or 0),
+        }
+        if d.outcome != "success":
+            d = d.model_copy(update={"resume_stage": resume.value})
+            reason = d.reason or "The session ended without clearing the blocker."
+            await self.publish_block(d, Status.RESOLVING, comments.unresolved(reason=reason, **report))
+            return
+        ctx.shared = ctx.shared.model_copy(
+            update={
+                "pause": None,
+                "current_run_id": ctx.run_id,
+                "current_stage": self.stage,
+                "current_state": RunState.COMPLETED,
+                "updated_at": utcnow(),
+            }
+        )
+        await self.announce("resolved", comments.resolved(summary=d.reason, **report))
+        await pub.save_record(ctx.key, ctx.shared, "resolved")
+        await pub.set_resume_field(ctx.key, None, "clear")
+        await pub.transition(ctx.key, Status.RESOLVING, RESOLVED_ACTIONS[resume])
+
+
 STRATEGIES: dict[Stage, type[StageStrategy]] = {
     Stage.REFINEMENT: RefinementStage,
     Stage.PLANNING: PlanningStage,
@@ -3169,6 +3510,7 @@ STRATEGIES: dict[Stage, type[StageStrategy]] = {
     Stage.VERIFICATION: VerificationStage,
     Stage.RELEASE_PREPARATION: ReleasePreparationStage,
     Stage.RELEASE_VERIFICATION: ReleaseVerificationStage,
+    Stage.RESOLUTION: ResolutionStage,
 }
 
 __all__ = ["STRATEGIES", "OutputInvalid", "StageStrategy", "WorkerFailure", "commit_url"]

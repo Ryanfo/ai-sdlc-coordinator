@@ -165,24 +165,26 @@ def test_profiles_deny_credentials_and_dangerous_commands(role: Role, tmp_path: 
     p = build_profile(role, worktree=wt, output_dir=out, inputs_dir=inp, tmp_dir=tmp)
     deny = p.settings["permissions"]["deny"]
     assert "Read(~/.ssh/**)" in deny and "Read(~/.config/gh/**)" in deny
-    assert p.settings["permissions"]["defaultMode"] == "dontAsk"
+    # Only the resolver has a person in the session to ask (AskUserQuestion is denied under dontAsk).
+    expected_mode = "default" if role is Role.RESOLVER else "dontAsk"
+    assert p.settings["permissions"]["defaultMode"] == expected_mode == p.permission_mode
     assert p.settings["permissions"]["disableBypassPermissionsMode"] == "disable"
     sb = p.settings["sandbox"]
     assert sb["enabled"] and sb["failIfUnavailable"] and sb["allowUnsandboxedCommands"] is False
     assert "~/.ssh" in sb["filesystem"]["denyRead"]
-    if role in (Role.IMPLEMENTER, Role.VERIFIER):
+    if role in (Role.IMPLEMENTER, Role.RESOLVER, Role.VERIFIER):
         assert "Bash" in p.tools
         assert sb["network"]["allowLocalBinding"] is True  # tests may start a local server
         assert "allowMachLookup" not in sb["network"]  # would disable sandboxed auto-allow
     else:
         assert sb["network"]["allowLocalBinding"] is False and sb["network"]["allowedDomains"] == []
-    if role in (Role.IMPLEMENTER, Role.VERIFIER):
+    if role in (Role.IMPLEMENTER, Role.RESOLVER, Role.VERIFIER):
         assert "Bash(gh *)" in deny and "Bash(git push *)" in deny and "Bash(curl *)" in deny
     else:
         assert "Bash" not in p.tools
     abs_wt = "/" + str(wt.resolve())
     allow = p.settings["permissions"]["allow"]
-    if role is Role.IMPLEMENTER:
+    if role in (Role.IMPLEMENTER, Role.RESOLVER):
         assert f"Edit({abs_wt}/**)" in allow
         assert f"Edit({abs_wt}/.github/**)" in deny
     elif role is Role.VERIFIER:
@@ -191,6 +193,15 @@ def test_profiles_deny_credentials_and_dangerous_commands(role: Role, tmp_path: 
         assert f"Edit({abs_wt}/.github/**)" in deny
     else:
         assert f"Edit({abs_wt}/**)" in deny  # read-only worktree for review and authoring
+
+
+def test_only_the_resolver_can_ask_the_developer_questions(tmp_path: Path) -> None:
+    wt, out, inp, tmp = (tmp_path / n for n in ("wt", "out", "in", "tmp"))
+    for role in Role:
+        p = build_profile(role, worktree=wt, output_dir=out, inputs_dir=inp, tmp_dir=tmp)
+        asks = "AskUserQuestion" in p.tools
+        assert asks is (role is Role.RESOLVER)
+        assert ("AskUserQuestion" in p.settings["permissions"]["allow"]) is asks
 
 
 def test_every_procedure_has_role_and_contract() -> None:

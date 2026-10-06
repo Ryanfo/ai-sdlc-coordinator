@@ -611,6 +611,33 @@ posts to Jira or moves tickets, and never gets your Jira token. It uses Opus unl
 `claude.help_model`. `--briefing-only` just writes the briefing and prints where it is. When a
 stage ends Blocked or Failed, its finish block shows the command.
 
+### Resolving a blocked ticket with Claude
+
+`coordinator help` only advises. When a ticket is Blocked and you would rather have Claude clear
+the cause with you, choose **Request resolution** in Jira (offered on Blocked tickets that are
+assigned to you; it needs the optional statuses in `docs/jira-workflow-setup.md`). The
+coordinator moves the ticket to **Ready for resolution**, then **Resolving**, and opens a Claude
+session in a terminal window, in the working copy of the stage that blocked (the unfinished
+changes of a blocked development run are already there). It needs `[claude.interactive]`.
+
+Claude reads the blocker, the blocked run's result and transcript tail, its failed check output
+and the recent comments, works out the cause, and fixes what it can. Where the fix depends on a
+choice that is yours, it asks you in the session (it can ask; it cannot reach Jira or GitHub) and
+waits. When it finishes, the coordinator:
+
+- posts a **Blocker resolved** comment on the ticket: what the cause was, what Claude did, and a
+  table of every decision with **who decided it** and how the coordinator knows. The coordinator
+  checks this against the session: a decision Claude says you made is kept as yours only if you
+  answered a question or typed to it; otherwise it is recorded as Claude's.
+- moves the ticket back to the Ready status of the stage that blocked, which then starts by
+  itself. That stage's session is given the decisions as a note, and development continues from
+  the changes made in the resolution session.
+
+If Claude cannot clear the cause (for example it needs a scope change, a credential or a setting
+outside the working copy), the comment says **Blocker not resolved** with what it found, and the
+ticket goes back to Blocked, where you can Resume as before or request resolution again. Claude
+never changes the approved specification or plan to make a blocker go away.
+
 ### Watching Claude work and typing to it
 
 Turn on interactive sessions and each Claude session runs as a normal interactive `claude`
@@ -875,6 +902,7 @@ the same reminder there. `after_hours = 0` turns reminders off.
 | Blocked: maximum turns or time | The session was making progress but hit its limit: raise `[claude.turn_limits]` or `[claude.timeout_minutes]` for that procedure, restart, then Resume (it continues from the kept changes) |
 | Blocked: stopped by a guardrail | It repeated the same failing step or stalled. `delivery logs <KEY>` shows where; add guidance as a comment or adjust the plan, then Resume |
 | "Waiting for Claude" | Login expired: run `claude auth login`. Usage limit: wait for the reset. Either way the waiting tickets carry on by themselves; no paid fallback |
+| Blocked, and you want Claude to fix it with you | Choose **Request resolution** in Jira (see *Resolving a blocked ticket with Claude*). If nothing happens: `[claude.interactive]` must be on, the statuses mapped (`delivery workflow inspect`), and the ticket assigned to you |
 | Blocked: permission or sandbox | Run `delivery doctor --claude-probe`; never use bypass permissions |
 | Second supervisor refused | One already runs for your identity; `coordinator status` says where, `coordinator` shows it |
 | A fix to the coordinator is not taking effect | It runs the code it started with: `coordinator restart` |

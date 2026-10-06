@@ -277,6 +277,12 @@ class ClaudeInvocation:
     expect: dict[str, Any] = field(default_factory=dict)
     # Interactive sessions only: how to finish the conversation once the result is written.
     closing: str = ""
+    # dontAsk denies whatever the settings do not allow. Only a session with a person in it
+    # (resolve-blocker) uses "default", where that person is asked instead (see permissions).
+    permission_mode: str = "dontAsk"
+    # A person is in the session and is expected to take their time (questions, permission asks):
+    # the stall guardrail does not apply. The timeout and the loop guardrail still do.
+    human_present: bool = False
 
     def prompt(self) -> str:
         return (
@@ -297,7 +303,7 @@ class ClaudeInvocation:
             "--restricted",
             "--settings", str(self.settings_path),
             "--strict-mcp-config",
-            "--permission-mode", "dontAsk",
+            "--permission-mode", self.permission_mode,
             "--tools", ",".join(self.tools),
             "--no-session-persistence",
             "--session-id", self.session_id,

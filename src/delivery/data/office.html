@@ -276,10 +276,11 @@ const CAST = {
     skin: SKIN.brown, hair: '#151515', style: 'buzz', beard: '#151515', shirt: '#3d5a80', vest: '#d4e02a', pants: '#2f3a4a' },
 };
 const STAGE_WORKER = { refinement: 'jim', planning: 'dwight', verification: 'oscar',
-  release_preparation: 'darryl', release_verification: 'creed' };
+  release_preparation: 'darryl', release_verification: 'creed', resolution: 'toby' };
 const DEV_POOL = ['ryan', 'andy', 'stanley', 'phyllis'];
 const STAGE_NAME = { refinement: 'refinement', planning: 'planning', development: 'development',
-  verification: 'verification', release_preparation: 'release prep', release_verification: 'release check' };
+  verification: 'verification', release_preparation: 'release prep', release_verification: 'release check',
+  resolution: 'resolution' };
 
 // Desks: two tiles in front of (below) each seat; the person sits behind it, facing you.
 for (const [id, d] of Object.entries(CAST)) {
@@ -532,13 +533,16 @@ const DISPATCH = {
   verification: (k) => `Oscar, verify ${k}. You're the smart one.`,
   release_preparation: (k) => `Darryl! Get ${k} ready to ship.`,
   release_verification: (k) => `Creed... check ${k} shipped okay?`,
+  resolution: (k) => `Toby. ${k} is stuck. Sit down with the developer and sort it out.`,
 };
 const ACK = { jim: ['On it.', 'Sure thing.'], dwight: ['The plan will be flawless.', 'Finally, a worthy task.'],
   ryan: ['On it. Like a startup.'], andy: ['Nard Dog is on it!'], stanley: ['Fine.', "It's not pretzel day, is it?"],
-  phyllis: ['Oh, how fun.'], oscar: ['Actually, happy to.'], darryl: ['Got it, Mike.'], creed: ['Who are you again?', 'Sure.'] };
+  phyllis: ['Oh, how fun.'], oscar: ['Actually, happy to.'], darryl: ['Got it, Mike.'], creed: ['Who are you again?', 'Sure.'],
+  toby: ['Sure. I have a form for this.'] };
 const DONE_LINE = { refinement: "Spec's on the table.", planning: 'Plan is on the table. Read it.',
   development: 'Code is ready for review.', verification: 'Verified. Your call.',
-  release_preparation: 'Release is ready to go.', release_verification: 'All checked.' };
+  release_preparation: 'Release is ready to go.', release_verification: 'All checked.',
+  resolution: 'Sorted. Back to work.' };
 const BANTER = {
   michael: ["That's what she said!", 'Who wants a Dundie?', 'Conference room, five minutes!', "World's best boss. It's on the mug."],
   dwight: ['Fact: my plans are flawless.', 'Bears. Beets. Battlestar.', 'Assistant TO the regional manager.'],

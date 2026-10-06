@@ -23,6 +23,7 @@ PROCEDURES = (
     "amend-spec",
     "resolve-conflicts",
     "investigate-ticket",
+    "resolve-blocker",
 )
 _CONTRACT = re.compile(r"^contract_id:\s*`?(?P<id>delivery\.[a-z-]+/v\d+)`?\s*$", re.M)
 

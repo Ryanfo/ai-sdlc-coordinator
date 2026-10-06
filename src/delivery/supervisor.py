@@ -576,7 +576,9 @@ class Supervisor:
                 report.skipped.append({"ticket": key, "reason": "ticket already claimed by another run"})
                 return
             if self.open:
-                await self.open.close_for_run(key, stage)
+                # A resolution works in the blocked stage's working copy: close that stage's session.
+                held = intake.resume_stage if stage is Stage.RESOLUTION and intake.resume_stage else stage
+                await self.open.close_for_run(key, held)
             self._launch(rc)
         finally:
             self.busy.discard(key)

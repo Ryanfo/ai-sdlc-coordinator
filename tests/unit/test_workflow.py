@@ -5,7 +5,9 @@ import pytest
 from delivery.workflow import (
     ACTIVE_STATUSES,
     BOARD_COLUMNS,
+    LIFECYCLE_STAGES,
     READY_STATUSES,
+    RESOLVED_ACTIONS,
     ROUTES,
     STAGES,
     Action,
@@ -46,7 +48,7 @@ def test_every_human_route_exists(src: Status, dst: Status, req: Requirement) ->
 
 
 def test_every_stage_has_start_complete_question_block_routes() -> None:
-    for d in STAGES.values():
+    for d in LIFECYCLE_STAGES.values():
         assert coordinator_route(d.ready, d.start_action).target is d.active
         assert coordinator_route(d.active, d.complete_action).target is d.success
         assert coordinator_route(d.active, Action.ASK_QUESTIONS).target is Status.NEEDS_CLARIFICATION
@@ -86,12 +88,12 @@ def test_no_global_arbitrary_transition() -> None:
     assert not [r for r in ROUTES if r.source in (Status.DONE, Status.CANCELLED)]
 
 
-@pytest.mark.parametrize("stage", list(Stage))
+@pytest.mark.parametrize("stage", list(LIFECYCLE_STAGES))
 def test_resume_only_to_recorded_stage(stage: Stage) -> None:
     d = STAGES[stage]
     for paused in (Status.NEEDS_CLARIFICATION, Status.BLOCKED):
         assert resume_route(paused, d.ready, stage) is not None
-        for other in Stage:
+        for other in LIFECYCLE_STAGES:
             if other is not stage:
                 assert resume_route(paused, STAGES[other].ready, stage) is None
         assert resume_route(paused, d.ready, None) is None
@@ -109,8 +111,8 @@ def test_board_maps_every_status_exactly_once() -> None:
 
 
 def test_ready_and_active_sets() -> None:
-    assert len(READY_STATUSES) == 6
-    assert len(ACTIVE_STATUSES) == 6
+    assert len(READY_STATUSES) == 7  # six stages and resolution
+    assert len(ACTIVE_STATUSES) == 7
     assert Status.READY_RELEASE not in READY_STATUSES  # human release gate, not a machine queue
 
 
@@ -118,3 +120,43 @@ def test_cancel_from_every_unfinished_status_is_human_only() -> None:
     cancels = [r for r in ROUTES if r.action is Action.CANCEL]
     assert all(r.actor is Actor.HUMAN for r in cancels)
     assert len(cancels) == len(Status) - 2
+
+
+# --------------------------------------------------------------------------- resolution
+
+
+def test_resolution_is_a_stage_outside_the_lifecycle() -> None:
+    assert Stage.RESOLUTION in STAGES and Stage.RESOLUTION not in LIFECYCLE_STAGES
+    d = STAGES[Stage.RESOLUTION]
+    assert (d.ready, d.active) == (Status.READY_RESOLUTION, Status.RESOLVING)
+    assert coordinator_route(d.ready, d.start_action).target is Status.RESOLVING
+    # It cannot ask questions or be resumed: questions are asked in the session, and the ticket
+    # leaves Resolving only to the stage that blocked, or back to Blocked.
+    with pytest.raises(IllegalTransition):
+        coordinator_route(Status.RESOLVING, Action.ASK_QUESTIONS)
+    assert not human_route(Status.NEEDS_CLARIFICATION, Status.READY_RESOLUTION)
+    assert not human_route(Status.READY_RESOLUTION, Status.READY_REFINEMENT)
+
+
+def test_only_blocked_tickets_can_be_sent_to_resolution() -> None:
+    into = [r for r in ROUTES if r.target is Status.READY_RESOLUTION]
+    assert [(r.source, r.actor) for r in into] == [(Status.BLOCKED, Actor.HUMAN)]
+    assert into[0].requires is Requirement.RESOLUTION_REQUEST
+
+
+def test_resolving_returns_to_the_stage_that_blocked_or_to_blocked() -> None:
+    out = {(r.action, r.target, r.resume_stage) for r in ROUTES if r.source is Status.RESOLVING}
+    for stage, action in RESOLVED_ACTIONS.items():
+        assert (action, STAGES[stage].ready, stage) in out
+        assert coordinator_route(Status.RESOLVING, action).requires is Requirement.RESOLVED
+    assert (Action.BLOCK_STAGE, Status.BLOCKED, None) in out
+    assert (Action.CANCEL, Status.CANCELLED, None) in out
+    assert len(out) == len(RESOLVED_ACTIONS) + 2
+    assert set(RESOLVED_ACTIONS) == set(LIFECYCLE_STAGES)
+
+
+def test_resolution_routes_are_optional_in_jira() -> None:
+    from delivery.workflow import OPTIONAL_ROUTES, OPTIONAL_STATUSES, RESOLUTION_ROUTES
+
+    assert set(RESOLUTION_ROUTES) <= set(OPTIONAL_ROUTES)
+    assert {Status.READY_RESOLUTION, Status.RESOLVING} == OPTIONAL_STATUSES

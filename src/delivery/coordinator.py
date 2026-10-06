@@ -300,7 +300,10 @@ class StageExecutor:
             }
         )
         await pub.save_record(rc.key, rc.shared, "start")
-        await pub.set_resume_field(rc.key, None, "start")
+        if rc.record.stage is not Stage.RESOLUTION:
+            # A resolution keeps the field: it says which stage the ticket returns to (or is
+            # blocked in again) and is cleared only once the blocker is resolved.
+            await pub.set_resume_field(rc.key, None, "start")
         if rc.intake.kind is IntakeKind.READY:
             await pub.comment(
                 rc.key,
@@ -474,7 +477,7 @@ class StageExecutor:
         await strategy.publish(d)
         terminal = {
             "success": RunState.COMPLETED
-            if rc.record.stage is Stage.RELEASE_VERIFICATION
+            if rc.record.stage in (Stage.RELEASE_VERIFICATION, Stage.RESOLUTION)
             else RunState.AWAITING_HUMAN,
             "clarification": RunState.AWAITING_HUMAN,
             "verification_failed": RunState.AWAITING_HUMAN,
@@ -588,6 +591,11 @@ class StageExecutor:
 
 def _next_action(outcome: str, stage: Stage, *, session_open: bool = False) -> str:
     ready = STATUS_NAMES[STAGES[stage].ready]
+    if stage is Stage.RESOLUTION:
+        return {
+            "success": "None: the ticket is back in the Ready status of the stage that blocked.",
+            "blocked": "Deal with what the comment says, then Resume in Jira or Request resolution again.",
+        }.get(outcome, "")
     return {
         "success": {
             Stage.REFINEMENT: "Review the specification in Jira; approving moves it into Ready for planning.",

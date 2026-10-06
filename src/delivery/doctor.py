@@ -37,6 +37,7 @@ from delivery.workflow import (
     DEFAULT_ACTION_NAMES,
     FOLLOW_UP_ROUTES,
     OPTIONAL_ROUTES,
+    OPTIONAL_STATUSES,
     ROUTES,
     STATUS_CATEGORIES,
     STATUS_NAMES,
@@ -111,7 +112,8 @@ async def inspect_workflow(cfg: Config, jira: JiraPort) -> WorkflowReport:
         if len(ids) == 1:
             resolved[st.value] = ids[0]
         elif not ids:
-            missing.append(f"{st.value} ({STATUS_NAMES[st]})")
+            if st not in OPTIONAL_STATUSES:
+                missing.append(f"{st.value} ({STATUS_NAMES[st]})")
         else:
             ambiguous[st.value] = ids
     mismatched = {
@@ -215,7 +217,14 @@ def check_config(cfg: Config, report: Report) -> None:
             "Run `delivery workflow inspect` and paste the generated [workflow.statuses] block.",
         )
     else:
-        report.add("config", "status mapping", "ok", f"all {len(Status)} statuses mapped")
+        optional = [s.value for s in OPTIONAL_STATUSES if s in cfg.workflow.statuses]
+        report.add(
+            "config",
+            "status mapping",
+            "ok",
+            f"all {len(Status) - len(OPTIONAL_STATUSES)} statuses mapped"
+            + (f" (and resolution: {len(optional)} of {len(OPTIONAL_STATUSES)})" if optional else ""),
+        )
     if not cfg.jira.fields.resume_stage:
         report.add(
             "config",
