@@ -7,6 +7,9 @@ linked ticket's summary, type, status and description, and, when it went through
 approved specification and plan (copied into the run's read-only inputs from the repository),
 its pull request and the commit it was released in.
 
+Only tickets in this project and in ``[jira] linked_projects`` are read: a link into any other
+project is left out, so another project's (or another client's) data never reaches Claude.
+
 Nothing here is required: a linked ticket that cannot be read is left out and the run carries on.
 """
 
@@ -36,15 +39,29 @@ MAX_DESCRIPTION = 4000
 DOCUMENTS = ((GateKind.SPEC, ArtifactKind.SPECIFICATION), (GateKind.PLAN, ArtifactKind.PLAN))
 
 
+def project_of(key: str) -> str:
+    return key.rpartition("-")[0]
+
+
 async def linked_tickets(
-    jira: JiraPort, repo: ManagedRepo, repo_url: str, issue: JiraIssue, dest: Path
+    jira: JiraPort,
+    repo: ManagedRepo,
+    repo_url: str,
+    issue: JiraIssue,
+    dest: Path,
+    projects: frozenset[str] | None = None,
 ) -> list[LinkedTicket]:
+    """Linked tickets in ``projects`` (default: the ticket's own project only)."""
+    allowed = projects if projects is not None else frozenset({project_of(issue.key)})
     out: list[LinkedTicket] = []
     seen: set[str] = set()
     for link in issue.links:
         if link.other_key in seen or link.other_key == issue.key or len(out) >= MAX_LINKED:
             continue
         seen.add(link.other_key)
+        if project_of(link.other_key) not in allowed:
+            log.info("linked ticket %s left out: not in %s", link.other_key, sorted(allowed))
+            continue
         try:
             other = await jira.get_issue(link.other_key)
         except IntegrationError as exc:

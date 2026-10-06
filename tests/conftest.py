@@ -51,8 +51,21 @@ def base_sections(tmp: Path, account: str = DEV) -> dict[str, dict[str, Any]]:
             "checkout_path": str(tmp / "app"),
             "worktree_root": str(tmp / "worktrees"),
         },
-        "runtime": {"state_dir": str(tmp / "state"), "poll_seconds": 10},
-        "claude": {"plugin_path": str(tmp / "plugin"), "executable": "claude"},
+        # The machine checks (free disk, memory pressure, caffeinate, Claude Code version probe,
+        # desktop alerts) are switched off; their own tests switch them on.
+        "runtime": {
+            "state_dir": str(tmp / "state"),
+            "poll_seconds": 10,
+            "min_free_disk_gb": 0,
+            "hold_on_memory_pressure": False,
+            "keep_awake": False,
+        },
+        "claude": {
+            "plugin_path": str(tmp / "plugin"),
+            "executable": "claude",
+            "probe_on_version_change": False,
+        },
+        "notifications": {"desktop": False},
         "approvals": {"jira_account_ids": [APPROVER], "github_logins": ["reviewer"]},
         "checks.commands": {"unit": ["true"]},
         "checks.ci": {"required_names": ["unit"]},

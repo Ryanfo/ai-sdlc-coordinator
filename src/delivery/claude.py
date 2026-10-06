@@ -59,10 +59,13 @@ class ClaudeStatus(StrEnum):
     MALFORMED = "malformed"
     MAX_TURNS = "max_turns"
     GUARDRAIL = "guardrail"
+    # Anthropic's API or the network failed for a while (overloaded, 5xx, connection lost).
+    UNAVAILABLE = "unavailable"
     ERROR = "error"
 
 
-TRANSIENT = frozenset({ClaudeStatus.START_FAILED})
+# Nothing about the ticket is wrong: the stage is retried after a pause before it is blocked.
+TRANSIENT = frozenset({ClaudeStatus.START_FAILED, ClaudeStatus.UNAVAILABLE})
 HUMAN_ACTION = frozenset({ClaudeStatus.AUTH, ClaudeStatus.USAGE_LIMIT})
 
 
@@ -366,6 +369,22 @@ _USAGE_HINTS = re.compile(
     r"resets at|weekly limit|account_on_hold)",
     re.I,
 )
+# Claude Code retries these itself first; seeing one at the end means it gave up for now.
+_UNAVAILABLE_HINTS = re.compile(
+    r"(overloaded|internal server error|service unavailable|bad gateway|gateway timeout|"
+    r"api error: 5\d\d|status code 5\d\d|\b5\d\d (internal|service|bad|gateway)|server_error|api_error|"
+    r"connection error|connection refused|connection reset|econnreset|econnrefused|etimedout|"
+    r"enotfound|eai_again|socket hang up|fetch failed|network error|request timed out)",
+    re.I,
+)
+_UNAVAILABLE_RETRIES = frozenset(
+    {"server_error", "overloaded_error", "overloaded", "api_error", "connection_error", "timeout"}
+)
+
+
+def unavailable_text(text: str) -> bool:
+    """Whether an API error reads as Anthropic or the network being down for a while."""
+    return bool(_UNAVAILABLE_HINTS.search(text))
 
 
 def parse_stream(
@@ -423,6 +442,11 @@ def classify(stdout: str, stderr: str, exit_code: int | None, plugin_dir: Path) 
         outcome.status = ClaudeStatus.USAGE_LIMIT
         outcome.detail = "Claude subscription usage limit reached; no paid fallback is used"
         return outcome
+    failed = not result or bool(result.get("is_error"))
+    if failed and (_UNAVAILABLE_HINTS.search(text) or (not result and retry_errors & _UNAVAILABLE_RETRIES)):
+        outcome.status = ClaudeStatus.UNAVAILABLE
+        outcome.detail = "Claude's API was unavailable: " + _first_line(text)
+        return outcome
     if init is None:
         outcome.status = ClaudeStatus.MALFORMED
         outcome.detail = "no system/init event in Claude output"
@@ -451,6 +475,14 @@ def classify(stdout: str, stderr: str, exit_code: int | None, plugin_dir: Path) 
         return outcome
     outcome.status = ClaudeStatus.OK
     return outcome
+
+
+def _first_line(text: str) -> str:
+    m = _UNAVAILABLE_HINTS.search(text)
+    if not m:
+        return text.strip()[:200]
+    start = max(0, m.start() - 60)
+    return " ".join(text[start : m.end() + 100].split())[:200]
 
 
 class ClaudeRunner:

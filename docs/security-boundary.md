@@ -120,6 +120,8 @@ cache under `node_modules`, binds a local port and connects to it.
 - **Coordinator-run checks are not sandboxed.** The configured check commands (`npm ci`, tests)
   run as you, with a minimal environment and no tokens, but with your filesystem permissions.
   Use the framework only on repositories you trust.
+  The same holds for the repository's Git hooks when `repository.run_git_hooks` is on (off by
+  default: the coordinator's commits skip hooks).
 - **Single Jira identity.** With the default profile, Jira cannot distinguish coordinator and
   human transitions. The coordinator never performs a human route and checks authors of both
   the decision comment and the transition, but strict separation needs a worker service
@@ -131,6 +133,21 @@ cache under `node_modules`, binds a local port and connects to it.
 - **`claude auth status` can report a login whose OAuth session has expired.** Only the probe
   (or a real run) proves a working session; an expired session pauses tickets with an explicit
   "sign in" action and never switches billing.
+- **The profile was proven on particular Claude Code versions.** Claude Code updates itself, so
+  the supervisor re-runs the probe whenever `claude --version` changes and holds new sessions
+  until it passes (`claude.probe_on_version_change`, on by default). Sessions already running
+  when the binary changes are not stopped.
+
+## Data that leaves the machine
+
+Claude reads the ticket (brief, selected comments, attachments, Figma snapshots), linked tickets
+**in this project and in `jira.linked_projects` only**, and the repository. Comments the
+coordinator posts never include internal error text (it stays in the coordinator log), and with
+`[notifications] operational = "operator"` notices about the developer's machine (Claude's
+login, usage limit, internal errors) are not posted to tickets at all. Local run logs, including
+Claude transcripts, are removed `runtime.retention_days` (30) after their run finished.
+Coordinator commits are unsigned unless `repository.sign_commits` is on, in which case they use
+the developer's own Git signing setup.
 
 ## Ticket attachments and Figma designs
 

@@ -8,6 +8,13 @@ paused manually while existing sessions continue.
 When Claude cannot be used (login expired, usage limit), no ticket is blocked for it: the
 runs that hit it wait, no new work starts, and a tiny Claude request every few minutes
 finds when it works again; then the waiting runs continue where they stopped.
+
+Runs stopped for a reason that passes by itself (Claude's API or the network down for a while,
+Jira or GitHub unreachable, the ticket edited while Claude worked) are resumed by the poll once
+their retry time comes. New sessions wait while the machine is short of disk or memory, or while
+a changed Claude Code has not passed the sandbox probe (delivery.claude_version). An unexpected
+error in a poll is logged and alerted, and the supervisor carries on after a pause instead of
+stopping.
 """
 
 from __future__ import annotations
@@ -22,17 +29,19 @@ import socket
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from delivery import __version__, console
+from delivery import __version__, cleanup, console
 from delivery import comments as comment_text
 from delivery.acceptance import Acceptance
+from delivery.alerts import Alerts
 from delivery.claude import ChildHandle, claude_works
+from delivery.claude_version import VersionGuard
 from delivery.codestamp import code_mtime
 from delivery.control import ControlServer, socket_path
-from delivery.coordinator import WAITING_FOR_CLAUDE, StageExecutor
+from delivery.coordinator import RETRY, WAITING_FOR_CLAUDE, StageExecutor
 from delivery.gates import approved_gate
 from delivery.git import GitError, blob_url
 from delivery.guidance import Guidance
@@ -65,6 +74,7 @@ from delivery.proposals import Proposals
 from delivery.proposals import load as load_proposals
 from delivery.publication import PublicationError, PublicationUncertain, Publisher, TicketMoved
 from delivery.reminders import Reminders
+from delivery.resources import KeepAwake, short_of_room
 from delivery.runtime import Deps, RunContext
 from delivery.stages import change_ids
 from delivery.staleness import Staleness
@@ -98,6 +108,9 @@ class Supervisor:
         self.cfg = deps.cfg
         self.dry_run = dry_run
         self.emit = emit or (lambda s: log.info(s))
+        if deps.alerts is None:
+            deps.alerts = Alerts(self.cfg)
+        self.alerts = deps.alerts
         self.sessions: dict[str, Session] = {}
         self.claims = TicketClaims(deps.store.locks_dir)
         self.executor = StageExecutor(deps, on_child=self._on_child)
@@ -140,6 +153,18 @@ class Supervisor:
         # Claude unavailable: seconds between probes (doubling) and when the next one is due.
         self._claude_wait = 0.0
         self._claude_check_at = 0.0
+        # Claude Code updated itself: new sessions wait until its sandbox probe passes.
+        self.version_guard = VersionGuard(self.cfg, self.alerts, self.emit)
+        if dry_run:
+            self.version_guard.enabled = False
+        # Disk nearly full or critical memory pressure: why new sessions wait, if they do.
+        self.room: str | None = None
+        self.keep_awake = KeepAwake(self.cfg.runtime.keep_awake and not dry_run)
+        # When old local logs and worktrees are next removed (runtime.retention_days).
+        self._clean_at = 0.0
+        # An unexpected error in the loop: the pause before carrying on (doubling).
+        self._error_backoff = 0.0
+        self._background: set[asyncio.Task[bool]] = set()
 
     # ------------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Supervisor:
@@ -155,6 +180,12 @@ class Supervisor:
         previous = self.deps.store.load_supervisor()
         if previous:
             self.record = previous
+        unexpected = (
+            previous is not None
+            and previous.started_at is not None
+            and previous.stopped_at is None
+            and not self.dry_run
+        )
         self.record = self.record.model_copy(
             update={
                 "pid": os.getpid(),
@@ -174,6 +205,15 @@ class Supervisor:
             await self.control.start()
             self.record = self.record.model_copy(update={"control_socket": str(path)})
         self.deps.store.save_supervisor(self.record, "supervisor_started", pid=os.getpid())
+        if unexpected and previous is not None:
+            last = previous.heartbeat_at or previous.started_at
+            when = last.astimezone().strftime("%a %d %b %H:%M") if last else "?"
+            text = (
+                f"The coordinator stopped unexpectedly (last seen {when}: the Mac restarted or shut down, "
+                "or the process was killed). It has started again; interrupted work resumes now."
+            )
+            self.emit(console.line(text))
+            await self.alerts.send("restarted", "restarted after an unexpected stop", text)
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -214,6 +254,8 @@ class Supervisor:
         )
         if self.lock:
             self.lock.release()
+        self.keep_awake.stop()
+        await self.version_guard.stop()
         await self.deps.jira.close()
 
     async def run(self, once: bool = False) -> None:
@@ -228,21 +270,77 @@ class Supervisor:
         if not self.dry_run and not once:
             self._acceptance_task = asyncio.create_task(self._watch_acceptance(), name="acceptance")
         while not self.stop_event.is_set():
-            self._check_code()
-            if self.record.claude_unavailable is not None:
-                await self._check_claude()
-            elif not self.record.dispatch_paused:
-                await self.poll_once()
-            elif not once:
-                self.emit(console.line("dispatch paused; existing sessions continue"))
+            delay = self.cfg.runtime.poll_seconds + random.uniform(0, self.cfg.runtime.poll_jitter_seconds)
+            try:
+                await self._tick(once)
+                self._error_backoff = 0.0
+            except Exception as exc:
+                if once:
+                    raise
+                delay = await self._loop_error(exc)
             if once:
                 if self.sessions:
                     await asyncio.wait([s.task for s in self.sessions.values()])
                 break
-            delay = self.cfg.runtime.poll_seconds + random.uniform(0, self.cfg.runtime.poll_jitter_seconds)
             delay = max(delay, self.backoff_until - asyncio.get_running_loop().time())
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.stop_event.wait(), timeout=delay)
+
+    async def _tick(self, once: bool) -> None:
+        self._check_code()
+        self.keep_awake.update(bool(self.sessions))
+        await self.version_guard.tick()
+        if self.record.claude_unavailable is not None:
+            await self._check_claude()
+        elif not self.record.dispatch_paused:
+            await self.poll_once()
+        elif not once:
+            self.emit(console.line("dispatch paused; existing sessions continue"))
+        if not self.dry_run and not once:
+            await self._clean_expired()
+
+    async def _loop_error(self, exc: Exception) -> float:
+        """An unexpected error in a poll: log and alert it, then carry on after a pause.
+
+        Running sessions are separate tasks and are not affected. Stopping here would leave
+        every ticket of this developer waiting until someone noticed and restarted it.
+        """
+        log.exception("the coordinator hit an internal error; carrying on")
+        self._error_backoff = _backoff(self._error_backoff)
+        what = " ".join(f"{type(exc).__name__}: {exc}".split())[:300]
+        self.emit(
+            console.line(
+                f"internal error ({what}); carrying on in {self._error_backoff:.0f}s. "
+                "`coordinator logs` shows the details"
+            )
+        )
+        await self.alerts.send(
+            f"loop-error:{type(exc).__name__}",
+            "internal error",
+            f"{what}. It carries on in {self._error_backoff:.0f}s; `coordinator logs` shows the details.",
+        )
+        return self._error_backoff
+
+    async def _clean_expired(self) -> None:
+        """Once a day, remove local logs and worktrees older than runtime.retention_days."""
+        days = self.cfg.runtime.retention_days
+        loop = asyncio.get_running_loop()
+        if not days or loop.time() < self._clean_at:
+            return
+        self._clean_at = loop.time() + CLEAN_EVERY_SECONDS
+        keep = set(self.sessions) | set(self.busy)
+        try:
+            removed = await cleanup.clean_expired(self.cfg, self.deps.repo, days, keep, log.info)
+        except Exception:
+            log.exception("removing old local logs failed; trying again tomorrow")
+            return
+        if removed:
+            self.emit(
+                console.line(
+                    f"removed local logs and worktrees of {removed} finished more than {days} days ago "
+                    "(runtime.retention_days)"
+                )
+            )
 
     async def _wait_for_repo(self) -> bool:
         """Clone or fetch the application repository, retrying with the poll backoff until it works.
@@ -335,6 +433,9 @@ class Supervisor:
             self.emit(console.line(f"poll failed ({exc}); retrying in {self.backoff_seconds:.0f}s"))
             return report
         self.backoff_seconds = 0.0
+        await self._update_room()
+        if not self.dry_run:
+            await self._resume_due(report)
         candidates: list[tuple[str, str, TicketContext, Stage]] = []
         for issue in issues:
             elig = evaluate_eligibility(issue.view, self.cfg, set(self.sessions))
@@ -494,6 +595,53 @@ class Supervisor:
         )
         await self.consider(ctx, sd.stage, report, adopt=True)
 
+    @property
+    def launch_hold(self) -> str | None:
+        """Why new sessions wait for now (running ones carry on), or None."""
+        return self.room or self.version_guard.hold
+
+    async def _update_room(self) -> None:
+        rt = self.cfg.runtime
+        root = self.cfg.repository.worktree_root
+        room = short_of_room(root, rt.min_free_disk_gb, rt.hold_on_memory_pressure)
+        if room and room != self.room:
+            self.emit(console.line(f"new sessions wait: {room}; running sessions carry on"))
+            await self.alerts.send("room", "short of room", f"New sessions wait: {room}.")
+        elif self.room and not room:
+            self.emit(console.line("there is room again; new sessions start"))
+        self.room = room
+
+    async def _resume_due(self, report: PollReport) -> None:
+        """Resume runs that stopped for a reason that passes by itself, once their time comes.
+
+        Claude's API or the network was down, Jira or GitHub could not be reached, a publication's
+        outcome was uncertain, or the ticket was edited while Claude worked (``RETRY``). Runs that
+        are held, wait for Claude's login or usage limit, or are corrupt are left alone.
+        """
+        now = utcnow()
+        for entry in self.deps.store.unfinished():
+            rec = entry.record
+            if entry.error is not None or rec is None or rec.held:
+                continue
+            key = rec.ticket_key
+            if key in self.sessions or key in self.busy or key in self.corrupt:
+                continue
+            if rec.outputs.get(WAITING_FOR_CLAUDE) or rec.state not in RETRYABLE:
+                continue
+            due = (rec.outputs.get(RETRY) or {}).get("due")
+            if due and datetime.fromisoformat(due) > now:
+                report.waiting.append({"ticket": key, "reason": rec.reason or "retrying later"})
+                continue
+            publishing = rec.state is RunState.PUBLISHING or bool(entry.journal.pending_ops())
+            if self.launch_hold and not publishing:
+                report.waiting.append({"ticket": key, "reason": f"new sessions wait: {self.launch_hold}"})
+                continue
+            try:
+                action = await self._recover_run(entry.journal, rec)
+            except Exception as exc:
+                action = f"could not resume yet: {exc}"
+            self.emit(console.line(f"{key}: {action}"))
+
     def _note_once(self, marker: str, message: str) -> None:
         if marker not in self._noted:
             self._noted.add(marker)
@@ -564,6 +712,9 @@ class Supervisor:
             return
         if key in self.busy:
             report.skipped.append({"ticket": key, "reason": "a follow-up change is being published"})
+            return
+        if (hold := self.launch_hold) is not None:
+            report.waiting.append({"ticket": key, "reason": f"new sessions wait: {hold}"})
             return
         self.busy.add(key)
         try:
@@ -666,8 +817,15 @@ class Supervisor:
                     rc,
                     "internal-error",
                     comment_text.internal_error(
-                        rc.record.stage.value, rc.run_id, self.cfg.identity.worker_id, str(exc), rc.key
+                        rc.record.stage.value, rc.run_id, self.cfg.identity.worker_id, rc.key
                     ),
+                    operational=True,
+                )
+                await self.alerts.send(
+                    f"internal-error:{rc.run_id}",
+                    f"{rc.key} stopped: internal error",
+                    f"{rc.key} {rc.record.stage.value}: {exc}"[:300]
+                    + f". `coordinator recover {rc.key} --resume` continues it.",
                 )
                 return rc.record
             finally:
@@ -682,6 +840,7 @@ class Supervisor:
         task = asyncio.create_task(runner(), name=rc.run_id)
         task.add_done_callback(self._after_run)
         self.sessions[rc.key] = Session(rc.key, rc, task)
+        self.keep_awake.update(True)
         self.emit(
             console.session_started(
                 self.cfg, rc.record, rc.ticket.issue.view.summary, resumed=resume, adopted=rc.record.adopted
@@ -712,6 +871,7 @@ class Supervisor:
             log.warning("could not bring up the session of %s: %s", rc.run_id, exc)
 
     def _after_run(self, task: asyncio.Task[RunRecord]) -> None:
+        self.keep_awake.update(bool(self.sessions))
         if task.cancelled() or task.exception() is not None:
             return
         rec = task.result()
@@ -738,6 +898,16 @@ class Supervisor:
             )
             self.deps.store.save_supervisor(self.record, "claude_unavailable", kind=kind, ticket=key)
             self.emit(console.claude_unavailable(self.cfg, kind, detail, key, int(self._claude_wait)))
+            why = "Claude Code is not signed in" if kind == "auth" else "the Claude usage limit is reached"
+            alert = loop.create_task(
+                self.alerts.send(
+                    f"claude:{kind}",
+                    "waiting for Claude",
+                    f"{why} ({key}). Work waits and continues by itself once Claude works again.",
+                )
+            )
+            self._background.add(alert)
+            alert.add_done_callback(self._background.discard)
         else:
             self.emit(console.line(f"{key} also waits for Claude; it continues when Claude works again"))
 
@@ -874,7 +1044,19 @@ class Supervisor:
             self._launch(rc, resume=True)
             return "restarting prepared attempt"
         if ctx.status is sd.active and rec.state in (*ACTIVE_RUN_STATES, RunState.INTERRUPTED):
-            rc.record = rec.model_copy(update={"state": RunState.RUNNING, "held": False, "hold_reason": ""})
+            # The fresh session reads the ticket as it is now (it may have been edited meanwhile),
+            # so the run's input identity follows it.
+            brief = digest(brief_text(ctx.issue))
+            rc.record = rec.model_copy(
+                update={
+                    "state": RunState.RUNNING,
+                    "held": False,
+                    "hold_reason": "",
+                    "brief_digest": brief,
+                    "input_revision": digest(intake.material(brief)),
+                    "selected_comment_ids": [c.id for c in intake.selected],
+                }
+            )
             rc.record.outputs.pop(WAITING_FOR_CLAUDE, None)
             rc.save("resumed")
             if self.open:
@@ -1036,6 +1218,7 @@ class Supervisor:
                     for r in (self.open.registry.all() if self.open else [])
                 ],
                 "dispatch_paused": self.record.dispatch_paused,
+                "new_sessions_wait": self.launch_hold,
                 "claude_unavailable": self.record.claude_unavailable,
                 "corrupt": self.corrupt,
                 "worker_id": self.cfg.identity.worker_id,
@@ -1078,5 +1261,8 @@ COMMENTS_DONE_DAYS = 30
 VERIFY_AFTER_CLOSE = "its development session is still open; verification starts once it is closed"
 BACKOFF_MIN_SECONDS = 15.0
 BACKOFF_MAX_SECONDS = 600.0
+CLEAN_EVERY_SECONDS = 24 * 3600.0
+# States of a run that the poll resumes once its retry time comes.
+RETRYABLE = frozenset({RunState.INTERRUPTED, RunState.PUBLISHING})
 
 __all__ = ["JournalCorrupt", "LockHeld", "PollReport", "Supervisor"]

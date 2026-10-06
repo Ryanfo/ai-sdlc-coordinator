@@ -135,7 +135,8 @@ async def test_an_internal_error_is_explained_in_jira(tmp_path: Path) -> None:
         sup.executor.execute = broken  # type: ignore[method-assign]
         await step(sup)
     comment = w.last_comment(KEY)
-    assert "coordinator error" in comment and "something unexpected" in comment
+    assert "coordinator error" in comment
+    assert "something unexpected" not in comment, "error text stays in the coordinator log"
     assert f"coordinator recover {KEY} --resume" in comment
     run = w.deps.store.latest_run(KEY)
     assert run is not None and run.record is not None

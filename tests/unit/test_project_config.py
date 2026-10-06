@@ -40,11 +40,19 @@ def test_a_project_file_and_a_short_personal_config_give_the_same_settings(tmp_p
         "identity": base_sections(tmp_path)["identity"],
         "jira": {"email": "dev@example.com"},
         "repository": {"checkout_path": str(tmp_path / "app"), "worktree_root": str(tmp_path / "worktrees")},
-        "runtime": {"state_dir": str(tmp_path / "state")},
+        # This machine's room and alerts are personal too (the test config turns them off).
+        "runtime": {
+            "state_dir": str(tmp_path / "state"),
+            "min_free_disk_gb": 0,
+            "hold_on_memory_pressure": False,
+            "keep_awake": False,
+        },
+        "notifications": {"desktop": False},
     }
     personal.write_text(render_config(sections, {"config_version": 1, "project": "team/PILOT.toml"}))
     shared = load_config(personal)
     assert shared.project_path == project
+    assert "keep_awake" not in team["runtime"] and "desktop" not in team.get("notifications", {})
     assert shared.model_dump() == full.model_dump()
     assert shared.digest() == full.digest()
 
