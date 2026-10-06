@@ -379,6 +379,25 @@ class GhClient:
         made = data["data"]["revertPullRequest"]["revertPullRequest"]
         return await self.get_pr(int(made["number"]))
 
+    async def close_pr(self, number: int, comment: str) -> None:
+        """Close a pull request without merging, saying why. Closing a closed one changes nothing."""
+        pr = await self.get_pr(number)
+        if pr.state != "open":
+            return
+        await self.api(f"repos/{self.slug}/issues/{number}/comments", method="POST", body={"body": comment})
+        await self.api(f"repos/{self.slug}/pulls/{number}", method="PATCH", body={"state": "closed"})
+
+    async def delete_branch(self, branch: str) -> None:
+        """Delete a branch on GitHub. A branch that is already gone is fine."""
+        try:
+            await self.api(f"repos/{self.slug}/git/refs/heads/{branch}", method="DELETE")
+        except NotFound:
+            return
+        except IntegrationError as exc:
+            if exc.status == 422 and "does not exist" in str(exc):
+                return
+            raise
+
 
 _REVERT_MUTATION = """
 mutation($id: ID!, $title: String!, $body: String!) {

@@ -559,6 +559,8 @@ class RunRecord(Model):
     held: bool = False
     hold_reason: str = ""
     next_action: str = ""
+    # A cancelled run: its PR, branch and drafts were tidied up (see delivery.cancel_cleanup).
+    tidied: bool = False
 
 
 # --------------------------------------------------------------------------- gates

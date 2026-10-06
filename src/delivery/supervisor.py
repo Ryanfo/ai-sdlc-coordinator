@@ -33,7 +33,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from delivery import __version__, cleanup, console
+from delivery import __version__, cancel_cleanup, cleanup, console
 from delivery import comments as comment_text
 from delivery.acceptance import Acceptance
 from delivery.alerts import Alerts
@@ -411,6 +411,7 @@ class Supervisor:
             # these may ever stop the poll.
             for name, check in (
                 ("cancelled tickets", self._close_cancelled),
+                ("cancelled tickets' leftovers", self._tidy_cancelled),
                 ("comments", self._sweep_comments),
                 ("out-of-date candidates", self.staleness.tick),
                 ("reminders", self.reminders.tick),
@@ -612,14 +613,7 @@ class Supervisor:
             self.emit(console.line("there is room again; new sessions start"))
         self.room = room
 
-    async def _close_cancelled(self) -> None:
-        """Close the runs of tickets that were cancelled in Jira after the run stopped.
-
-        A run that finished waiting for a person (a review, answers, a blocker) is left that way
-        in the journal, and so in the office, when someone cancels the ticket afterwards: nothing
-        publishes, so nothing records it. Ask Jira about those tickets and close their latest run.
-        A ticket with a session working on it is left to that session, which sees the cancel.
-        """
+    def _latest_runs(self) -> dict[str, Any]:
         latest: dict[str, Any] = {}
         for e in self.deps.store.iter_runs():
             r = e.record
@@ -628,6 +622,49 @@ class Supervisor:
             prev = latest.get(r.ticket_key)
             if prev is None or r.created_at >= prev.record.created_at:
                 latest[r.ticket_key] = e
+        return latest
+
+    async def _tidy_cancelled(self) -> None:
+        """Remove what cancelled tickets left in the repository (see delivery.cancel_cleanup).
+
+        Runs for every cancelled run not yet tidied, however it was cancelled. Jira is asked again
+        first, so a ticket moved back out of Cancelled is left alone. A failure is logged and
+        tried again on the next poll.
+        """
+        todo = {
+            key: e
+            for key, e in self._latest_runs().items()
+            if e.record.state is RunState.CANCELLED
+            and not e.record.tidied
+            and key not in self.sessions
+            and key not in self.busy
+        }
+        cancelled = self.cfg.workflow.statuses.get(Status.CANCELLED)
+        if not todo or not cancelled:
+            return
+        keys = sorted(todo)
+        for i in range(0, len(keys), 50):
+            chunk = keys[i : i + 50]
+            for issue in await self.deps.jira.search(f"key in ({', '.join(chunk)}) AND status = {cancelled}"):
+                entry = todo[issue.key]
+                try:
+                    what = await cancel_cleanup.tidy(self.deps, entry, self.emit)
+                except Exception as exc:
+                    log.warning("tidying cancelled %s failed; will try again: %s", issue.key, exc)
+                    continue
+                rec = entry.record
+                entry.journal.save(rec.model_copy(update={"tidied": True}), "cancel_tidied", what=what)
+                self.emit(console.line(f"{issue.key}: cancelled; {what}"))
+
+    async def _close_cancelled(self) -> None:
+        """Close the runs of tickets that were cancelled in Jira after the run stopped.
+
+        A run that finished waiting for a person (a review, answers, a blocker) is left that way
+        in the journal, and so in the office, when someone cancels the ticket afterwards: nothing
+        publishes, so nothing records it. Ask Jira about those tickets and close their latest run.
+        A ticket with a session working on it is left to that session, which sees the cancel.
+        """
+        latest = self._latest_runs()
         waiting = {
             key: e
             for key, e in latest.items()
