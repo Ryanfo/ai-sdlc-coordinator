@@ -34,6 +34,7 @@ _STATE_BEATS = {
     "blocked": "blocked",
     "failed": "failed",
     "interrupted": "interrupted",
+    "cancelled": "cancelled",
 }
 # Events that are worth a beat of their own (the rest are bookkeeping).
 _EVENT_BEATS = {

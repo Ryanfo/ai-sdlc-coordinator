@@ -410,6 +410,7 @@ class Supervisor:
             # First, so that runs starting in this poll already read the new guidance. None of
             # these may ever stop the poll.
             for name, check in (
+                ("cancelled tickets", self._close_cancelled),
                 ("comments", self._sweep_comments),
                 ("out-of-date candidates", self.staleness.tick),
                 ("reminders", self.reminders.tick),
@@ -610,6 +611,63 @@ class Supervisor:
         elif self.room and not room:
             self.emit(console.line("there is room again; new sessions start"))
         self.room = room
+
+    async def _close_cancelled(self) -> None:
+        """Close the runs of tickets that were cancelled in Jira after the run stopped.
+
+        A run that finished waiting for a person (a review, answers, a blocker) is left that way
+        in the journal, and so in the office, when someone cancels the ticket afterwards: nothing
+        publishes, so nothing records it. Ask Jira about those tickets and close their latest run.
+        A ticket with a session working on it is left to that session, which sees the cancel.
+        """
+        latest: dict[str, Any] = {}
+        for e in self.deps.store.iter_runs():
+            r = e.record
+            if e.error is not None or r is None:
+                continue
+            prev = latest.get(r.ticket_key)
+            if prev is None or r.created_at >= prev.record.created_at:
+                latest[r.ticket_key] = e
+        waiting = {
+            key: e
+            for key, e in latest.items()
+            if (
+                e.record.state in WAITING_STATES or (e.record.state is RunState.INTERRUPTED and e.record.held)
+            )
+            and key not in self.sessions
+            and key not in self.busy
+        }
+        cancelled = self.cfg.workflow.statuses.get(Status.CANCELLED)
+        if not waiting or not cancelled:
+            return
+        keys = sorted(waiting)
+        for i in range(0, len(keys), 50):
+            chunk = keys[i : i + 50]
+            found = await self.deps.jira.search(f"key in ({', '.join(chunk)}) AND status = {cancelled}")
+            for issue in found:
+                entry = waiting[issue.key]
+                rec = entry.record
+                assert rec is not None
+                if self.open:
+                    for session in self.open.registry.for_ticket(issue.key):
+                        await self.open.close(session, "the ticket was cancelled")
+                self.claims.release(issue.key, rec.run_id)
+                entry.journal.save(
+                    rec.model_copy(
+                        update={
+                            "state": RunState.CANCELLED,
+                            "held": False,
+                            "hold_reason": "",
+                            "reason": "cancelled in Jira",
+                            "next_action": "None (cancelled).",
+                            "ended_at": rec.ended_at or utcnow(),
+                        }
+                    ),
+                    "cancelled",
+                )
+                self.emit(
+                    console.line(f"{issue.key}: cancelled in Jira; its {rec.stage.value} run is closed")
+                )
 
     async def _resume_due(self, report: PollReport) -> None:
         """Resume runs that stopped for a reason that passes by itself, once their time comes.
@@ -1067,7 +1125,9 @@ class Supervisor:
         status = ctx.status.value if ctx.status else "unmapped"
         if ctx.status is Status.CANCELLED:
             journal.save(
-                rec.model_copy(update={"state": RunState.FAILED, "reason": "cancelled"}),
+                rec.model_copy(
+                    update={"state": RunState.CANCELLED, "reason": "cancelled in Jira", "held": False}
+                ),
                 "cancelled",
             )
             return "cancelled in Jira; closed locally"
@@ -1254,7 +1314,11 @@ def _backoff(seconds: float) -> float:
     return min(max(seconds * 2, BACKOFF_MIN_SECONDS), BACKOFF_MAX_SECONDS)
 
 
-TERMINAL = frozenset({RunState.AWAITING_HUMAN, RunState.COMPLETED, RunState.FAILED, RunState.BLOCKED})
+TERMINAL = frozenset(
+    {RunState.AWAITING_HUMAN, RunState.COMPLETED, RunState.FAILED, RunState.BLOCKED, RunState.CANCELLED}
+)
+# Runs that wait for a person (or have stopped for good) and so can outlive their ticket.
+WAITING_STATES = frozenset({RunState.AWAITING_HUMAN, RunState.BLOCKED, RunState.FAILED})
 OPEN_SESSION_TICK_SECONDS = 3.0
 # Done tickets changed within this many days are still read for CREATE TICKETS comments.
 COMMENTS_DONE_DAYS = 30

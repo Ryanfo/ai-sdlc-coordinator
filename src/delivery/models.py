@@ -441,6 +441,8 @@ class RunState(StrEnum):
     INTERRUPTED = "interrupted"
     FAILED = "failed"
     BLOCKED = "blocked"
+    # The ticket was cancelled in Jira: nothing more will happen to this run.
+    CANCELLED = "cancelled"
 
 
 ACTIVE_RUN_STATES = frozenset(
@@ -453,7 +455,7 @@ ACTIVE_RUN_STATES = frozenset(
     }
 )
 TERMINAL_RUN_STATES = frozenset(
-    {RunState.AWAITING_HUMAN, RunState.COMPLETED, RunState.FAILED, RunState.BLOCKED}
+    {RunState.AWAITING_HUMAN, RunState.COMPLETED, RunState.FAILED, RunState.BLOCKED, RunState.CANCELLED}
 )
 
 
