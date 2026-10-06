@@ -92,7 +92,7 @@ async def test_shared_interface_and_declared_dependency_are_flagged_never_paused
         await _plan(a, sa, "PILOT-1")
         await _plan(b, sb, "PILOT-2")
         warnings = [c for c in b.comments("PILOT-2") if "Overlap warning" in c]
-        assert any("shared_contract" in c and "higher risk" in c for c in warnings)
+        assert any("shared_contract" in c and "Higher risk" in c for c in warnings)
         assert any("declared_dependency" in c and "PILOT-2 depends on PILOT-1" in c for c in warnings)
         assert not any("OVERLAP OVL-" in c for c in b.comments("PILOT-2"))
         # No decision is needed: development starts as soon as the plan is approved.

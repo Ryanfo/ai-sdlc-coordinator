@@ -30,8 +30,8 @@ async def test_each_procedure_runs_on_its_configured_model(tmp_path: Path) -> No
         inv["argv"][inv["argv"].index("-p") + 1].split()[0]: _model(inv["argv"]) for inv in w.invocations()
     }
     assert used == {"/delivery:refine-ticket": "sonnet", "/delivery:plan-ticket": "opus"}
-    started = [c for c in w.comments(KEY) if "started." in c]
-    assert "Model: sonnet" in started[0] and "Model: opus" in started[1]
+    # The model is run configuration, not a decision: the ticket does not carry it.
+    assert not any("Model" in c for c in w.comments(KEY) if "started." in c)
 
 
 async def test_without_a_model_setting_no_model_flag_is_passed(tmp_path: Path) -> None:
@@ -41,4 +41,4 @@ async def test_without_a_model_setting_no_model_flag_is_passed(tmp_path: Path) -
     async with Supervisor(w.deps) as sup:
         await step(sup)
     assert [_model(i["argv"]) for i in w.invocations()] == [None]
-    assert "Model: Claude Code default" in next(c for c in w.comments(KEY) if "started." in c)
+    assert "Model" not in next(c for c in w.comments(KEY) if "started." in c)

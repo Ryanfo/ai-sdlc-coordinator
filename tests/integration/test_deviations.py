@@ -162,7 +162,7 @@ async def test_accepted_with_other_changes_rewrites_spec_before_development(tmp_
         assert w.jira.status_of(KEY) is Status.CHANGES_REQUESTED
         failed = w.last_comment(KEY)
         assert "Deviations from the approved specification" in failed
-        why = failed.split("Why it failed")[1].split("What to do next")[0]
+        why = failed.split("Why it failed")[1].split("Deviations from")[0]
         assert "F1" in why and "D1" not in why and "D2" not in why
         w.jira.human_comment(KEY, APPROVER, f"ACCEPT DEVIATIONS {KEY}-CODE-c1\nD1")
         w.jira.human_comment(
@@ -223,7 +223,7 @@ async def test_with_no_approver_list_anyone_can_decide(tmp_path: Path) -> None:
         await step(sup)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
-        assert "If they are acceptable: add this comment" in w.last_comment(KEY)
+        assert "If acceptable: comment this" in w.last_comment(KEY)
         w.decide(KEY, f"ACCEPT DEVIATIONS {KEY}-CODE-c1", Status.READY_VERIFICATION, author=anyone)
         await step(sup)
         assert w.token(KEY, "SPEC") == f"{KEY}-SPEC-v2", w.last_comment(KEY)

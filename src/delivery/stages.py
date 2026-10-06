@@ -2132,7 +2132,6 @@ class DevelopmentStage(StageStrategy):
                 n,
                 sha,
                 pr.url,
-                result.summary,
                 merge_conflicts=ctx.record.outputs.get("merge_conflicts", []),
                 resolved=ctx.record.outputs.get("conflicts_resolved"),
                 base=ctx.cfg.repository.base_branch,
@@ -2621,7 +2620,6 @@ class VerificationStage(StageStrategy):
                     checks,
                     findings,
                     problems,
-                    key=ctx.key,
                     base=base_branch,
                     merge_conflicts=conflicts,
                     claude_resolves=ctx.cfg.flow.resolve_conflicts,
@@ -2672,7 +2670,6 @@ class VerificationStage(StageStrategy):
             "code-gate",
             comments.code_gate(
                 code_token,
-                accept_token,
                 pr_url,
                 candidate,
                 review_url,
@@ -2682,9 +2679,6 @@ class VerificationStage(StageStrategy):
                 d.extra.get("unverified", []),
                 overlap,
                 ", ".join(ctx.cfg.approvals.github_logins) or "an independent reviewer",
-                "{state}: {detail}".format(
-                    **{"state": "missing", "detail": "", **d.extra.get("ci_provenance", {})}
-                ),
                 base=base_branch,
                 merge_conflicts=conflicts,
                 deviations=records,
@@ -2718,7 +2712,6 @@ class VerificationStage(StageStrategy):
         await self.publish_amendment(
             comments.back_to_code_review(
                 gate_token(ctx.key, GateKind.CODE, n),
-                gate_token(ctx.key, GateKind.ACCEPT, n),
                 n,
                 remaining,
                 approvers_only=not ctx.cfg.approvals.anyone,
@@ -3522,13 +3515,9 @@ class ResolutionStage(StageStrategy):
         )
         report: dict[str, Any] = {
             "resume_stage": resume.value,
-            "run_id": ctx.run_id,
-            "worker_id": ctx.cfg.identity.worker_id,
-            "actions": [str(a) for a in info.get("actions") or []],
             "decisions": list(info.get("decisions") or []),
             "follow_ups": [str(f) for f in info.get("follow_ups") or []],
             "developer": developer,
-            "questions_asked": int(info.get("questions_asked") or 0),
         }
         if d.outcome != "success":
             d = d.model_copy(update={"resume_stage": resume.value})

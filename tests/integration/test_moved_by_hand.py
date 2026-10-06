@@ -31,7 +31,7 @@ async def test_card_dragged_into_working_status_is_taken_over(tmp_path: Path) ->
         assert w.jira.status_of(KEY) is Status.PLAN_REVIEW
         moves = [(c.from_name, c.to_name) for c in w.jira.changes_by_key[KEY][before:]]
         assert moves == [("Planning", "Plan review")]  # the start move was not repeated
-        assert any("moved into Planning by hand" in c for c in w.comments(KEY))
+        assert any("Moved into Planning by hand" in c for c in w.comments(KEY))
         assert _spec_state(w) is GateState.APPROVED
         # Nothing further happens on later polls.
         assert await step(sup) == []

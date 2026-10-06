@@ -30,7 +30,7 @@ ACTION_EFFECTS: dict[Action, str] = {
     "comments say it all); then Submit implementation changes",
     Action.REQUEST_ACCEPTANCE_CHANGES: "needs a CHANGE ACCEPTANCE comment",
     Action.APPROVE_CODE: "needs APPROVE CODE and an independent GitHub approval at the current head",
-    Action.ACCEPT_DELIVERY: "needs an ACCEPT DELIVERY comment after code approval",
+    Action.ACCEPT_DELIVERY: "needs an ACCEPT DELIVERY comment (posted once the code is approved)",
     Action.CANCEL: "stops all work on the ticket",
     Action.USE_APPROVED_PLAN: "the coordinator's: a fast-track plan approved with the specification",
     Action.COMPLETE_SPIKE: "the coordinator's: closes a spike whose findings were accepted",

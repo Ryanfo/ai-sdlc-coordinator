@@ -82,7 +82,7 @@ for review.
 - `procedure`: the procedure name, e.g. `refine-ticket`.
 - `run_id`, `ticket_key`, `stage`, `input_revision`: copied from the envelope.
 - `outcome`: `completed`, `needs_clarification`, `failed` or `blocked`.
-- `summary`: two to five sentences a human can read in Jira.
+- `summary`: two to five sentences a human can read in Jira. It is posted as a decision aid, so leave out test, lint and check results (they are in the logs) and background that is in the repository.
 - `artifacts`: files you wrote, with `path` **relative to `output.artifact_dir`** and a `kind`.
   For implementation, list changed source/test files with paths relative to the repository root
   and kinds `code` or `test`.

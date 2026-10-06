@@ -50,7 +50,7 @@ async def test_conflicting_tickets_both_reach_code_review_with_the_conflict_flag
         for key, other in (("PILOT-1", "PILOT-2"), ("PILOT-2", "PILOT-1")):
             assert w.jira.status_of(key) is Status.CODE_REVIEW, w.last_comment(key)
             gate = next(c for c in w.comments(key) if "Candidate ready for code review" in c)
-            assert "Merge conflicts to resolve when merging" in gate
+            assert "Merge conflicts" in gate and "resolve them in the PR when you merge" in gate
             assert f"{other}'s candidate" in gate and "src/app.ts" in gate
     # The approved specification and plan reach Claude as two different files.
     env = json.loads(_run_file(w, "PILOT-1", "development", "envelope-implement-ticket.json")[0].read_text())
@@ -82,8 +82,10 @@ async def test_conflict_with_base_is_flagged_and_never_blocks(tmp_path: Path) ->
         assert w.jira.status_of("PILOT-1") is Status.CHANGES_REQUESTED
         failed = w.last_comment("PILOT-1")
         assert "R1: coordinator check unit (candidate) failed" in failed
-        assert "conflicts in" not in failed.split("What to do next")[0]  # not a reason to fail
-        assert "Merge conflicts to resolve when merging" in failed
+        assert (
+            "conflicts in" not in failed.split("Why it failed")[1].split("Merge conflicts")[0]
+        )  # not a reason
+        assert "Merge conflicts" in failed
         assert "Submit implementation changes" in failed and "Submit follow-up changes" in failed
         assert "SUBMIT CHANGES PILOT-1-CODE-c1" in failed
 
@@ -100,18 +102,20 @@ async def test_conflict_with_base_is_flagged_and_never_blocks(tmp_path: Path) ->
         w.jira.human_move("PILOT-1", Status.READY_DEVELOPMENT, DEV)
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.BLOCKED, w.last_comment("PILOT-1")
-        assert "FOR CLAUDE" in w.last_comment("PILOT-1")
+        assert "Next action" in w.last_comment("PILOT-1")
         w.jira.human_comment("PILOT-1", DEV, "FOR CLAUDE development\nUse the constant x.")
         w.jira.human_move("PILOT-1", Status.READY_DEVELOPMENT, DEV)
         await step(sup)  # main still conflicts: development carries on without it
         assert w.record("PILOT-1").candidate_number == 2, w.last_comment("PILOT-1")
-        assert "was not merged into this candidate" in w.last_comment("PILOT-1")
-        started = next(c for c in reversed(w.comments("PILOT-1")) if "Development started" in c)
-        assert "Notes for Claude: 1" in started
+        assert "was not merged in" in w.last_comment("PILOT-1")
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.CODE_REVIEW, w.last_comment("PILOT-1")
         gate = w.last_comment("PILOT-1")
-        assert "Merge conflicts to resolve when merging" in gate and "src/app.ts" in gate
+        assert (
+            "Merge conflicts" in gate
+            and "resolve them in the PR when you merge" in gate
+            and "src/app.ts" in gate
+        )
     envs = _run_file(w, "PILOT-1", "development", "envelope-implement-ticket.json")
     items = [set(json.loads(e.read_text())["feedback_items"]) for e in envs[1:]]
     assert items == [{"F1", "R1", "R2"}] * 2  # F2 was not selected
@@ -201,5 +205,5 @@ async def test_conflict_help_can_be_turned_off(tmp_path: Path) -> None:
         assert "Or have Claude do it" not in w.last_comment("PILOT-1")
         w.jira.human_move("PILOT-1", Status.READY_DEVELOPMENT, DEV)
         await step(sup)
-        assert "was not merged into this candidate" in w.last_comment("PILOT-1")
+        assert "was not merged in" in w.last_comment("PILOT-1")
     assert not [i for i in w.invocations() if "/delivery:resolve-conflicts" in " ".join(i["argv"])]
