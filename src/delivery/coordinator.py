@@ -669,7 +669,7 @@ class StageExecutor:
         if moved.actual is Status.CANCELLED:
             rc.record = rc.record.model_copy(
                 update={
-                    "state": RunState.FAILED,
+                    "state": RunState.CANCELLED,
                     "reason": "cancelled by a human; publication suppressed",
                     "ended_at": utcnow(),
                     "next_action": "None (cancelled).",

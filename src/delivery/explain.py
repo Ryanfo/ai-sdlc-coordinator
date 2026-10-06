@@ -42,6 +42,7 @@ STATE_WORDS = {
     RunState.FAILED: "failed",
     RunState.INTERRUPTED: "stopped",
     RunState.COMPLETED: "completed",
+    RunState.CANCELLED: "cancelled",
 }
 
 

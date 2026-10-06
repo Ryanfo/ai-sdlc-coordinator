@@ -687,6 +687,14 @@ function animate(b) {
       });
       break;
     }
+    case 'cancelled': {
+      // Cancelled in Jira: the folder leaves the office wherever it was.
+      t.last = 'cancelled';
+      Object.values(A).forEach((a) => a.working.delete(k));
+      place(t, { k: 'cancelled' });
+      A.pam.say(`Jira: ${k} was cancelled.`, 2600);
+      break;
+    }
     case 'interrupted': {
       t.last = 'interrupted';
       const w = stageWorkerOf(t, b);
@@ -717,6 +725,7 @@ function applyInstant(b) {
     case 'done': t.last = 'done'; w().working.delete(t.key); place(t, { k: 'shipped' }); shipped++; break;
     case 'blocked': case 'failed': t.last = b.kind; w().working.delete(t.key); place(t, { k: 'hr' }); break;
     case 'interrupted': t.last = 'interrupted'; w().working.delete(t.key); break;
+    case 'cancelled': t.last = 'cancelled'; Object.values(A).forEach((a) => a.working.delete(t.key)); place(t, { k: 'cancelled' }); break;
   }
 }
 function settleActors(michaelIn) {
@@ -1012,6 +1021,7 @@ function stateLabel(t) {
     case 'table': return ['waiting', 'In the conference room: waiting for you'];
     case 'hr': return ['bad', t.last === 'failed' ? 'Failed: on Toby\'s desk' : 'Blocked: on Toby\'s desk'];
     case 'shipped': return ['done', 'Shipped'];
+    case 'cancelled': return ['', 'Cancelled in Jira'];
     case 'tray': return ['', "In Pam's in-tray"];
     case 'hand': return ['', `${A[t.loc.a].name} is carrying it`];
     case 'desk': {
@@ -1075,6 +1085,7 @@ function describe(b) {
     case 'blocked': return `${k} is blocked: sent to Toby`;
     case 'failed': return `${k} failed: sent to Toby`;
     case 'interrupted': return `${k} paused`;
+    case 'cancelled': return `${k} was cancelled`;
     case 'jira': return `Pam moves ${k} to ${statusName(b.to)}`;
     case 'pr': return `${who} opens PR #${b.number} for ${k}`;
     case 'push': return `${who} pushes ${k}`;

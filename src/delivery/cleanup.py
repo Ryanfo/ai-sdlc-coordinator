@@ -29,7 +29,9 @@ from delivery.journal import JournalStore, RunEntry
 from delivery.models import RunState, utcnow
 from delivery.open_sessions import OpenRecord, SessionRegistry
 
-FINISHED = frozenset({RunState.AWAITING_HUMAN, RunState.COMPLETED, RunState.FAILED, RunState.BLOCKED})
+FINISHED = frozenset(
+    {RunState.AWAITING_HUMAN, RunState.COMPLETED, RunState.FAILED, RunState.BLOCKED, RunState.CANCELLED}
+)
 
 
 @dataclass

@@ -23,6 +23,7 @@ OUTCOMES = {
     RunState.BLOCKED: "BLOCKED",
     RunState.FAILED: "FAILED",
     RunState.INTERRUPTED: "STOPPED",
+    RunState.CANCELLED: "CANCELLED",
 }
 
 

@@ -100,8 +100,10 @@ def test_poll_returns_only_new_beats_and_waits_for_whole_lines(tmp_path: Path) -
     new = feed.poll()
     assert [(b["kind"], b["seq"]) for b in new] == [("checks", 3)]
 
-    j.save(rec.model_copy(update={"state": RunState.FAILED}), "cancelled")
+    j.save(rec.model_copy(update={"state": RunState.FAILED}), "failed")
     assert [b["kind"] for b in feed.poll()] == ["failed"]
+    j.save(rec.model_copy(update={"state": RunState.CANCELLED}), "cancelled")
+    assert [b["kind"] for b in feed.poll()] == ["cancelled"]
 
 
 def test_supervisor_events_move_the_manager(tmp_path: Path) -> None:
