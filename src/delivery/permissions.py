@@ -31,6 +31,7 @@ class Role(StrEnum):
     IMPLEMENTER = "implementer"  # implement: edit the feature worktree, run tests
     REVIEWER = "reviewer"  # review: read-only code access, report to output dir
     VERIFIER = "verifier"  # verify, verify-release: run commands in a disposable worktree
+    RESOLVER = "resolver"  # resolve-blocker: the implementer, plus asking the developer questions
 
 
 PROCEDURE_ROLES: dict[str, Role] = {
@@ -44,6 +45,7 @@ PROCEDURE_ROLES: dict[str, Role] = {
     "amend-spec": Role.AUTHOR,
     "resolve-conflicts": Role.IMPLEMENTER,
     "investigate-ticket": Role.VERIFIER,
+    "resolve-blocker": Role.RESOLVER,
 }
 
 # Paths in the application worktree that an implementation must never change.
@@ -98,6 +100,7 @@ DEFAULT_NETWORK = {
     Role.AUTHOR: (),
     Role.REVIEWER: (),
     Role.IMPLEMENTER: ("registry.npmjs.org",),
+    Role.RESOLVER: ("registry.npmjs.org",),
     Role.VERIFIER: ("registry.npmjs.org",),
 }
 
@@ -115,6 +118,7 @@ class StageProfile:
     add_dirs: tuple[Path, ...]
     writable: tuple[Path, ...]
     notes: tuple[str, ...] = field(default_factory=tuple)
+    permission_mode: str = "dontAsk"
 
 
 def build_profile(
@@ -128,12 +132,15 @@ def build_profile(
     network_domains: tuple[str, ...] | None = None,
 ) -> StageProfile:
     file_tools = ("Read", "Grep", "Glob", "Edit", "Write")
-    bash = role in (Role.IMPLEMENTER, Role.VERIFIER)
+    bash = role in (Role.IMPLEMENTER, Role.RESOLVER, Role.VERIFIER)
     tools = (*file_tools, "Bash") if bash else file_tools
-
     allow = [f"Edit({_abs(output_dir)}/**)", f"Read({_abs(inputs_dir)}/**)"]
+    if role is Role.RESOLVER:
+        # The one tool that talks to the person in the session (resolution needs a developer).
+        tools = (*tools, "AskUserQuestion")
+        allow.append("AskUserQuestion")
     deny: list[str] = [f"Edit({_abs(d)}/**)" for d in (inputs_dir, *readonly_dirs)]
-    if role is Role.IMPLEMENTER:
+    if role in (Role.IMPLEMENTER, Role.RESOLVER):
         allow.append(f"Edit({_abs(worktree)}/**)")
         deny.extend(f"Edit({_abs(worktree)}/{p})" for p in PROTECTED_WORKTREE_PATHS)
     elif role is Role.VERIFIER:
@@ -151,12 +158,17 @@ def build_profile(
         deny.extend(f"Bash({cmd})" for cmd in DENIED_COMMANDS)
     deny.extend(["WebFetch", "WebSearch", "mcp__*"])
 
+    # AskUserQuestion is denied under dontAsk even when an allow rule names it (checked against
+    # Claude Code 2.1.289), and the resolver needs it. A resolution only runs with the developer at
+    # the keyboard, so anything outside the allow rules asks them instead of being denied. Deny
+    # rules, --restricted and the OS sandbox are unchanged.
+    mode = "default" if role is Role.RESOLVER else "dontAsk"
     domains = DEFAULT_NETWORK[role] if network_domains is None else network_domains
     settings: dict[str, Any] = {
         "permissions": {
             "allow": allow,
             "deny": deny,
-            "defaultMode": "dontAsk",
+            "defaultMode": mode,
             "disableBypassPermissionsMode": "disable",
         },
         "enableAllProjectMcpServers": False,
@@ -179,11 +191,12 @@ def build_profile(
             },
         },
     }
-    writable = (output_dir, tmp_dir) + ((worktree,) if role is Role.IMPLEMENTER else ())
+    writes_worktree = role in (Role.IMPLEMENTER, Role.RESOLVER)
+    writable = (output_dir, tmp_dir) + ((worktree,) if writes_worktree else ())
     notes = (
         "worktree is read-only to file tools"
-        if role is not Role.IMPLEMENTER
+        if not writes_worktree
         else "protected paths denied: " + ", ".join(PROTECTED_WORKTREE_PATHS),
     )
     add_dirs = (output_dir, inputs_dir, *readonly_dirs)
-    return StageProfile(role, tools, settings, add_dirs, writable, notes)
+    return StageProfile(role, tools, settings, add_dirs, writable, notes, mode)

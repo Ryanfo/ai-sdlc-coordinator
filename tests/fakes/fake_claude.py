@@ -273,6 +273,39 @@ def interactive(argv: list[str], scenario_path: Path) -> int:
                 },
             }
         )
+    for n, q in enumerate(b.get("ask") or []):
+        # The developer is asked a question with AskUserQuestion and answers it.
+        t(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": f"a{n}",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": f"toolu_q{n}",
+                            "name": "AskUserQuestion",
+                            "input": {"questions": [{"question": q["question"], "header": "Choice"}]},
+                        }
+                    ],
+                },
+            }
+        )
+        t(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": f"toolu_q{n}",
+                            "content": f'User has answered your questions: "{q["question"]}"="{q["answer"]}".',
+                        }
+                    ]
+                },
+                "toolUseResult": {"answers": {q["question"]: q["answer"]}},
+            }
+        )
     forget = int(b.get("forget_result", 0))  # stops before writing the result this many times
     if not forget:
         result_path.write_text(json.dumps(result))

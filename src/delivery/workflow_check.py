@@ -22,6 +22,7 @@ from delivery.ports import IntegrationError, JiraPort, JiraTransition
 from delivery.workflow import (
     FOLLOW_UP_ROUTES,
     OPTIONAL_ROUTES,
+    OPTIONAL_STATUSES,
     PAUSED_STATUSES,
     ROUTES,
     STATUS_NAMES,
@@ -87,6 +88,29 @@ WALK: tuple[tuple[Action, Stage | str | None], ...] = (
     (Action.START_RELEASE_VERIFICATION, None),
     (Action.COMPLETE_RELEASE_VERIFICATION, None),
 )
+
+
+Walk = tuple[tuple[Action, Stage | str | None], ...]
+
+
+def _with_resolution(walk: Walk) -> Walk:
+    """The walk plus resolution. A blocker that is not resolved goes back to Blocked; one that is
+    goes back to the stage that blocked. (The other five Resolved: actions are checked for
+    existence at Resolving, as the resume actions are at Blocked.)"""
+    request = ((Action.REQUEST_RESOLUTION, None), (Action.START_RESOLUTION, None))
+    out: list[tuple[Action, Stage | str | None]] = []
+    for action, resume in walk:
+        if action is Action.RESUME_REFINEMENT:
+            out += [*request, (Action.BLOCK_STAGE, None)]  # unresolved: Blocked again, resumed by hand
+        if action is Action.COMPLETE_REFINEMENT:
+            out += [
+                (Action.BLOCK_STAGE, _R),
+                *request,
+                (Action.RESOLVED_REFINEMENT, None),
+                (Action.START_REFINEMENT, "clear"),
+            ]
+        out.append((action, resume))
+    return tuple(out)
 
 
 @dataclass
@@ -184,7 +208,7 @@ class _Walker:
             self.report.problems.append(f"{STATUS_NAMES[status]}: missing transition {m}")
         for u in finding.unexpected:
             self.report.warnings.append(f"{STATUS_NAMES[status]}: transition not in the agreed workflow: {u}")
-        if status in PAUSED_STATUSES:
+        if status in PAUSED_STATUSES or status is Status.RESOLVING:
             await self.check_resume(key, status)
         return offered
 
@@ -337,8 +361,12 @@ async def _verify(
         return
     report.info.append("new tickets start in Backlog")
 
+    walk = WALK
+    if set(cfg.workflow.statuses) >= OPTIONAL_STATUSES:
+        walk = _with_resolution(WALK)
+        report.info.append("resolution statuses are mapped: the walk includes resolving a blocker")
     try:
-        for action, resume in WALK:
+        for action, resume in walk:
             if resume == "clear":
                 await w.set_resume(key, None)
             elif isinstance(resume, Stage):
@@ -391,7 +419,11 @@ async def _verify(
         report.problems.append(str(exc))
 
     visited = set(report.findings)
-    unvisited = [STATUS_NAMES[s] for s in Status if s.value not in visited]
+    unvisited = [
+        STATUS_NAMES[s]
+        for s in Status
+        if s.value not in visited and (s not in OPTIONAL_STATUSES or s in cfg.workflow.statuses)
+    ]
     if unvisited:
         report.warnings.append(f"statuses not reached: {', '.join(unvisited)}")
     for s in TERMINAL_STATUSES:

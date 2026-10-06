@@ -425,7 +425,9 @@ class IntakeEvaluator:
                 entry=entry,
             )
 
-        if src in PAUSED_STATUSES:
+        if stage is Stage.RESOLUTION:
+            result = self._resolution_request(ctx, src, entry)
+        elif src in PAUSED_STATUSES:
             result = await self._resume(ctx, stage, src, entry)
         else:
             result = await self._route(ctx, stage, src, entry)
@@ -645,6 +647,67 @@ class IntakeEvaluator:
             ev.reason,
             entry=entry,
             record=rec,
+        )
+
+    def _resolution_request(self, ctx: TicketContext, src: Status, entry: StatusChange) -> Intake:
+        """A person asked for the blocker to be resolved with Claude (Blocked -> Ready for
+        resolution). The ticket goes back to the stage that blocked, so that stage must be known."""
+        stage = Stage.RESOLUTION
+        rec = ctx.record
+        if src is not Status.BLOCKED:
+            return self._block(
+                stage,
+                f"arrived from {STATUS_NAMES[src]}, not Blocked",
+                "Request resolution is only offered on a Blocked ticket.",
+                entry=entry,
+            )
+        if entry.author_account_id not in self.humans:
+            return self._wait(
+                stage,
+                "resolution requested by an account that is not the assignee or an approver",
+                "The assignee or an approver must request it.",
+                entry,
+                Requirement.RESOLUTION_REQUEST,
+            )
+        if rec.pause is not None and rec.pause.blocker_kind == "invalid_decision":
+            return self._wait(
+                stage,
+                "the ticket is Blocked because an approval or decision was rejected",
+                "Fix it by deciding again (comment with the current token, then the Jira action) and choose "
+                "Resume; a resolution session cannot change a human decision.",
+                entry,
+                Requirement.RESOLUTION_REQUEST,
+            )
+        resume = rec.pause.resume_stage if rec.pause is not None else None
+        if resume is None and ctx.issue.view.resume_stage in {s.value for s in Stage}:
+            resume = Stage(ctx.issue.view.resume_stage)
+        if resume is None or resume is Stage.RESOLUTION:
+            return self._wait(
+                stage,
+                "the coordinator did not record which stage blocked, so there is nowhere to return to",
+                "Move the ticket back to Blocked and choose the Resume action for its stage, or Cancel.",
+                entry,
+                Requirement.RESOLUTION_REQUEST,
+            )
+        pause = rec.pause
+        return Intake(
+            IntakeKind.READY,
+            stage,
+            Requirement.RESOLUTION_REQUEST,
+            "resolution requested" + (f" for: {pause.reason[:200]}" if pause and pause.reason else ""),
+            entry=entry,
+            record=rec,
+            resume_stage=resume,
+            blocker_kind=pause.blocker_kind if pause else "",
+        )
+
+    async def _req_resolved(self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange) -> Intake:
+        """The ticket came back from a resolution session: the stage that blocked starts again."""
+        return Intake(
+            IntakeKind.READY,
+            stage,
+            reason="resumed after the blocker was resolved with the developer",
+            record=ctx.record.model_copy(update={"pause": None}),
         )
 
     async def _route(self, ctx: TicketContext, stage: Stage, src: Status, entry: StatusChange) -> Intake:

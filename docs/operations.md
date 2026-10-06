@@ -82,7 +82,7 @@ touched. `retention_days = 0` keeps everything until you clean by hand.
 | awaiting_human | Published; ticket is in a review or paused status | Nothing until a human acts |
 | interrupted | Stopped mid-work | Not held: resumes on the next supervisor start, or on the poll once its retry time comes. Held: needs `delivery recover <KEY> --resume` |
 | interrupted, waiting for Claude | Claude's login expired or the usage limit was reached | Resumes by itself once a one-word Claude probe works (checked every 1 to 15 minutes); new work waits meanwhile |
-| blocked | Ticket moved to Blocked with a reason | A human fixes the cause and chooses Resume in Jira |
+| blocked | Ticket moved to Blocked with a reason | A human fixes the cause and chooses Resume in Jira, or chooses Request resolution to clear it with Claude (a `resolution` run: it ends `completed` when the ticket returns to the stage that blocked, `blocked` when the cause could not be cleared) |
 | failed | A definite failure the coordinator could not publish around | `delivery inspect` explains; fix, then `delivery recover` |
 | completed | Release verified, ticket Done | — |
 

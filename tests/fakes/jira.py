@@ -175,6 +175,8 @@ class FakeJira:
         out = []
         seen: set[tuple[Action, Status]] = set()
         for r in ROUTES:
+            if r.target not in self.status_ids:
+                continue  # a project without the optional statuses (resolution)
             if r.source is issue.status and (r.source, r.target) not in self.drop_routes:
                 # One Jira transition serves a route both humans and the coordinator may take.
                 if (r.action, r.target) in seen:

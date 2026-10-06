@@ -35,7 +35,7 @@ from pydantic import (
     model_validator,
 )
 
-from delivery.workflow import DEFAULT_ACTION_NAMES, Action, Status
+from delivery.workflow import DEFAULT_ACTION_NAMES, OPTIONAL_STATUSES, Action, Status
 
 ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 CHECK_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
@@ -253,8 +253,19 @@ class RuntimeConfig(StrictModel):
 
 
 # Long procedures get more room by default; [claude.turn_limits] / timeout_minutes override.
-DEFAULT_TURN_LIMITS = {"implement-ticket": 500, "verify-ticket": 250, "review-ticket": 200}
-DEFAULT_TIMEOUT_MINUTES = {"implement-ticket": 120, "verify-ticket": 60, "review-ticket": 45}
+# resolve-blocker waits for the developer's answers, so it gets more time than its work needs.
+DEFAULT_TURN_LIMITS = {
+    "implement-ticket": 500,
+    "verify-ticket": 250,
+    "review-ticket": 200,
+    "resolve-blocker": 250,
+}
+DEFAULT_TIMEOUT_MINUTES = {
+    "implement-ticket": 120,
+    "verify-ticket": 60,
+    "review-ticket": 45,
+    "resolve-blocker": 90,
+}
 
 
 class GuardrailsConfig(StrictModel):
@@ -647,7 +658,7 @@ class WorkflowConfig(StrictModel):
         return self.actions.get(action, DEFAULT_ACTION_NAMES[action])
 
     def missing_statuses(self) -> list[Status]:
-        return [s for s in Status if s not in self.statuses]
+        return [s for s in Status if s not in self.statuses and s not in OPTIONAL_STATUSES]
 
 
 class OverlapConfig(StrictModel):

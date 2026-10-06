@@ -326,7 +326,7 @@ class InteractiveRunner:
             "--restricted",
             "--settings", str(inv.settings_path),
             "--strict-mcp-config",
-            "--permission-mode", "dontAsk",
+            "--permission-mode", inv.permission_mode,
             "--tools", ",".join(inv.tools),
             "--session-id", inv.session_id,
             "--name", title,
@@ -392,7 +392,7 @@ class InteractiveRunner:
             return ClaudeOutcome(ClaudeStatus.START_FAILED, str(exc))
 
         def human_active() -> bool:
-            return len([e for e in read_events(sdir) if e.get("event") == "prompt"]) > 1
+            return inv.human_present or len([e for e in read_events(sdir) if e.get("event") == "prompt"]) > 1
 
         if on_start:
             on_start(ChildHandle(pid, lambda: self.tmux.kill(name), human_active))

@@ -411,6 +411,83 @@
       "title": "ReleaseProposal",
       "type": "object"
     },
+    "ResolutionDecision": {
+      "additionalProperties": false,
+      "description": "A choice made while resolving a blocker, and who made it.",
+      "properties": {
+        "id": {
+          "pattern": "^D\\d{1,2}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "question": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        },
+        "decision": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Decision",
+          "type": "string"
+        },
+        "decided_by": {
+          "enum": [
+            "developer",
+            "claude"
+          ],
+          "title": "Decided By",
+          "type": "string"
+        },
+        "rationale": {
+          "default": "",
+          "maxLength": 1000,
+          "title": "Rationale",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "question",
+        "decision",
+        "decided_by"
+      ],
+      "title": "ResolutionDecision",
+      "type": "object"
+    },
+    "ResolutionReport": {
+      "additionalProperties": false,
+      "description": "What a resolve-blocker session did, for the ticket's Jira comment.",
+      "properties": {
+        "actions": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Actions",
+          "type": "array"
+        },
+        "decisions": {
+          "items": {
+            "$ref": "#/$defs/ResolutionDecision"
+          },
+          "maxItems": 30,
+          "title": "Decisions",
+          "type": "array"
+        },
+        "follow_ups": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 20,
+          "title": "Follow Ups",
+          "type": "array"
+        }
+      },
+      "title": "ResolutionReport",
+      "type": "object"
+    },
     "Severity": {
       "enum": [
         "blocker",
@@ -428,7 +505,8 @@
         "development",
         "verification",
         "release_preparation",
-        "release_verification"
+        "release_verification",
+        "resolution"
       ],
       "title": "Stage",
       "type": "string"
@@ -600,6 +678,17 @@
       "maxLength": 2000,
       "title": "Blocker Reason",
       "type": "string"
+    },
+    "resolution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ResolutionReport"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [

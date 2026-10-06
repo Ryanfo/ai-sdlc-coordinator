@@ -7,7 +7,7 @@ import pytest
 
 from conftest import ConfigFactory, base_sections, render_config
 from delivery.config import Config, ConfigError, load_config, template_text
-from delivery.workflow import Action, Status
+from delivery.workflow import OPTIONAL_STATUSES, Action, Status
 
 
 def test_loads_and_resolves_relative_paths_against_config_file(
@@ -90,7 +90,7 @@ def test_template_is_valid_toml_and_loads(tmp_path: Path) -> None:
     p = tmp_path / "t.toml"
     p.write_text(text)
     cfg = load_config(p)
-    assert cfg.workflow.missing_statuses() == list(Status)
+    assert cfg.workflow.missing_statuses() == [s for s in Status if s not in OPTIONAL_STATUSES]
     assert "max_parallel" not in text
     assert "ATATT" not in text
 

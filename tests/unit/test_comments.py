@@ -6,7 +6,7 @@ import pytest
 
 from delivery import comments
 from delivery.models import CheckResult, Finding, Question, Severity
-from delivery.workflow import STAGES, STATUS_NAMES
+from delivery.workflow import LIFECYCLE_STAGES, STAGES, STATUS_NAMES
 
 CHECK = CheckResult(name="unit", source="coordinator", conclusion="passed", sha="a" * 40)
 
@@ -49,7 +49,7 @@ def test_verification_failed_names_where_each_option_leads() -> None:
     assert "Submit follow-up changes** (moves into **Ready for verification**)" in text
 
 
-@pytest.mark.parametrize("stage", [s.value for s in STAGES])
+@pytest.mark.parametrize("stage", [s.value for s in LIFECYCLE_STAGES])
 def test_questions_blocked_and_waiting_name_the_ready_status(stage: str) -> None:
     ready = STATUS_NAMES[STAGES[next(s for s in STAGES if s.value == stage)].ready]
     q = comments.questions("K-1-X-R1", "u", [Question(id="Q1", question="Which?")], "you", stage)

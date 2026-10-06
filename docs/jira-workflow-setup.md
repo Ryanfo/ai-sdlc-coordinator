@@ -59,6 +59,8 @@ IDs). Names must be unique in the project.
 | Changes requested | In Progress | human review |
 | Needs clarification | In Progress | paused |
 | Blocked | In Progress | paused |
+| Ready for resolution | To Do | ready (optional: resolving blocked tickets) |
+| Resolving | In Progress | agent active (optional: resolving blocked tickets) |
 | Ready for release preparation | To Do | ready |
 | Preparing release | In Progress | agent active |
 | Release review | In Progress | human review |
@@ -136,6 +138,33 @@ For spikes, also give the project an issue type **Spike** with the delivery work
 team-managed project each type has its own workflow) and add it to each developer's
 `jira.supported_issue_types`. The fast track only needs a label (`fast-track` by default).
 
+### Optional: resolving a blocked ticket with Claude
+
+For teams that want to clear a Blocked ticket together with Claude instead of fixing the cause by
+hand and choosing Resume. Two more statuses (above) and eleven more transitions. `workflow verify`
+and `doctor` accept them but never require them; the coordinator only offers the feature on
+projects that map both statuses (`delivery workflow inspect` prints their IDs).
+
+| From | Name | To | Performed by |
+|---|---|---|---|
+| Blocked | Request resolution | Ready for resolution | human (assignee or approver) |
+| Ready for resolution | Start resolution | Resolving | coordinator |
+| Resolving | Resolved: resume refinement | Ready for refinement | coordinator |
+| Resolving | Resolved: resume planning | Ready for planning | coordinator |
+| Resolving | Resolved: resume development | Ready for development | coordinator |
+| Resolving | Resolved: resume verification | Ready for verification | coordinator |
+| Resolving | Resolved: resume release preparation | Ready for release preparation | coordinator |
+| Resolving | Resolved: resume release verification | Ready for release verification | coordinator |
+| Resolving | Block stage | Blocked | coordinator (the same name as from the other active statuses) |
+| Ready for resolution | Cancel | Cancelled | human |
+| Resolving | Cancel | Cancelled | human |
+
+A *Value field condition* on each `Resolved: resume …` transition (Delivery resume stage equals
+that stage) makes Jira show only the right one, as for the Resume actions. It needs a Marketplace
+app and is not required: the coordinator chooses the right transition by name. The coordinator
+keeps the resume stage field set while a ticket is in Ready for resolution or Resolving, and
+clears it when the ticket goes back to the stage that blocked.
+
 ### Pausing and resuming
 
 From **each of the six agent-active statuses** add `Ask questions → Needs clarification` and
@@ -200,8 +229,8 @@ Board columns (columns are visual only; the coordinator triggers on exact status
 | Column | Statuses |
 |---|---|
 | Backlog | Backlog |
-| Ready | the six Ready for… statuses (not Ready for release) |
-| Agent working | Refining, Planning, Developing, Verifying, Preparing release, Verifying release |
+| Ready | the six Ready for… statuses (not Ready for release), and Ready for resolution if used |
+| Agent working | Refining, Planning, Developing, Verifying, Preparing release, Verifying release, and Resolving if used |
 | Needs clarification | Needs clarification |
 | Human review | Specification review, Plan review, Code review, Acceptance review, Release review, Changes requested |
 | Blocked | Blocked |

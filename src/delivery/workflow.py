@@ -18,6 +18,9 @@ class Stage(StrEnum):
     VERIFICATION = "verification"
     RELEASE_PREPARATION = "release_preparation"
     RELEASE_VERIFICATION = "release_verification"
+    # Not part of the lifecycle: a developer-attended session that clears a blocker, after which
+    # the ticket goes back to the stage that blocked (see STAGES and RESOLVED_ACTIONS).
+    RESOLUTION = "resolution"
 
 
 class Status(StrEnum):
@@ -37,6 +40,8 @@ class Status(StrEnum):
     CHANGES_REQUESTED = "changes_requested"
     NEEDS_CLARIFICATION = "needs_clarification"
     BLOCKED = "blocked"
+    READY_RESOLUTION = "ready_resolution"
+    RESOLVING = "resolving"
     READY_RELEASE_PREPARATION = "ready_release_preparation"
     PREPARING_RELEASE = "preparing_release"
     RELEASE_REVIEW = "release_review"
@@ -71,6 +76,8 @@ STATUS_NAMES: dict[Status, str] = {
     Status.CHANGES_REQUESTED: "Changes requested",
     Status.NEEDS_CLARIFICATION: "Needs clarification",
     Status.BLOCKED: "Blocked",
+    Status.READY_RESOLUTION: "Ready for resolution",
+    Status.RESOLVING: "Resolving",
     Status.READY_RELEASE_PREPARATION: "Ready for release preparation",
     Status.PREPARING_RELEASE: "Preparing release",
     Status.RELEASE_REVIEW: "Release review",
@@ -87,6 +94,7 @@ _TODO = {
     Status.READY_PLANNING,
     Status.READY_DEVELOPMENT,
     Status.READY_VERIFICATION,
+    Status.READY_RESOLUTION,
     Status.READY_RELEASE_PREPARATION,
     Status.READY_RELEASE,
     Status.READY_RELEASE_VERIFICATION,
@@ -98,6 +106,8 @@ STATUS_CATEGORIES: dict[Status, Category] = {
 }
 
 TERMINAL_STATUSES = frozenset(_DONE)
+# Statuses a project may not have: resolution is opt-in, so a Jira project without them is valid.
+OPTIONAL_STATUSES = frozenset({Status.READY_RESOLUTION, Status.RESOLVING})
 PAUSED_STATUSES = frozenset({Status.NEEDS_CLARIFICATION, Status.BLOCKED})
 HUMAN_REVIEW_STATUSES = frozenset(
     {
@@ -154,6 +164,14 @@ class Action(StrEnum):
     RESUME_VERIFICATION = "resume_verification"
     RESUME_RELEASE_PREPARATION = "resume_release_preparation"
     RESUME_RELEASE_VERIFICATION = "resume_release_verification"
+    REQUEST_RESOLUTION = "request_resolution"
+    START_RESOLUTION = "start_resolution"
+    RESOLVED_REFINEMENT = "resolved_refinement"
+    RESOLVED_PLANNING = "resolved_planning"
+    RESOLVED_DEVELOPMENT = "resolved_development"
+    RESOLVED_VERIFICATION = "resolved_verification"
+    RESOLVED_RELEASE_PREPARATION = "resolved_release_preparation"
+    RESOLVED_RELEASE_VERIFICATION = "resolved_release_verification"
     CANCEL = "cancel"
     # Optional routes (OPTIONAL_ROUTES): each needs one more transition in Jira.
     USE_APPROVED_PLAN = "use_approved_plan"
@@ -204,6 +222,14 @@ DEFAULT_ACTION_NAMES: dict[Action, str] = {
     Action.RESUME_VERIFICATION: "Resume verification",
     Action.RESUME_RELEASE_PREPARATION: "Resume release preparation",
     Action.RESUME_RELEASE_VERIFICATION: "Resume release verification",
+    Action.REQUEST_RESOLUTION: "Request resolution",
+    Action.START_RESOLUTION: "Start resolution",
+    Action.RESOLVED_REFINEMENT: "Resolved: resume refinement",
+    Action.RESOLVED_PLANNING: "Resolved: resume planning",
+    Action.RESOLVED_DEVELOPMENT: "Resolved: resume development",
+    Action.RESOLVED_VERIFICATION: "Resolved: resume verification",
+    Action.RESOLVED_RELEASE_PREPARATION: "Resolved: resume release preparation",
+    Action.RESOLVED_RELEASE_VERIFICATION: "Resolved: resume release verification",
     Action.CANCEL: "Cancel",
     Action.USE_APPROVED_PLAN: "Use approved plan",
     Action.COMPLETE_SPIKE: "Complete spike",
@@ -238,6 +264,8 @@ class Requirement(StrEnum):
     CANCEL_REASON = "cancel_reason"
     STAGE_SUCCESS = "stage_success"
     PLAN_WITH_SPECIFICATION = "plan_with_specification"
+    RESOLUTION_REQUEST = "resolution_request"
+    RESOLVED = "resolved"
 
 
 @dataclass(frozen=True)
@@ -254,7 +282,7 @@ class StageDef:
     round_code: str
 
 
-STAGES: dict[Stage, StageDef] = {
+LIFECYCLE_STAGES: dict[Stage, StageDef] = {
     Stage.REFINEMENT: StageDef(
         Stage.REFINEMENT,
         Status.READY_REFINEMENT,
@@ -327,6 +355,34 @@ STAGES: dict[Stage, StageDef] = {
         ("verify-release",),
         "RELVERIFY",
     ),
+}
+
+# Resolution reuses the ready/active shape so intake, the executor and the console treat it like a
+# stage, but it is not part of the lifecycle: it has no success status (the ticket returns to the
+# ready status of the stage that blocked, by one of RESOLVED_ACTIONS), no clarification round and
+# no resume. The unused fields below say Block stage, the only other way out.
+RESOLUTION_STAGE = StageDef(
+    Stage.RESOLUTION,
+    Status.READY_RESOLUTION,
+    Status.RESOLVING,
+    Status.BLOCKED,
+    Action.START_RESOLUTION,
+    Action.BLOCK_STAGE,
+    Action.BLOCK_STAGE,
+    Action.BLOCK_STAGE,
+    ("resolve-blocker",),
+    "RESOLVE",
+)
+STAGES: dict[Stage, StageDef] = {**LIFECYCLE_STAGES, Stage.RESOLUTION: RESOLUTION_STAGE}
+
+# The action that returns a resolved ticket to the stage that blocked.
+RESOLVED_ACTIONS: dict[Stage, Action] = {
+    Stage.REFINEMENT: Action.RESOLVED_REFINEMENT,
+    Stage.PLANNING: Action.RESOLVED_PLANNING,
+    Stage.DEVELOPMENT: Action.RESOLVED_DEVELOPMENT,
+    Stage.VERIFICATION: Action.RESOLVED_VERIFICATION,
+    Stage.RELEASE_PREPARATION: Action.RESOLVED_RELEASE_PREPARATION,
+    Stage.RELEASE_VERIFICATION: Action.RESOLVED_RELEASE_VERIFICATION,
 }
 
 READY_STATUSES = frozenset(d.ready for d in STAGES.values())
@@ -440,7 +496,7 @@ _HUMAN_RESUME: tuple[Route, ...] = tuple(
         else Requirement.BLOCKER_RESOLVED,
         d.stage,
     )
-    for d in STAGES.values()
+    for d in LIFECYCLE_STAGES.values()
     for paused in (Status.NEEDS_CLARIFICATION, Status.BLOCKED)
 )
 
@@ -452,7 +508,7 @@ _HUMAN_CANCEL: tuple[Route, ...] = tuple(
 
 def _coordinator_routes() -> tuple[Route, ...]:
     routes: list[Route] = []
-    for d in STAGES.values():
+    for d in LIFECYCLE_STAGES.values():
         c = Actor.COORDINATOR
         routes.append(Route(d.ready, d.start_action, d.active, c, Requirement.NONE))
         routes.append(Route(d.active, d.complete_action, d.success, c, Requirement.STAGE_SUCCESS))
@@ -508,7 +564,39 @@ FAST_TRACK_ROUTE = Route(
 SPIKE_ROUTE = Route(
     Status.READY_DEVELOPMENT, Action.COMPLETE_SPIKE, Status.DONE, Actor.COORDINATOR, Requirement.PLAN_APPROVAL
 )
-OPTIONAL_ROUTES: tuple[Route, ...] = (FAST_TRACK_ROUTE, SPIKE_ROUTE)
+# Resolution (optional, like the two above): a developer moves a Blocked ticket to Ready for
+# resolution; the coordinator opens a Claude session that clears the blocker with them and
+# returns the ticket to the stage that blocked, or to Blocked when it could not. Each resolved
+# route carries its stage so Jira can hide the other five by the resume stage field.
+RESOLUTION_ROUTES: tuple[Route, ...] = (
+    Route(
+        Status.BLOCKED,
+        Action.REQUEST_RESOLUTION,
+        Status.READY_RESOLUTION,
+        Actor.HUMAN,
+        Requirement.RESOLUTION_REQUEST,
+    ),
+    Route(
+        Status.READY_RESOLUTION,
+        Action.START_RESOLUTION,
+        Status.RESOLVING,
+        Actor.COORDINATOR,
+        Requirement.NONE,
+    ),
+    Route(Status.RESOLVING, Action.BLOCK_STAGE, Status.BLOCKED, Actor.COORDINATOR, Requirement.NONE),
+    *(
+        Route(
+            Status.RESOLVING,
+            RESOLVED_ACTIONS[d.stage],
+            d.ready,
+            Actor.COORDINATOR,
+            Requirement.RESOLVED,
+            d.stage,
+        )
+        for d in LIFECYCLE_STAGES.values()
+    ),
+)
+OPTIONAL_ROUTES: tuple[Route, ...] = (FAST_TRACK_ROUTE, SPIKE_ROUTE, *RESOLUTION_ROUTES)
 
 ROUTES: tuple[Route, ...] = (
     _HUMAN_MAIN
