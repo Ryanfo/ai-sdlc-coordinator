@@ -301,6 +301,54 @@
       "title": "FootprintProposal",
       "type": "object"
     },
+    "NextStep": {
+      "additionalProperties": false,
+      "description": "Something a person must do now that the blocker could not be cleared from the session.\n\nThe coordinator checks every step against the ticket before accepting the result (see\ndelivery.resolution.check_next_steps): a comment must be one it would recognise, with the\nticket's current token; an action must be one Jira offers on a Blocked ticket.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "jira_comment",
+            "jira_action",
+            "command",
+            "other"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        },
+        "who": {
+          "default": "the developer",
+          "maxLength": 80,
+          "title": "Who",
+          "type": "string"
+        },
+        "why": {
+          "maxLength": 600,
+          "minLength": 1,
+          "title": "Why",
+          "type": "string"
+        },
+        "verified_by": {
+          "maxLength": 600,
+          "minLength": 1,
+          "title": "Verified By",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text",
+        "why",
+        "verified_by"
+      ],
+      "title": "NextStep",
+      "type": "object"
+    },
     "Outcome": {
       "enum": [
         "completed",
@@ -482,6 +530,14 @@
           },
           "maxItems": 20,
           "title": "Follow Ups",
+          "type": "array"
+        },
+        "next_steps": {
+          "items": {
+            "$ref": "#/$defs/NextStep"
+          },
+          "maxItems": 10,
+          "title": "Next Steps",
           "type": "array"
         }
       },

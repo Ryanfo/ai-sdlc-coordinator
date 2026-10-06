@@ -60,7 +60,10 @@ APPROVE SPEC PILOT-123-SPEC-v2
 
 Release record. Not needed for an ordinary release: once the PR is merged, the coordinator
 reads the merge commit from GitHub and chooses Record release itself. If this comment is on the
-ticket when the release is recorded, its commit is verified instead of the merge commit.
+ticket when the release is recorded, its commit is verified instead of the merge commit. The
+**newest** comment with the release's current token is the one used, and only the current token
+counts (`RELEASE-v1` while that is the approved release; a `-v2` that does not exist is ignored),
+so a wrong record is corrected by a new comment with the same token and the right commit.
 
 ```text
 RECORD RELEASE PILOT-123-RELEASE-v1

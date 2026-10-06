@@ -17,6 +17,7 @@ import pytest
 
 from conftest import DEV
 from delivery.models import PROPERTY_KEY
+from delivery.session_hook import read_events
 from delivery.supervisor import Supervisor
 from delivery.workflow import Status
 from harness import World, make_world, step
@@ -40,6 +41,16 @@ def _envelopes(w: World, procedure: str) -> list[dict]:  # type: ignore[type-arg
             assert match
             out.append(json.loads(Path(match.group(1)).read_text()))
     return out
+
+
+def _code_blocks(w: World, key: str) -> list[str]:
+    """The copyable blocks in the latest comment as Jira receives them (ADF code blocks)."""
+    adf = w.jira.comments_by_key[key][-1].body_adf or {}
+    return [
+        "".join(t.get("text", "") for t in node.get("content", []))
+        for node in adf.get("content", [])
+        if node.get("type") == "codeBlock"
+    ]
 
 
 async def _blocked_in_development(w: World, sup: Supervisor) -> None:
@@ -180,7 +191,25 @@ async def test_an_unresolved_blocker_returns_to_blocked_with_the_reason_and_keep
                     "outcome": "blocked",
                     "blocker_reason": "the index needs a credential only the developer has",
                     "edit": {"src/partial.ts": "export const partial = 1;\n"},
-                    "override": {"resolution": {"actions": ["Traced it to a missing credential"]}},
+                    "override": {
+                        "resolution": {
+                            "actions": ["Traced it to a missing credential"],
+                            "next_steps": [
+                                {
+                                    "kind": "command",
+                                    "text": "export INDEX_KEY=<your key> && npm run build:index",
+                                    "why": "builds the index the search needs",
+                                    "verified_by": "npm run build:index fails without INDEX_KEY, and works with it",
+                                },
+                                {
+                                    "kind": "jira_action",
+                                    "text": "Resume development",
+                                    "why": "starts development again once the index exists",
+                                    "verified_by": "Resume development is the action for the stage that paused",
+                                },
+                            ],
+                        }
+                    },
                 }
             ],
         }
@@ -195,6 +224,11 @@ async def test_an_unresolved_blocker_returns_to_blocked_with_the_reason_and_keep
         assert "the index needs a credential only the developer has" in comment
         assert "Traced it to a missing credential" in comment
         assert "Resume development" in comment and "Request resolution" in comment
+        assert "What to do now" in comment
+        assert "1. Run this command (the developer)." in comment
+        assert _code_blocks(w, KEY) == ["export INDEX_KEY=<your key> && npm run build:index"]
+        assert "2. Choose Resume development in Jira (moves into Ready for development)" in comment
+        assert "Checked: npm run build:index fails without INDEX_KEY" in comment
         pause = w.record(KEY).pause
         assert pause is not None and pause.resume_stage.value == "development"
         assert w.jira.issues[KEY].fields["customfield_10050"] == {"value": "development"}
@@ -306,3 +340,45 @@ async def test_changes_that_the_stage_would_not_carry_are_not_kept_and_are_said_
         assert w.jira.status_of(KEY) is Status.BLOCKED
     comment = w.last_comment(KEY)
     assert "Blocker not resolved" in comment and "does not carry code changes" in comment
+
+
+async def test_a_step_the_coordinator_would_not_recognise_is_refused_in_the_session_until_fixed(
+    world: World,
+) -> None:
+    w = world
+    wrong = {
+        "kind": "jira_comment",
+        "text": "APPROVE PLAN PILOT-1-PLAN-v2",  # the ticket has no v2: it would be ignored
+        "why": "approves the plan again",
+        "verified_by": "read the plan",
+    }
+    right = {**wrong, "text": "APPROVE PLAN PILOT-1-PLAN-v1"}
+    w.scenario(
+        {
+            "implement-ticket": [DEV_BLOCKED],
+            "resolve-blocker": [
+                {
+                    "outcome": "blocked",
+                    "blocker_reason": "the plan approval was never recorded",
+                    "override": {"resolution": {"actions": ["Read the ticket"], "next_steps": [wrong]}},
+                    "after_block_override": {
+                        "resolution": {"actions": ["Read the ticket"], "next_steps": [right]}
+                    },
+                }
+            ],
+        }
+    )
+    async with Supervisor(w.deps) as sup:
+        await _blocked_in_development(w, sup)
+        w.jira.human_move(KEY, Status.READY_RESOLUTION, DEV)
+        await step(sup)
+        assert w.jira.status_of(KEY) is Status.BLOCKED
+    comment = w.last_comment(KEY)
+    assert _code_blocks(w, KEY) == ["APPROVE PLAN PILOT-1-PLAN-v1"] and "PLAN-v2" not in comment
+    assert "1. Paste this comment on PILOT-1 (the developer)." in comment
+    run = w.deps.store.latest_run(KEY)
+    assert run is not None
+    events = read_events(run.journal.dir / "sessions" / "resolve-blocker")
+    refused = [e for e in events if e.get("event") == "stop" and e.get("result") == "blocked"]
+    assert refused and "PILOT-1-PLAN-v2 is not the current PLAN token" in refused[0]["detail"]
+    assert "PILOT-1-PLAN-v1" in refused[0]["detail"]

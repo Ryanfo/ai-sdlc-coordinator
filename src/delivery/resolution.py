@@ -16,7 +16,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from delivery.models import ResolutionDecision
+from delivery.feedback import (
+    DecisionKind,
+    is_coordinator_comment,
+    parse_decision,
+    token_kind,
+)
+from delivery.models import GateRecord, ResolutionDecision
+from delivery.ports import JiraComment
 
 QUESTION_TOOL = "AskUserQuestion"
 _ANSWERED = re.compile(r'"(?P<q>[^"]+)"="(?P<a>[^"]*)"')
@@ -157,6 +164,7 @@ def write_briefing(
     comments: list[tuple[str, str]],
     logs: list[tuple[str, str]],
     transcript_tail: list[str],
+    ticket_state: list[str] | None = None,
 ) -> Path:
     """Everything the session needs about the blocker, in one file it can read.
 
@@ -179,6 +187,8 @@ def write_briefing(
         next_action.strip() or "Nothing recorded.",
         "",
     ]
+    if ticket_state:
+        lines += ["## How the coordinator reads this ticket", "", *ticket_state, ""]
     if blocked_run:
         lines += ["## The blocked run", ""]
         lines += [f"- {k}: {v}" for k, v in blocked_run.items() if v]
@@ -210,3 +220,166 @@ def write_briefing(
     dest.write_text("\n".join(lines) + "\n")
     dest.chmod(0o600)
     return dest
+
+
+# --------------------------------------------------------------------------- what the ticket says
+
+
+_DECISION_WORDS = re.compile(r"\b(APPROVE|CHANGE|ACCEPT|RECORD|REVISE|SUBMIT|CREATE|ANSWERS)\b")
+_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def current_tokens(gates: list[GateRecord]) -> dict[str, str]:
+    """The token a comment must name, per kind of decision, as the coordinator reads them now."""
+    out: dict[str, str] = {}
+    for g in sorted(gates, key=lambda g: g.revision):
+        if g.state.value != "superseded":
+            out[g.kind.value.upper()] = g.token
+    return out
+
+
+def ticket_state_lines(
+    *,
+    gates: list[GateRecord],
+    comments: list[JiraComment],
+    resume_stage: str,
+    round_token: str | None,
+    blocked_actions: dict[str, str | None],
+) -> list[str]:
+    """How the coordinator reads this ticket: the tokens a decision comment must carry and which
+    of the comments already on the ticket it uses, ignores or does not recognise. The causes of
+    most blockers that need a person (a wrong release record, an answer that never counted) are
+    visible here and nowhere else."""
+    tokens = current_tokens(gates)
+    lines = ["Decision tokens now (a comment you propose must carry exactly the one for its kind):"]
+    by_kind = {g.kind.value.upper(): g for g in gates if g.state.value != "superseded"}
+    for kind, tok in tokens.items():
+        lines.append(f"- {kind}: {tok} ({by_kind[kind].state.value})")
+    if round_token:
+        lines.append(f"- ANSWERS: {round_token}")
+    lines += ["", "Comments on the ticket that look like decisions, oldest first, and how they are read:"]
+    seen: list[tuple[str, str, str]] = []
+    newest: dict[str, str] = {}
+    parsed = []
+    for c in sorted(comments, key=lambda c: (c.created, c.id)):
+        if is_coordinator_comment(c):
+            continue
+        d = parse_decision(c.body_text)
+        parsed.append((c, d))
+        if d and (d.token in tokens.values() or d.token == round_token):
+            newest[d.token + d.kind.value] = c.id
+    for c, d in parsed:
+        when = f"#{c.id} {c.created:%d %b %H:%M} {c.author_name or c.author_account_id}"
+        if d is None:
+            if _DECISION_WORDS.search(c.body_text.split("\n", 1)[0]):
+                first = " ".join(c.body_text.split())[:90]
+                lines.append(
+                    f'- {when}: "{first}": NOT RECOGNISED. A decision comment starts with its decision line'
+                    " and nothing before it (no quotes, no prose); the coordinator ignores this one."
+                )
+            continue
+        what = f"{d.kind.value} {d.token}" + "".join(f" {k}={v}" for k, v in d.fields.items())
+        which = token_kind(d.kind)
+        current: str | None = round_token if d.kind is DecisionKind.ANSWERS else tokens.get(which or "")
+        if current != d.token:
+            lines.append(
+                f"- {when}: {what}: IGNORED, {d.token} is not the current {which or 'ANSWERS'} token"
+                f" ({current or 'none'})."
+            )
+        elif newest.get(d.token + d.kind.value) != c.id:
+            lines.append(f"- {when}: {what}: superseded by a later comment for the same token.")
+        else:
+            lines.append(
+                f"- {when}: {what}: CURRENT, the newest for its token"
+                + (" (a later one replaces it)" if d.kind is DecisionKind.RECORD_RELEASE else "")
+                + "."
+            )
+        if d.problems:
+            lines[-1] += " Problems: " + "; ".join(d.problems) + "."
+        seen.append((c.id, d.kind.value, d.token))
+    if not seen:
+        lines.append("- none")
+    lines += [
+        "",
+        f"The ticket pauses in {resume_stage}. Actions a person can choose in Jira on a Blocked ticket: "
+        + ", ".join(sorted(blocked_actions))
+        + ".",
+    ]
+    return lines
+
+
+def check_next_steps(raw: dict[str, Any], expect: dict[str, Any]) -> str | None:
+    """What is wrong with the next steps in a resolution result, or None.
+
+    Run by the session's Stop hook, so Claude is told in the session and fixes them. A person is
+    never asked to do something the coordinator would not recognise: a comment must parse as a
+    decision for the ticket's current token, an action must exist on a Blocked ticket for the
+    stage that paused, and an unresolved blocker must say what to do.
+    """
+    res = raw.get("resolution") or {}
+    steps = res.get("next_steps") or []
+    outcome = raw.get("outcome")
+    if outcome == "completed":
+        if steps:
+            return (
+                "the result says the blocker is resolved but also lists next_steps for a person; if "
+                "a person still has to act, it is not resolved: return `blocked`, or move what is "
+                "optional to follow_ups"
+            )
+        return None
+    if outcome != "blocked":
+        return None
+    if not steps:
+        return (
+            "a `blocked` resolution must list next_steps: what the developer does now, in order, "
+            "each checked (a comment to paste, a Jira action to choose, a command)"
+        )
+    problems = [f"next step {n}: {p}" for n, st in enumerate(steps, 1) if (p := _check_step(st, expect))]
+    return "; ".join(problems) or None
+
+
+def _check_step(step: dict[str, Any], expect: dict[str, Any]) -> str | None:
+    kind, text = step.get("kind"), str(step.get("text", ""))
+    if kind == "jira_comment":
+        d = parse_decision(text)
+        if d is None:
+            return (
+                "this comment would not be recognised by the coordinator: the first line must be a "
+                "decision line such as `RECORD RELEASE <token>` and nothing may come before it (no "
+                "quotes, no prose). Copy the format from human-templates.md"
+            )
+        if d.problems:
+            return "this comment has problems: " + "; ".join(d.problems)
+        kind_name = token_kind(d.kind)
+        current = (
+            expect.get("round_token")
+            if d.kind is DecisionKind.ANSWERS
+            else (expect.get("tokens") or {}).get(kind_name or "")
+        )
+        if not current:
+            return (
+                f"the ticket has no current {kind_name or 'ANSWERS'} token, so the coordinator would "
+                "ignore this comment"
+            )
+        if d.token != current:
+            return (
+                f"{d.token} is not the current {kind_name or 'ANSWERS'} token; the coordinator reads only "
+                f"comments for {current}"
+            )
+        if d.kind is DecisionKind.RECORD_RELEASE:
+            commit, env = d.fields.get("commit", ""), d.fields.get("environment", "")
+            if not _SHA.fullmatch(commit):
+                return "RECORD RELEASE needs `commit:` with the full 40-character SHA"
+            if env != expect.get("release_environment"):
+                return f"RECORD RELEASE needs `environment: {expect.get('release_environment')}`"
+        return None
+    if kind == "jira_action":
+        actions: dict[str, str | None] = expect.get("blocked_actions") or {}
+        name = text.strip().lower()
+        if name not in actions:
+            return f"{text!r} is not an action Jira offers on a Blocked ticket ({', '.join(sorted(actions))})"
+        stage = actions[name]
+        if stage and stage != expect.get("resume_stage"):
+            paused = expect.get("resume_stage")
+            return f"the ticket paused in {paused}, so {text!r} (for {stage}) would be refused"
+    return None

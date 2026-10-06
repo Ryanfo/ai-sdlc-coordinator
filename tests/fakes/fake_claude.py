@@ -314,6 +314,7 @@ def interactive(argv: list[str], scenario_path: Path) -> int:
     while reply and reply.get("decision") == "block":
         t({"type": "user", "isMeta": True, "message": {"content": f"Stop hook feedback:\n{reply['reason']}"}})
         forget -= 1
+        result.update(b.get("after_block_override", {}))  # Claude fixes what the hook refused
         if forget <= 0 and not b.get("never_result"):
             result_path.write_text(json.dumps(result))
         say("Wrote the result.")
