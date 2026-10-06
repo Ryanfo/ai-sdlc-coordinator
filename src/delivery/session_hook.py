@@ -132,6 +132,11 @@ def check_result(expect: dict[str, Any]) -> str | None:
         )
     except OutputInvalid as exc:
         return str(exc)
+    if expect.get("procedure") == "resolve-blocker":
+        # Claude is told here, in the session, when a step it asks a person to take would not work.
+        from delivery.resolution import check_next_steps
+
+        return check_next_steps(raw, expect)
     return None
 
 

@@ -28,21 +28,25 @@ A person is in this session. Use that: it is what makes this different from a no
 
 ## Steps
 
-1. Read `resolution.briefing_path`: the blocker as the coordinator recorded it
-   (`resolution.blocker_reason`, `blocker_kind`, `next_action`), the blocked run's result,
-   the end of its transcript, its failed check logs and the recent Jira comments. If `prior_work`
-   is set, the blocked stage left unfinished changes in the working copy; read
-   `prior_work.session_tail_path` to see where it stopped.
-2. Work out the cause. Look at the code, the approved specification and plan in
-   `approved_artefacts`, and the evidence. Do not guess: say what you checked.
+1. Read `resolution.briefing_path`. It has the blocker as the coordinator recorded it, **how the
+   coordinator reads this ticket** (the decision tokens that are current, every decision comment
+   already on the ticket and whether the coordinator uses, supersedes, ignores or does not
+   recognise it), the blocked run's result and transcript tail, failed check output and the
+   recent comments. `human-templates.md` next to it (`inputs/`) has the exact format of every
+   comment a person can post. If `prior_work` is set, the blocked stage left unfinished changes
+   in the working copy; read `prior_work.session_tail_path` to see where it stopped.
+2. Find the cause, not a cause. Read the evidence the coordinator used (the reason names it) and
+   the ticket state above before you read anything else: most blockers that need a person are a
+   decision comment the coordinator read differently from how its author meant it (a record
+   naming the wrong commit, a token that is no longer current, an answer that did not count).
+   Say what you checked.
 3. Decide whether you can clear it from here (see *What you can and cannot change*). If you can,
    do it in small steps and run the relevant tests or checks to show it worked.
 4. **Ask the developer** with the AskUserQuestion tool whenever the cause or the fix depends on a
-   choice that is theirs to make: which of two reasonable fixes, whether to change behaviour the
-   specification leaves open, whether to accept a trade-off, anything you would otherwise assume.
-   Ask one decision at a time, offer the options you found with a recommendation, and wait. Ask
-   *before* you act on it, not after. Do not ask what you can find out yourself, and do not ask
-   for approval of every step: ask about decisions, not about progress.
+   choice that is theirs to make: which of two reasonable fixes, which commit is deployed,
+   whether to change behaviour the specification leaves open. Ask one decision at a time, offer
+   the options you found with a recommendation, and wait. Ask *before* you act on it. Do not ask
+   what you can find out yourself, and do not ask for approval of every step.
 5. When the cause is cleared, or you are sure it cannot be cleared from here, tell the developer
    in a few lines what you found and did, then write the result. Ask every question first: the
    session is closed when you hand over the result.
@@ -76,16 +80,47 @@ Every choice that shaped the fix goes in `resolution.decisions`, each with an ID
 The coordinator checks `developer` decisions against the session. A decision marked
 `developer` that the session does not show is recorded in the ticket as Claude's.
 
+## When a person has to act: next steps
+
+If the cause is outside this working copy (a comment on the ticket, a Jira action, a command on
+their machine), do not describe it loosely: return `blocked` with `resolution.next_steps`, the
+exact steps in order. The coordinator posts them on the ticket as a numbered list with the text
+ready to copy, so they must work exactly as written. It checks them before it lets you finish and
+tells you here what is wrong; fix it and write the result again.
+
+- `jira_comment`: the **whole comment**, character for character, and nothing else. A decision
+  comment starts with its decision line (`RECORD RELEASE <token>`) with nothing before it: no
+  quotes, no sentence around it, no "post this". Take the token from the *Decision tokens now*
+  list in the briefing, never from memory or by counting up (a new revision number is not a
+  token the ticket has). A later comment for the same token replaces an earlier one, so a
+  correction is a new comment with the same token, not a new token. Use the format in
+  `human-templates.md`.
+- `jira_action`: the action's name as Jira shows it on a Blocked ticket (`Resume release
+  verification`). The ticket returns to Blocked when you finish, and the action must be one for
+  the stage that paused.
+- `command`: one command the developer runs, if it is not a Jira step.
+- `other`: a sentence, for what has no exact form (for example that the scope needs revising and
+  why).
+
+Every step has `who` (usually the developer), `why` (what it changes) and `verified_by`: the check
+you ran that shows it clears the cause, for instance the git command and its result. **Do not
+return a step you have not checked.** If you cannot check it, you are not certain, so ask the
+developer, look further, or say plainly in `blocker_reason` what is unknown. Order matters: put
+the comment first, then the action that picks it up. If a person must act, the blocker is not
+resolved, so it is `blocked`, never `completed`.
+
 ## Result
 
 `procedure`: `resolve-blocker`. Put what you did in `resolution.actions` (one short sentence each,
-in the order done, naming files where you changed them) and anything left for people in
+in the order done, naming files where you changed them) and anything optional for people in
 `resolution.follow_ups`.
 
-- `outcome: completed`: the cause is cleared and the stage can run again. `summary` says what the
-  cause was and how it is cleared, in two or three sentences for someone reading the ticket.
-- `outcome: blocked`: it cannot be cleared from here. `blocker_reason` says why, what you found
-  and what a person has to do. `summary` is the same in brief. Changes you made in the working copy
-  are kept for the stage either way, so leave it tidy.
+- `outcome: completed`: the cause is cleared and the stage can run again, with nothing left for
+  a person to do. `summary` says what the cause was and how it is cleared, in two or three
+  sentences for someone reading the ticket.
+- `outcome: blocked`: it cannot be cleared from here. `blocker_reason` says what the cause is and
+  why this session cannot clear it, briefly, without instructions (those are `next_steps`).
+  `summary` is the same in brief. Changes you made in the working copy are kept for the stage
+  either way, so leave it tidy.
 
 Never return `needs_clarification`: questions belong in this session.

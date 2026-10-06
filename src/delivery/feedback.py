@@ -89,6 +89,11 @@ def is_coordinator_comment(comment: JiraComment) -> bool:
     return MARKER_PREFIX in comment.body_text
 
 
+def token_kind(kind: DecisionKind) -> str | None:
+    """The kind of token a decision names (SPEC, PLAN, CODE, ACCEPT, RELEASE), None for ANSWERS."""
+    return _TOKEN_KIND.get(kind)
+
+
 def token_matches_kind(kind: DecisionKind, token: str) -> bool:
     if kind is DecisionKind.ANSWERS:
         return bool(ROUND_TOKEN.match(token))
