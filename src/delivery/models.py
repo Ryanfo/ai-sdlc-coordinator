@@ -183,6 +183,24 @@ class ResolutionDecision(Model):
     rationale: str = Field(default="", max_length=1000)
 
 
+class NextStep(Model):
+    """Something a person must do now that the blocker could not be cleared from the session.
+
+    The coordinator checks every step against the ticket before accepting the result (see
+    delivery.resolution.check_next_steps): a comment must be one it would recognise, with the
+    ticket's current token; an action must be one Jira offers on a Blocked ticket.
+    """
+
+    kind: Literal["jira_comment", "jira_action", "command", "other"]
+    # jira_comment: the whole comment, exactly as to be pasted. jira_action: the action's name in
+    # Jira. command: one shell command. other: a sentence.
+    text: str = Field(min_length=1, max_length=4000)
+    who: str = Field(default="the developer", max_length=80)
+    why: str = Field(min_length=1, max_length=600)
+    # The check that shows this step clears the cause (a command and its result, a line read).
+    verified_by: str = Field(min_length=1, max_length=600)
+
+
 class ResolutionReport(Model):
     """What a resolve-blocker session did, for the ticket's Jira comment."""
 
@@ -190,6 +208,8 @@ class ResolutionReport(Model):
     decisions: list[ResolutionDecision] = Field(default_factory=list, max_length=30)
     # Things left for people (or a later ticket) that the resolution did not cover.
     follow_ups: list[str] = Field(default_factory=list, max_length=20)
+    # When the blocker was not cleared: what to do, in order (see NextStep).
+    next_steps: list[NextStep] = Field(default_factory=list, max_length=10)
 
     @model_validator(mode="after")
     def _unique_ids(self) -> ResolutionReport:

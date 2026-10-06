@@ -20,6 +20,7 @@ from typing import Any, ClassVar, Literal
 from delivery import comments, deviations
 from delivery.checks import all_passed, run_checks
 from delivery.claude import ChildHandle, ClaudeInvocation, ClaudeOutcome, ClaudeStatus, OpenSession
+from delivery.diagnose import install_root
 from delivery.feedback import DecisionKind, claude_notes, parse_decision
 from delivery.gates import (
     approved_gate,
@@ -76,7 +77,14 @@ from delivery.ports import JiraComment
 from delivery.proposals import dump as dump_proposals
 from delivery.proposals import proposals_path
 from delivery.publication import Posted
-from delivery.resolution import asked_in_session, attribute, typed_by_developer
+from delivery.resolution import (
+    asked_in_session,
+    attribute,
+    check_next_steps,
+    current_tokens,
+    ticket_state_lines,
+    typed_by_developer,
+)
 from delivery.resolution import write_briefing as write_blocker_briefing
 from delivery.resources import port_env
 from delivery.results import OutputInvalid, validate_result
@@ -84,7 +92,7 @@ from delivery.runtime import Decision, RunContext
 from delivery.session_hook import read_events
 from delivery.tmux import for_config as tmux_for
 from delivery.transcript import render_file, write_transcript
-from delivery.workflow import RESOLVED_ACTIONS, STAGES, Action, Requirement, Stage, Status
+from delivery.workflow import RESOLVED_ACTIONS, ROUTES, STAGES, Action, Actor, Requirement, Stage, Status
 
 MAX_OUTPUT_FILE_BYTES = 2_000_000
 # Written by verify-ticket next to its report: how a person checks each criterion by hand.
@@ -516,6 +524,7 @@ class StageStrategy:
         envelope: InputEnvelope,
         *,
         ports: dict[str, int] | None = None,
+        expect_extra: dict[str, Any] | None = None,
     ) -> StageResult:
         ctx = self.ctx
         out_dir = Path(envelope.output.artifact_dir)
@@ -573,6 +582,7 @@ class StageStrategy:
                 "ticket": ctx.key,
                 "stage": self.stage.value,
                 "input_revision": ctx.record.input_revision or "",
+                **(expect_extra or {}),
             },
         )
         ctx.journal.events.append(
@@ -3347,6 +3357,25 @@ class ResolutionStage(StageStrategy):
         pause = ctx.shared.pause
         reason = pause.reason if pause else ctx.intake.reason
         record = entry.record if entry is not None else None
+        # What the coordinator reads on this ticket, so that nothing Claude asks a person to do is a
+        # guess: the tokens a decision comment must carry, the decision comments already there and
+        # how each is read, the coordinator's templates, and the actions Jira offers when Blocked.
+        blocked_actions = {
+            ctx.cfg.workflow.action_name(r.action).lower(): r.resume_stage.value if r.resume_stage else None
+            for r in ROUTES
+            if r.source is Status.BLOCKED and r.actor is Actor.HUMAN
+        }
+        round_token = pause.round_token if pause else None
+        expect_extra: dict[str, Any] = {
+            "tokens": current_tokens(ctx.shared.gates),
+            "round_token": round_token,
+            "blocked_actions": blocked_actions,
+            "resume_stage": resume.value,
+            "release_environment": ctx.cfg.release.environment,
+        }
+        templates = install_root(ctx.cfg) / "docs" / "human-templates.md"
+        if templates.is_file():
+            shutil.copyfile(templates, ctx.inputs_dir / "human-templates.md")
         briefing = write_blocker_briefing(
             ctx.inputs_dir / "briefing.md",
             key=ctx.key,
@@ -3369,6 +3398,13 @@ class ResolutionStage(StageStrategy):
             ],
             logs=self._failed_logs(entry),
             transcript_tail=self._transcript_tail(entry),
+            ticket_state=ticket_state_lines(
+                gates=ctx.shared.gates,
+                comments=ctx.ticket.comments,
+                resume_stage=resume.value,
+                round_token=round_token,
+                blocked_actions=blocked_actions,
+            ),
         )
         ports = ctx.record.ports or self.deps.ports.allocate(ctx.run_id)
         ctx.record = ctx.record.model_copy(update={"ports": ports})
@@ -3397,7 +3433,7 @@ class ResolutionStage(StageStrategy):
         )
         can_keep = carry and spec is not None and plan is not None
         try:
-            result = await self.run_procedure(self.PROCEDURE, wt, env, ports=ports)
+            result = await self.run_procedure(self.PROCEDURE, wt, env, ports=ports, expect_extra=expect_extra)
         except WorkerFailure:
             if can_keep:
                 await self._save_unfinished(wt, start_sha, spec, plan)  # type: ignore[arg-type]
@@ -3415,6 +3451,7 @@ class ResolutionStage(StageStrategy):
             "actions": report.actions,
             "decisions": attribute(report.decisions, asked, typed),
             "follow_ups": report.follow_ups,
+            "next_steps": [s.model_dump(mode="json") for s in report.next_steps],
             "questions_asked": len(asked),
             "messages_typed": len(typed),
             "resume_stage": resume.value,
@@ -3450,6 +3487,16 @@ class ResolutionStage(StageStrategy):
             )
         if changed:
             await self._save_unfinished(wt, start_sha, spec, plan)  # type: ignore[arg-type]
+        problem = check_next_steps(result.model_dump(mode="json"), {**expect_extra})
+        if problem:
+            # The session's hook asks for this to be fixed before it lets Claude stop; this is the
+            # backstop if it was let go after repeated refusals. A step nobody can act on is not posted.
+            return self._blocked(
+                done,
+                f"the resolution's next steps could not be used: {problem}",
+                "Request resolution again, or deal with the blocker by hand and Resume.",
+                "unusable_steps",
+            )
         if result.outcome is not Outcome.COMPLETED:
             why = result.blocker_reason or result.summary
             return self._blocked(
@@ -3486,7 +3533,13 @@ class ResolutionStage(StageStrategy):
         if d.outcome != "success":
             d = d.model_copy(update={"resume_stage": resume.value})
             reason = d.reason or "The session ended without clearing the blocker."
-            await self.publish_block(d, Status.RESOLVING, comments.unresolved(reason=reason, **report))
+            await self.publish_block(
+                d,
+                Status.RESOLVING,
+                comments.unresolved(
+                    reason=reason, ticket=ctx.key, next_steps=list(info.get("next_steps") or []), **report
+                ),
+            )
             return
         ctx.shared = ctx.shared.model_copy(
             update={

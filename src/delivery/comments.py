@@ -20,7 +20,16 @@ from delivery.feedback import (
 from delivery.models import CheckResult, DeviationRecord, Finding, ProposedTicket, Question, Severity
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
-from delivery.workflow import STAGES, STATUS_NAMES, Action, Stage, StageDef, Status, route_for_action
+from delivery.workflow import (
+    DEFAULT_ACTION_NAMES,
+    STAGES,
+    STATUS_NAMES,
+    Action,
+    Stage,
+    StageDef,
+    Status,
+    route_for_action,
+)
 
 STAGE_TITLES = {
     "refinement": "Refinement",
@@ -378,8 +387,38 @@ def resolved(
     return "\n".join(lines)
 
 
+def _next_steps(ticket: str, steps: list[dict[str, str]]) -> list[str]:
+    """The steps a person takes now, each with what to paste or choose ready to copy."""
+    lines = ["", "**What to do now**"]
+    for n, st in enumerate(steps, 1):
+        kind, text, who = st["kind"], st["text"].strip(), st.get("who") or "the developer"
+        if kind == "jira_comment":
+            head = f"**{n}. Paste this comment on {ticket}** ({who})."
+        elif kind == "jira_action":
+            action = next(
+                (a for a, name in DEFAULT_ACTION_NAMES.items() if name.lower() == text.lower()), None
+            )
+            route = route_for_action(Status.BLOCKED, action) if action else None
+            head = (
+                f"**{n}. Choose {text} in Jira**"
+                + (f" (moves into **{STATUS_NAMES[route.target]}**)" if route else "")
+                + f" ({who})."
+            )
+        elif kind == "command":
+            head = f"**{n}. Run this command** ({who})."
+        else:
+            head = f"**{n}.** {text} ({who})."
+        lines += ["", f"{head} {st.get('why', '')}".rstrip()]
+        if kind in ("jira_comment", "command"):
+            lines += ["```text", text, "```"]
+        lines.append(f"Checked: {st.get('verified_by', '')}")
+    return lines
+
+
 def unresolved(
     *,
+    ticket: str = "",
+    next_steps: list[dict[str, str]] | None = None,
     resume_stage: str,
     run_id: str,
     worker_id: str,
@@ -395,6 +434,7 @@ def unresolved(
     lines = [
         "## Blocker not resolved",
         f"**Back in Blocked**: {reason.strip()}",
+        *(_next_steps(ticket, next_steps) if next_steps else []),
         "",
         *_resolution_body("What was found and tried:", actions, decisions, follow_ups, developer),
         "",
