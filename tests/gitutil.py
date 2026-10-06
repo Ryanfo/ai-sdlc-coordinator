@@ -20,6 +20,10 @@ def sh(*args: str, cwd: Path) -> str:
 def make_origin(tmp: Path, files: dict[str, str] | None = None) -> Path:
     origin = tmp / "origin.git"
     sh("init", "--bare", "-b", "main", str(origin), cwd=tmp)
+    # A push can start a detached `gc --auto` in origin that packs loose objects while a
+    # local clone is copying them ("failed to copy file ... objects/..."), so never run it.
+    for key, value in (("receive.autogc", "false"), ("gc.auto", "0"), ("maintenance.auto", "false")):
+        sh("config", key, value, cwd=origin)
     seed = tmp / "seed"
     sh("clone", str(origin), str(seed), cwd=tmp)
     for path, text in (files or {"README.md": "app\n", "src/app.ts": "export const x = 1;\n"}).items():
