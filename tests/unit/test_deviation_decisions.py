@@ -117,7 +117,7 @@ def test_comments_ask_rather_than_fail() -> None:
     assert "D1** (asked for by the developer; changes AC1)" in review
     assert "D2** (not asked for: Claude went beyond the specification)" in review
     assert f"ACCEPT DEVIATIONS {TOKEN}" in review and "Submit follow-up changes" in review
-    assert "Release preparation does not start while a deviation is undecided" in review
+    assert "Release preparation waits until each is decided" in review
     changes = "\n".join(comments.deviations_section(devs, TOKEN, Status.CHANGES_REQUESTED))
-    assert "SUBMIT CHANGES" in changes and "nobody names is left as it is" in changes
+    assert "SUBMIT CHANGES" in changes and "nobody names is left as is" in changes
     assert comments.deviations_section([], TOKEN, Status.CODE_REVIEW) == []

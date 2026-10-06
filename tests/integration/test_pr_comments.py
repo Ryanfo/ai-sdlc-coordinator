@@ -61,7 +61,7 @@ async def test_pr_review_comments_become_change_items(tmp_path: Path) -> None:
         w.github.reviews_by_pr[pr].append(
             Review(902, "ci-bot", "COMMENTED", "x", datetime.now(UTC), "Bot", body="Coverage 91%")
         )
-        assert "G-items" in w.last_comment(KEY)  # the code review comment says how this works
+        assert "Unresolved PR review conversations are included" in w.last_comment(KEY)
 
         # A change request with no F-items of its own: the PR comments say it all.
         code = w.token(KEY, "CODE")

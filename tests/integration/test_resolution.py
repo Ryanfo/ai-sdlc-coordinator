@@ -116,14 +116,13 @@ async def test_resolving_a_blocker_records_what_was_done_and_who_decided(world: 
 
         report = w.last_comment(KEY)
         assert "Blocker resolved: development resumes" in report
-        assert "Built the index on start-up in src/search.ts" in report
+        assert "Built the index on start-up" not in report  # what Claude did stays in the session
         assert "| D1 |" in report and "| D2 |" in report
         row1 = next(ln for ln in report.splitlines() if ln.startswith("| D1 |"))
         row2 = next(ln for ln in report.splitlines() if ln.startswith("| D2 |"))
         assert "Claude" not in row1.split("|")[3] and "answered when asked in the session" in row1
         assert "Claude" in row2.split("|")[3] and "matches the existing naming" in row2
         assert "Add the index to the deploy checklist" in report
-        assert "asked" in report and "1 question" in report
         rec = w.record(KEY)
         assert rec.pause is None
         assert w.jira.issues[KEY].fields.get("customfield_10050") in (None, {"value": None})
@@ -222,7 +221,7 @@ async def test_an_unresolved_blocker_returns_to_blocked_with_the_reason_and_keep
         comment = w.last_comment(KEY)
         assert "Blocker not resolved" in comment
         assert "the index needs a credential only the developer has" in comment
-        assert "Traced it to a missing credential" in comment
+        assert "Traced it to a missing credential" not in comment
         assert "Resume development" in comment and "Request resolution" in comment
         assert "What to do now" in comment
         assert "1. Run this command (the developer)." in comment

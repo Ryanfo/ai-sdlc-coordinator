@@ -41,7 +41,7 @@ async def test_a_bug_fix_shows_its_regression_test_fails_on_main(tmp_path: Path)
     async with Supervisor(w.deps) as sup:
         gate = await _to_code_review(w, sup, "PILOT-1", "Bug")
     assert _envelope(w, "refine-ticket")["work_kind"] == "bug"
-    assert "Bug reproduced" in gate and "tests/x.test.sh" in gate and "the unit check fails" in gate
+    assert "Bug reproduced" in gate and "the tests catch it" in gate
     rep = json.loads(next(Path(w.cfg.runtime.state_dir).rglob("inputs/reproduction.json")).read_text())
     assert rep["state"] == "reproduced" and rep["tests"] == ["tests/x.test.sh"]
 
@@ -51,7 +51,7 @@ async def test_a_test_that_passes_without_the_fix_is_pointed_out(tmp_path: Path)
     w.scenario({"implement-ticket": [{"edit": {**FIX, "tests/y.test.sh": "true\n"}}]})
     async with Supervisor(w.deps) as sup:
         gate = await _to_code_review(w, sup, "PILOT-1", "Bug")
-    assert "Bug not reproduced" in gate and "tests/y.test.sh" in gate
+    assert "Bug not reproduced" in gate and "Check the regression test" in gate
 
 
 async def test_a_bug_fix_without_tests_and_a_story_are_handled_as_such(tmp_path: Path) -> None:

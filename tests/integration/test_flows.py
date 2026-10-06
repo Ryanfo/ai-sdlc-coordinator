@@ -46,7 +46,7 @@ async def test_proposed_tickets_are_created_only_when_asked(tmp_path: Path) -> N
         await step(sup)
         gate = w.last_comment(KEY)
         token = w.token(KEY, "SPEC")
-        assert "Proposed tickets (nothing is created unless you ask)" in gate
+        assert "To create proposed tickets" in gate
         assert "S1 Search by title" in gate and f"CREATE TICKETS {token}" in gate
         assert '"summary": "Export results"' in _show(
             w, f"delivery/{KEY}:docs/delivery/{KEY}/specification/v001.proposed.json"
@@ -88,7 +88,7 @@ async def test_a_spike_is_investigated_and_closed_when_its_findings_are_accepted
         findings = w.last_comment(KEY)
         token = w.token(KEY, "PLAN")
         assert f"Findings v001 ready for review: {token}" in findings
-        assert "closes the spike (Done)" in findings and f"CREATE TICKETS {token}" in findings
+        assert "closes as Done" in findings and f"CREATE TICKETS {token}" in findings
         assert "Use the existing index." in _show(w, f"delivery/{KEY}:docs/delivery/{KEY}/findings/v001.md")
         assert _calls(w, "plan-ticket") == 0 and _calls(w, "investigate-ticket") == 1
         w.decide(KEY, f"APPROVE PLAN {token}", Status.READY_DEVELOPMENT)
@@ -129,14 +129,14 @@ async def test_the_fast_track_approves_the_plan_with_the_specification(tmp_path:
     async with Supervisor(w.deps) as sup:
         await step(sup)
         gate = w.last_comment(KEY)
-        assert "Fast track: plan v001 (" in gate and "was written with this specification" in gate
+        assert "Fast track: plan v001 (" in gate and "was written with it" in gate
         assert "Written with the specification." in _show(
             w, f"delivery/{KEY}:docs/delivery/{KEY}/plan/v001.md"
         )
         w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
         await step(sup)  # planning publishes the approved plan: no Claude, no plan review
         assert w.jira.status_of(KEY) is Status.READY_DEVELOPMENT, w.last_comment(KEY)
-        assert "approved with the specification (fast track)" in w.last_comment(KEY)
+        assert "approved with the specification" in w.last_comment(KEY)
         plan = next(g for g in w.record(KEY).gates if g.kind is GateKind.PLAN)
         assert plan.state is GateState.APPROVED and plan.evidence and plan.evidence.comment_author == APPROVER
         assert w.record(KEY).footprint_ref

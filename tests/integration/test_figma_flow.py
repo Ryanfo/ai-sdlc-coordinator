@@ -44,7 +44,7 @@ async def test_design_is_pinned_at_refinement_and_drift_is_reported(tmp_path: Pa
         [d] = _envelope(w, "plan-ticket")["designs"]
         assert d["version"] == v1 and d["changed_in_figma_since"] is True
         assert '"HELLO WORLD"' in Path(d["summary_path"]).read_text()
-        assert any("Design changed in Figma" in c for c in w.comments(KEY))
+        assert any("To adopt the new Figma design" in c for c in w.comments(KEY))
         assert w.jira.status_of(KEY) is Status.PLAN_REVIEW
 
 

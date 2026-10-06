@@ -21,8 +21,8 @@ A stage of this ticket stopped and the ticket is Blocked. The developer who runs
 coordinator asked for it to be resolved with you. Find out why it blocked and clear the cause so
 that the stage (`resolution.blocked_stage`) can run again. The coordinator moves the ticket back
 to that stage when you finish; if you could not clear the cause it goes back to Blocked with what
-you found. Either way, the coordinator writes what you did, and who made each decision, in the
-ticket.
+you found. Either way, the coordinator writes who made each decision on the ticket. Jira is for
+decisions only: what you did stays in this session's transcript.
 
 A person is in this session. Use that: it is what makes this different from a normal stage.
 
@@ -112,12 +112,12 @@ resolved, so it is `blocked`, never `completed`.
 ## Result
 
 `procedure`: `resolve-blocker`. Put what you did in `resolution.actions` (one short sentence each,
-in the order done, naming files where you changed them) and anything optional for people in
-`resolution.follow_ups`.
+in the order done, naming files where you changed them; it is kept in the session record, not
+posted on the ticket) and anything optional for people in `resolution.follow_ups`.
 
 - `outcome: completed`: the cause is cleared and the stage can run again, with nothing left for
   a person to do. `summary` says what the cause was and how it is cleared, in two or three
-  sentences for someone reading the ticket.
+  sentences at most, for someone reading the ticket.
 - `outcome: blocked`: it cannot be cleared from here. `blocker_reason` says what the cause is and
   why this session cannot clear it, briefly, without instructions (those are `next_steps`).
   `summary` is the same in brief. Changes you made in the working copy are kept for the stage

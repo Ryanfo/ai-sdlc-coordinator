@@ -84,7 +84,7 @@ async def test_acceptance_review_says_how_to_try_the_candidate_and_what_to_check
         _approve_code(w)
         await sup.acceptance.tick(full=True)
         text = w.last_comment(KEY)
-        assert "Ready for acceptance: candidate c1" in text
+        assert "ready for acceptance (candidate c1)" in text
         assert "AC1: title search" in text and "only the task called Milk" in text
         assert "# Acceptance guide" not in text and "delivery provenance" not in text
         assert f"ACCEPT DELIVERY {w.token(KEY, 'ACCEPT')}" in text

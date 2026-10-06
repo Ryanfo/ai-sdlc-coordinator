@@ -383,9 +383,10 @@ What you will see in Jira:
 3. Independent review and verification reports, real check results, then **Code review**.
 4. Release proposal, then your merge of the PR, then **Done**.
 
-Every comment that waits for you starts with the status the ticket is ready to move into, for
-example **Ready to move into Ready for planning once the specification is approved**, and each
-action it offers says which status it moves the ticket into.
+Jira holds decisions only. Every comment that waits for you starts with what to do: the comment
+to paste and the action to choose, which says which status it moves the ticket into. Test, lint
+and check results are not posted (only failures are named); the context of the work lives in the
+repository and the logs (`delivery inspect <KEY>`).
 
 Specifications, plans, footprints, reviews and release documents are versioned on the
 `delivery/<KEY>` branch of the application repository. The Jira comments link to exact
@@ -501,7 +502,8 @@ picked up straight away and published as the next revision.
   action. An approval applies to that exact revision; a new revision supersedes it.
 - **Code review**: an independent human approves the PR on GitHub at the current head with
   CI passing, then `APPROVE CODE <token>` and **Approve code**. Any new commit supersedes
-  the approval.
+  the approval. The code review comment holds only this decision; acceptance is the next
+  step and gets its own comment when the ticket enters Acceptance review.
 - **Deviations from the specification**: when something changed during development (for
   example you asked for it in the open session), the review lists it as a deviation (`D1`…),
   says whether you asked for it, and asks whether it is acceptable. It never fails
@@ -628,7 +630,7 @@ and the recent comments, works out the cause, and fixes what it can. Where the f
 choice that is yours, it asks you in the session (it can ask; it cannot reach Jira or GitHub) and
 waits. When it finishes, the coordinator:
 
-- posts a **Blocker resolved** comment on the ticket: what the cause was, what Claude did, and a
+- posts a **Blocker resolved** comment on the ticket: what the cause was and a
   table of every decision with **who decided it** and how the coordinator knows. The coordinator
   checks this against the session: a decision Claude says you made is kept as yours only if you
   answered a question or typed to it; otherwise it is recorded as Claude's.
