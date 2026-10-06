@@ -48,6 +48,8 @@ class FakeGitHub:
     )
     threads: dict[int, list[ReviewThread]] = field(default_factory=dict)
     lose_next_create: bool = False
+    fail_branch_delete: bool = False
+    closed_comments: dict[int, str] = field(default_factory=dict)
     auto_ci: dict[str, str] = field(default_factory=dict)  # check name -> conclusion for every head
     ids: itertools.count[int] = field(default_factory=lambda: itertools.count(1))
 
@@ -252,6 +254,22 @@ class FakeGitHub:
             check=True,
         )
         return out.stdout.split()
+
+    async def close_pr(self, number: int, comment: str) -> None:
+        pr = self.prs[number]
+        if pr.state != "open":
+            return
+        self.closed_comments[number] = comment
+        self.prs[number] = replace(pr, state="closed")
+
+    async def delete_branch(self, branch: str) -> None:
+        if self.fail_branch_delete:
+            raise IntegrationError("GitHub 500 on DELETE", status=500, retryable=True)
+        subprocess.run(
+            ["git", "--git-dir", str(self.origin), "update-ref", "-d", f"refs/heads/{branch}"],
+            capture_output=True,
+            check=False,
+        )
 
     async def review_threads(self, number: int) -> list[ReviewThread]:
         return list(self.threads.get(number, []))
