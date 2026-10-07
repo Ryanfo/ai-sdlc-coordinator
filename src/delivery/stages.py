@@ -2689,13 +2689,18 @@ class ReleasePreparationStage(StageStrategy):
                 action="New commits need a new candidate: request code changes.",
                 blocker_kind="candidate_changed",
             )
+        early_merge: str | None = None
         if pr.merged:
-            return Decision(
-                outcome="blocked",
-                reason="the PR was merged before release approval",
-                action="Investigate the bypassed gate; the coordinator will not continue.",
-                blocker_kind="gate_bypassed",
-            )
+            # The head still equals the accepted candidate, so what was merged is exactly what
+            # was verified. Flag the early merge and carry on; release approval still gates Done.
+            if not pr.merge_commit_sha:
+                return Decision(
+                    outcome="blocked",
+                    reason="the PR was merged before release approval, and GitHub reports no merge commit",
+                    action="Investigate the bypassed gate; the merged code cannot be identified.",
+                    blocker_kind="gate_bypassed",
+                )
+            early_merge = pr.merge_commit_sha
         from delivery.coordination import Coordinator
 
         coord = Coordinator(self.deps)
@@ -2764,7 +2769,7 @@ class ReleasePreparationStage(StageStrategy):
             outcome="success",
             reason=result.summary,
             result=result.model_dump(mode="json"),
-            extra={"revision": nxt, "candidate": candidate},
+            extra={"revision": nxt, "candidate": candidate, "merged_early": early_merge},
         )
 
     async def publish(self, d: Decision) -> None:
@@ -2823,6 +2828,8 @@ class ReleasePreparationStage(StageStrategy):
                 ctx.cfg.approvals.who,
                 ctx.cfg.release.environment,
                 note=self.gate_summary(""),
+                merged_early=d.extra.get("merged_early"),
+                pr_number=ctx.shared.pr_number,
             ),
             f"v{rev}",
             gate_tokens=(token,),

@@ -672,14 +672,27 @@ def release_gate(
     approvers: str,
     environment: str,
     note: str = "",
+    merged_early: str | None = None,
+    pr_number: int | None = None,
 ) -> str:
+    if merged_early:
+        after = (
+            f" **PR #{pr_number} was already merged (`{merged_early[:12]}`) before this approval.** "
+            "The merged code is the accepted candidate, so approving makes that merge the release: "
+            f"the coordinator records it in `{environment}` (moving into "
+            f"**{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**) and verifies. "
+            "If the release should not stand, request changes instead."
+        )
+    else:
+        after = (
+            f" Then a human merges the PR: that is the release, which the coordinator records in "
+            f"`{environment}` (moving into **{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**) "
+            "and verifies. It never merges or deploys."
+        )
     return "\n".join(
         [
             f"## Release proposal v{revision:03d} ready",
-            _approve(approvers, Status.RELEASE_REVIEW, Action.APPROVE_RELEASE)
-            + f" Then a human merges the PR: that is the release, which the coordinator records in "
-            f"`{environment}` (moving into **{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**) "
-            "and verifies. It never merges or deploys.",
+            _approve(approvers, Status.RELEASE_REVIEW, Action.APPROVE_RELEASE) + after,
             _change(Status.RELEASE_REVIEW, Action.REQUEST_RELEASE_CHANGES),
             f"[Release proposal]({url}) · accepted candidate `{candidate}`",
             *(["", note] if note else []),

@@ -169,3 +169,35 @@ async def test_release_not_recordable_in_jira_is_retried_next_poll(tmp_path: Pat
         w.jira.drop_routes.clear()
         assert await step(sup) == ["PILOT-1"]
     assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
+
+
+async def _accepted(w: World, sup: Supervisor, key: str) -> int:
+    w.new_ticket(key)
+    w.submit(key)
+    await step(sup)
+    w.move(key, Status.READY_PLANNING)
+    await step(sup)
+    w.move(key, Status.READY_DEVELOPMENT)
+    await step(sup)
+    await step(sup)
+    rec = w.record(key)
+    assert rec.pr_number
+    w.github.approve(rec.pr_number, REVIEWER)
+    w.move(key, Status.ACCEPTANCE_REVIEW)
+    return rec.pr_number
+
+
+async def test_pr_merged_before_release_approval_is_flagged_not_blocked(tmp_path: Path) -> None:
+    w = make_world(tmp_path)
+    async with Supervisor(w.deps) as sup:
+        pr = await _accepted(w, sup, "PILOT-1")
+        merged = w.github.merge(pr)
+        w.move("PILOT-1", Status.READY_RELEASE_PREPARATION)
+        await step(sup)
+        assert w.jira.status_of("PILOT-1") is not Status.BLOCKED, w.last_comment("PILOT-1")
+        assert f"PR #{pr} was already merged" in w.last_comment("PILOT-1")
+        assert merged[:12] in w.last_comment("PILOT-1")
+        w.move("PILOT-1", Status.READY_RELEASE)
+        await step(sup)
+        await step(sup)
+    assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
