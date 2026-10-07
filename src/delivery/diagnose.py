@@ -58,7 +58,13 @@ READ_ONLY_TOOLS = (
     "Bash(git diff:*)",
     "Bash(git status:*)",
 )
-DOCS = ("README.md", "docs/human-templates.md", "docs/jira-workflow-setup.md", "docs/operations.md")
+DOCS = (
+    "README.md",
+    "docs/user-guide.md",
+    "docs/human-templates.md",
+    "docs/jira-workflow-setup.md",
+    "docs/operations.md",
+)
 
 
 @dataclass

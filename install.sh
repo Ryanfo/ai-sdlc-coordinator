@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Installs (or updates) the delivery coordinator on this laptop, then runs `delivery setup`
-# to write your config. While the repository is private, run it with your GitHub CLI login:
+# to write your config:
 #
-#   bash <(gh api repos/Ryanfo/ai-sdlc-coordinator/contents/install.sh -H "Accept: application/vnd.github.raw")
+#   bash <(curl -fsSL https://raw.githubusercontent.com/Ryanfo/ai-sdlc-coordinator/main/install.sh)
 #
 # or from a clone: ./install.sh
 #

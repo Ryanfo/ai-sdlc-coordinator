@@ -114,7 +114,7 @@ config).
 | Changes requested | Revise scope | Ready for refinement |
 | Release review | Request release changes | Ready for release preparation |
 
-With [interactive sessions](../README.md#watching-claude-work-and-typing-to-it), changes a
+With [interactive sessions](user-guide.md#interactive-sessions), changes a
 developer asks for in an open development session are verified again as a new candidate. That
 needs three more transitions, all to Ready for verification and performed by the coordinator:
 
@@ -127,7 +127,7 @@ needs three more transitions, all to Ready for verification and performed by the
 ### Optional: spikes and the fast track
 
 Two more coordinator transitions, each needed only by teams that use that kind of work (see the
-README's *Other kinds of work*). `workflow verify` and `doctor` accept them but never require them.
+the user guide's *Other kinds of work*). `workflow verify` and `doctor` accept them but never require them.
 
 | From | Name | To | Used for |
 |---|---|---|---|

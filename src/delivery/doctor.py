@@ -539,7 +539,7 @@ async def check_jira(
             "fail",
             detail,
             "Store the token once with `delivery credentials set` (macOS Keychain) or export "
-            "the environment variables (see README: Jira authentication).",
+            "the environment variables (see docs/user-guide.md: Jira, GitHub and Figma authentication).",
         )
         return
     source = getattr(jira, "credential_source", "")
