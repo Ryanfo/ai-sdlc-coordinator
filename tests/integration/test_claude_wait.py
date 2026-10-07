@@ -88,9 +88,9 @@ async def test_development_waiting_for_claude_continues_in_its_own_worktree(tmp_
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
         await step(sup)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)
-        w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+        w.move(KEY, Status.READY_DEVELOPMENT)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.DEVELOPING
         await _check_now(sup)

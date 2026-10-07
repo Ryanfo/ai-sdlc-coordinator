@@ -45,17 +45,18 @@ Open question: Should search include the description text as well as the title?
 
 1. Create a second ticket assigned to someone else and submit it: confirm the developer's
    supervisor ignores it (`delivery inspect` shows "assigned to another account").
-2. Submit for refinement. Expect a Questions comment for the open question. Answer with the
-   template and choose Submit refinement answers.
-3. Review specification v002. Request one change with `CHANGE SPEC …-v002` (for example an
-   extra acceptance criterion); receive v003. Approve v003 with its token.
+2. Submit for refinement. Expect a Questions comment for the open question. Answer it in a plain
+   comment and choose Submit refinement answers.
+3. Review specification v002. Write one change in a comment (for example an extra acceptance
+   criterion) and choose Request specification changes; receive v003. Approve v003 by choosing
+   Approve specification (no comment).
 4. Review and approve the plan (note its footprint link).
 5. Watch development open the PR, then verification run review, coordinator checks on the
    candidate and on the integration tree, verify, and CI.
 6. Fault loop without breaking the real feature: use the dedicated fixture ticket in step 4
    below, not this ticket.
-7. The independent reviewer approves the PR on GitHub; the approver comments `APPROVE CODE …`
-   and Approve code; then `ACCEPT DELIVERY …` and Accept delivery.
+7. The independent reviewer approves the PR on GitHub; the approver chooses Approve code, then
+   Accept delivery. Confirm the Jira thread has no human decision comments.
 8. Approve the release proposal. A human merges the PR. Within a poll the coordinator reads the
    merge commit from GitHub and chooses Record release itself (no `RECORD RELEASE` comment).
 9. Confirm release verification passes and the ticket is Done.

@@ -383,8 +383,8 @@ What you will see in Jira:
 3. Independent review and verification reports, real check results, then **Code review**.
 4. Release proposal, then your merge of the PR, then **Done**.
 
-Jira holds decisions only. Every comment that waits for you starts with what to do: the comment
-to paste and the action to choose, which says which status it moves the ticket into. Test, lint
+Jira holds decisions only, and a decision is a move: every comment that waits for you starts
+with the action to choose and the status it moves the ticket into. There is nothing to paste. Test, lint
 and check results are not posted (only failures are named); the context of the work lives in the
 repository and the logs (`delivery inspect <KEY>`).
 
@@ -443,23 +443,16 @@ choose Revise scope (or request specification changes).
 
 ## 8. Answer questions and request changes
 
-Every decision comment uses a token the coordinator posts, so your intent is never guessed.
+You decide by moving the ticket; comments are just what you want to say, in your own words.
 
-```text
-ANSWERS PILOT-123-REFINE-R1
-Q1: Title only.
-```
+- **Questions**: reply in a comment (one or several; `Q2: ...` to name a question if you like),
+  then choose **Submit refinement answers**. A comment alone never restarts work.
+- **Changes**: choose **Request specification changes** (or plan, code, acceptance, release).
+  Say what to change in a comment, before or after the move: everything written since the
+  revision was posted reaches Claude. If nobody wrote anything, Claude asks you what to change.
+  `F1:`-style numbering is optional; a comment without it is one item.
 
-then choose **Submit refinement answers**. A comment alone never restarts work.
-
-```text
-CHANGE SPEC PILOT-123-SPEC-v2
-F1: Search must also match the description.
-```
-
-then choose **Request specification changes**. The next revision is written from the
-current draft plus your numbered items. All templates are in
-[docs/human-templates.md](docs/human-templates.md).
+How people decide is summed up in [docs/human-templates.md](docs/human-templates.md).
 
 To tell Claude something (why the last run went wrong, an approach to take or avoid), add a
 comment whose first line is `FOR CLAUDE`, or `FOR CLAUDE development` (any stage name) to aim
@@ -479,17 +472,17 @@ developer's machine, reads it from then on. Edit or remove entries on that branc
 
 **Review comments on the pull request count.** When changes to a candidate are submitted
 (Submit implementation changes), the PR's unresolved review conversations and written reviews
-from since that candidate was published reach development as `G1`, `G2`… items next to your
-`F` items, with the file and line. Resolve a conversation on GitHub to leave it out. With PR
-comments, `CHANGE CODE <token>` needs no items of its own.
+from since that candidate was published reach development as `G1`, `G2`… items next to what was
+written in Jira, with the file and line. Resolve a conversation on GitHub to leave it out. When
+the PR comments say it all, just choose **Request code changes**.
 
 **What Claude sees from the ticket**: the description (the brief), its attachments and linked
-Figma frames, the decision comments for the current step (`ANSWERS`, `CHANGE …`,
-`SUBMIT CHANGES …`), the findings or change items it must address, `FOR CLAUDE` notes from
-the assignee or an approver, and the project guidance. Tickets **linked** to this one in Jira
+Figma frames, what people wrote since the step it follows from was posted (answers, what to
+change, or notes left while approving), the findings or change items it must address,
+`FOR CLAUDE` notes from the assignee or an approver, and the project guidance. Tickets **linked** to this one in Jira
 (for example the story a bug was found in) come too: their summary, status and description and,
 when they went through delivery, their approved specification and plan, PR and released commit.
-Other comments, including the coordinator's own, are never sent.
+Older comments, and the coordinator's own, are never sent.
 
 With [interactive sessions](#watching-claude-work-and-typing-to-it), the session that makes
 the changes opens in a window and, once done, tells you how it addressed each item and asks
@@ -498,30 +491,30 @@ picked up straight away and published as the next revision.
 
 ## 9. Approve, review, accept and release
 
-- **Specification and plan**: `APPROVE SPEC <token>` / `APPROVE PLAN <token>`, then the approve
-  action. An approval applies to that exact revision; a new revision supersedes it.
+A decision is the Jira move alone, made by someone allowed to decide (anyone, unless
+`[approvals] jira_account_ids` lists people) after the revision was posted. No comment.
+
+- **Specification and plan**: choose the approve action. It approves the revision under review;
+  if a kept-open session published a newer one, its comment says so and the move approves that.
 - **Code review**: an independent human approves the PR on GitHub at the current head with
-  CI passing, then `APPROVE CODE <token>` and **Approve code**. Any new commit supersedes
-  the approval. The code review comment holds only this decision; acceptance is the next
-  step and gets its own comment when the ticket enters Acceptance review.
+  CI passing, then **Approve code**. Any new commit needs verifying again. The code review
+  comment holds only this decision; acceptance is the next step and gets its own comment when
+  the ticket enters Acceptance review.
 - **Deviations from the specification**: when something changed during development (for
   example you asked for it in the open session), the review lists it as a deviation (`D1`…),
   says whether you asked for it, and asks whether it is acceptable. It never fails
-  verification. If it is acceptable, comment `ACCEPT DEVIATIONS <code token>`
-  and chooses **Submit follow-up changes**: Claude rewrites the specification to include it,
-  publishes that as the approved revision (no new refinement or planning round) and the
-  ticket comes back to Code review with the same tokens. If not, name it in `CHANGE CODE
-  <token>` (`D1: keep to the specification`), choose **Request code changes** and then
-  **Submit implementation changes**: a development session changes the code back and the new
-  candidate is verified. Release preparation waits until every deviation is decided.
+  verification. Approving the code accepts it: release preparation first has Claude rewrite the
+  specification to include it and publishes that as the approved revision (no new refinement or
+  planning round). If not, choose **Request code changes**, name it in a comment
+  (`D1: keep to the specification`) and choose **Submit implementation changes**: a development
+  session changes the code back and the new candidate is verified.
 - **Acceptance** (product decision): when the ticket enters Acceptance review, the coordinator
   posts how to try the code-approved candidate and what to check: the **acceptance guide**
   verification wrote (how to check each acceptance criterion by hand, in plain language), and
   `delivery try <ticket>` for anyone with the delivery tools to run it on their own machine. With `[preview]`
   configured, your coordinator also runs that exact candidate and opens it in your browser
   until the ticket leaves Acceptance review ([Trying the change](#trying-the-change-in-your-browser)).
-  Then `ACCEPT DELIVERY <token>` and **Accept delivery**, or `CHANGE ACCEPTANCE <token>` with
-  numbered items and **Request acceptance changes**.
+  Then **Accept delivery**, or **Request acceptance changes** (say what in a comment).
 - **Release**: approve the proposal, then merge the PR on GitHub. That merge is the release:
   the coordinator reads the merge commit from GitHub, chooses **Record release** itself and
   verifies that the released commit contains exactly the approved candidate (merge, squash or
@@ -604,8 +597,8 @@ The coordinator first gathers everything about the ticket into one briefing: wha
 `coordinator inspect` explains, the ticket's recent Jira comments and status history, what the
 running coordinator is doing, this machine's runs (results, transcripts, check logs, journals)
 and the coordinator log lines about it. Then it opens Claude in this terminal with that
-briefing. Claude says what is happening, why (with the evidence), and what to do: the exact Jira
-comment to paste and the action to choose, or the `coordinator` command to run. Ask it follow-up
+briefing. Claude says what is happening, why (with the evidence), and what to do: the Jira action
+to choose, or the `coordinator` command to run. Ask it follow-up
 questions; `/exit` or Ctrl-D ends it.
 
 It is your own Claude session, not a sandboxed stage: it can read the run folders, the docs and
@@ -695,20 +688,20 @@ Ready for verification (`delivery workflow verify --yes` checks them once they e
 
 Specification, plan and release proposal sessions take changes the same way. Ask the session
 that wrote the document: each time Claude finishes a reply with the document changed, the
-coordinator publishes it as the next revision for review, with a new token in a new review
-comment, and the revision that was under review no longer counts. The ticket stays where it
+coordinator publishes it as the next revision for review in a new review comment, and the
+revision that was under review no longer counts: the next approve move approves the new one. The ticket stays where it
 is, so no Jira transitions are needed. This happens while the ticket is in that review status
 (Specification review, Plan review or Release review) with the session's revision under review.
 
-**After acting on changes you asked for in Jira** (`CHANGE …`, `SUBMIT CHANGES …`, `REVISE
-SCOPE …` or verification findings), Claude ends the session by listing each item and what it did
+**After acting on changes you asked for in Jira** (a Request … changes or Revise scope move, or
+verification findings), Claude ends the session by listing each item and what it did
 ("The changes requested in Jira have been actioned: …") and asks whether you would like any
 further changes. If not, close the window (that only detaches it; `delivery attach` reopens it),
 or in a development session type `/exit`, which starts verification. Anything else you ask for
 there is picked up straight away as above. Once the coordinator has
 published the result, it brings that session up: a terminal window opens on it if none is
 attached, with a note on the status line. Every development session ends by asking too. A change
-request still needs both the comment and the Jira action; a comment alone never starts work.
+request is the Jira action; a comment alone never starts work.
 
 A session closes when you type `/exit` (or `delivery close <ticket>`), after `idle_close_hours`
 with nothing happening, when a new run of the same stage starts for the ticket, or when the
@@ -774,7 +767,7 @@ the ticket's issue type or a label (`[flow]` in the config):
 | Kind | How it differs |
 |---|---|
 | **Bug** (`bug_types`, default `Bug`) | The specification records the steps to reproduce, actual and expected behaviour. Development writes a failing regression test first, then fixes it. Verification then runs the candidate's test files on the base branch *without* the fix and says in the code review comment whether they fail there (**Bug reproduced**), pass anyway (**not reproduced**: the test may not catch the bug) or are missing. Reported, never a failure. |
-| **Spike** (`spike_types`, default `Spike`) | The specification is the question to answer. Instead of a plan, Claude investigates (it may run code) and writes **findings**: the answer, options compared, a recommendation, evidence. They are reviewed in Plan review (`APPROVE PLAN` accepts them); the coordinator then closes the ticket (Done), since there is nothing to build. Needs the **Complete spike** transition (see the Jira setup). |
+| **Spike** (`spike_types`, default `Spike`) | The specification is the question to answer. Instead of a plan, Claude investigates (it may run code) and writes **findings**: the answer, options compared, a recommendation, evidence. They are reviewed in Plan review (**Approve plan** accepts them); the coordinator then closes the ticket (Done), since there is nothing to build. Needs the **Complete spike** transition (see the Jira setup). |
 | **Fast track** (label `fast_track_label`, default `fast-track`) | For small changes: refinement writes the plan with the specification, and one approval covers both. Planning then publishes that plan as approved and development starts straight away, with no plan review. Needs the **Use approved plan** transition; without it the plan goes to Plan review as usual. If Claude finds the change is not small, it writes no plan and planning runs as usual. |
 
 **Proposed tickets.** When a brief is too big for one delivery, refinement still writes the
@@ -935,8 +928,8 @@ the same reminder there. `after_hours = 0` turns reminders off.
 | Verification failed or a stage blocked, next step unclear | `delivery inspect <KEY>`: every reason and finding in full, failed check output, Claude logs, and what each Jira action offered now does |
 | Claude keeps getting something wrong | Add a comment starting `FOR CLAUDE` (or `FOR CLAUDE development`) with the guidance, then Resume or Submit as usual: the next session gets it as input |
 | "It is in the Ready column" | Several statuses share a column; inspect the exact status |
-| Stays paused after answering | Check the round token and Q-IDs, then use the Submit answers action |
-| Approval rejected | Use the current token; if `[approvals] jira_account_ids` lists approvers, one of them must make both the comment and the transition (empty: anyone can); for code, an independent GitHub review on the current head with CI green when `require_independent_github_review` is on |
+| Stays paused after answering | Use the Submit answers action for the stage that asked (the Questions comment names it) |
+| Approval rejected | The move must come after the revision under review was posted; if `[approvals] jira_account_ids` lists approvers, one of them must make it (empty: anyone can), then choose Resume; for code, an independent GitHub review on the current head with CI green when `require_independent_github_review` is on |
 | Blocked: maximum turns or time | The session was making progress but hit its limit: raise `[claude.turn_limits]` or `[claude.timeout_minutes]` for that procedure, restart, then Resume (it continues from the kept changes) |
 | Blocked: stopped by a guardrail | It repeated the same failing step or stalled. `delivery logs <KEY>` shows where; add guidance as a comment or adjust the plan, then Resume |
 | "Waiting for Claude" | Login expired: run `claude auth login`. Usage limit: wait for the reset. Either way the waiting tickets carry on by themselves; no paid fallback |

@@ -20,18 +20,18 @@ async def _to_done(w: World, sup: Supervisor, how: str) -> int:
     w.new_ticket(KEY, summary="Search tasks")
     w.submit(KEY)
     await step(sup)
-    w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+    w.move(KEY, Status.READY_PLANNING)
     await step(sup)
-    w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+    w.move(KEY, Status.READY_DEVELOPMENT)
     await step(sup)
     await step(sup)
     pr = w.record(KEY).pr_number
     assert pr
     w.github.approve(pr, REVIEWER)
-    w.decide(KEY, f"APPROVE CODE {w.token(KEY, 'CODE')}", Status.ACCEPTANCE_REVIEW)
-    w.decide(KEY, f"ACCEPT DELIVERY {w.token(KEY, 'ACCEPT')}", Status.READY_RELEASE_PREPARATION)
+    w.move(KEY, Status.ACCEPTANCE_REVIEW)
+    w.move(KEY, Status.READY_RELEASE_PREPARATION)
     await step(sup)
-    w.decide(KEY, f"APPROVE RELEASE {w.token(KEY, 'RELEASE')}", Status.READY_RELEASE)
+    w.move(KEY, Status.READY_RELEASE)
     w.github.merge(pr, how=how)
     await step(sup)  # the merge is the release: recorded and verified
     assert w.jira.status_of(KEY) is Status.DONE, w.last_comment(KEY)
@@ -73,9 +73,9 @@ async def test_only_a_merged_ticket_can_be_reverted(tmp_path: Path) -> None:
     async with Supervisor(w.deps) as sup:
         w.submit(KEY, DEV)
         await step(sup)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)
-        w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+        w.move(KEY, Status.READY_DEVELOPMENT)
         await step(sup)
     with pytest.raises(RevertError, match="is not merged"):
         await revert_release(w.cfg, w.jira, w.github, KEY, "")

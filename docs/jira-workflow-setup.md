@@ -276,7 +276,7 @@ Secrets are exchanged separately, never in documents.
 | New ticket starts in Backlog | No work starts | `delivery run --dry-run` shows nothing for it |
 | Assigned ticket moved to Ready for refinement | Picked up only by the assignee's supervisor | Another developer's dry run skips it ("assigned to another account") |
 | Review, Needs clarification, Blocked | Never trigger work | Dry run |
-| Change request from a review status | Returns to the right ready status with the feedback | Request specification changes after a `CHANGE SPEC` comment |
+| Change request from a review status | Returns to the right ready status with what was written since the revision was posted | Comment what to change, then Request specification changes |
 | Clarification from planning | Only *Submit planning answers* offered (with field conditions) | Inspect the available transitions |
 | Wrong resume or missing approval | Refused by Jira, or the coordinator blocks with an explanation | Try it on a test ticket |
 | Unauthorised approval | Rejected | Approve as a non-approver |

@@ -29,16 +29,17 @@ A person is in this session. Use that: it is what makes this different from a no
 ## Steps
 
 1. Read `resolution.briefing_path`. It has the blocker as the coordinator recorded it, **how the
-   coordinator reads this ticket** (the decision tokens that are current, every decision comment
-   already on the ticket and whether the coordinator uses, supersedes, ignores or does not
-   recognise it), the blocked run's result and transcript tail, failed check output and the
-   recent comments. `human-templates.md` next to it (`inputs/`) has the exact format of every
-   comment a person can post. If `prior_work` is set, the blocked stage left unfinished changes
+   coordinator reads this ticket** (its gates, every request comment already on the ticket and
+   whether the coordinator uses, supersedes, ignores or does not recognise it), the blocked
+   run's result and transcript tail, failed check output and the recent comments.
+   `human-templates.md` next to it (`inputs/`) explains how people decide (by moving the
+   ticket) and the exact format of the two request comments. If `prior_work` is set, the blocked stage left unfinished changes
    in the working copy; read `prior_work.session_tail_path` to see where it stopped.
 2. Find the cause, not a cause. Read the evidence the coordinator used (the reason names it) and
    the ticket state above before you read anything else: most blockers that need a person are a
-   decision comment the coordinator read differently from how its author meant it (a record
-   naming the wrong commit, a token that is no longer current, an answer that did not count).
+   move the coordinator rejected (made by someone not allowed to decide, or before the current
+   revision was posted) or a request comment it read differently from how its author meant it
+   (a release record naming the wrong commit).
    Say what you checked.
 3. Decide whether you can clear it from here (see *What you can and cannot change*). If you can,
    do it in small steps and run the relevant tests or checks to show it worked.
@@ -88,12 +89,13 @@ exact steps in order. The coordinator posts them on the ticket as a numbered lis
 ready to copy, so they must work exactly as written. It checks them before it lets you finish and
 tells you here what is wrong; fix it and write the result again.
 
-- `jira_comment`: the **whole comment**, character for character, and nothing else. A decision
-  comment starts with its decision line (`RECORD RELEASE <token>`) with nothing before it: no
-  quotes, no sentence around it, no "post this". Take the token from the *Decision tokens now*
-  list in the briefing, never from memory or by counting up (a new revision number is not a
-  token the ticket has). A later comment for the same token replaces an earlier one, so a
-  correction is a new comment with the same token, not a new token. Use the format in
+- `jira_comment`: the **whole comment**, character for character, and nothing else. Decisions
+  (approving, asking for changes, answering, resuming) are never comments: they are
+  `jira_action` steps. A comment is either what a person should write in their own words (what
+  to change, an answer), or a request (`RECORD RELEASE <token>`, `CREATE TICKETS <token>`) that
+  starts with its request line with nothing before it: no quotes, no sentence around it, no
+  "post this". Take the token from the gates in the briefing, never from memory or by counting
+  up. A later request for the same token replaces an earlier one. Use the format in
   `human-templates.md`.
 - `jira_action`: the action's name as Jira shows it on a Blocked ticket (`Resume release
   verification`). The ticket returns to Blocked when you finish, and the action must be one for

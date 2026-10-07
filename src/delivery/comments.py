@@ -1,9 +1,10 @@
 """Jira comment bodies (markdown subset converted to ADF on publication).
 
-Jira holds decisions only. A comment that waits for a human opens with what to do (the comment
-to paste and the action to choose, with the status it moves the ticket into, taken from the
-workflow definition), then links to the artefacts. Results, logs and working context stay in
-the repository and the coordinator logs; only failures are named.
+Jira holds decisions only, and a decision is a move: a comment that waits for a human opens with
+the action to choose and the status it moves the ticket into (taken from the workflow
+definition), then links to the artefacts. Nobody is asked to paste a comment to decide.
+Results, logs and working context stay in the repository and the coordinator logs; only failures
+are named.
 """
 
 from __future__ import annotations
@@ -11,12 +12,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from delivery.feedback import (
-    DecisionKind,
-    answer_template,
-    approve_template,
-    change_template,
-)
+from delivery.feedback import GATE_TOKEN, DecisionKind
 from delivery.models import CheckResult, DeviationRecord, Finding, ProposedTicket, Question, Severity
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
@@ -52,6 +48,21 @@ def _into(source: Status, action: Action) -> str:
 
 def _moves(source: Status, action: Action) -> str:
     return f"(moves into **{_into(source, action)}**)"
+
+
+def _approve(who: str, source: Status, action: Action, what: str = "To approve") -> str:
+    return (
+        f"**{what}** ({who}): choose **{DEFAULT_ACTION_NAMES[action]}** {_moves(source, action)}. "
+        "No comment needed."
+    )
+
+
+def _change(source: Status, action: Action, what: str = "To request changes") -> str:
+    return (
+        f"**{what}**: choose **{DEFAULT_ACTION_NAMES[action]}** {_moves(source, action)}. Say what "
+        "to change in a comment if you like; Claude reads every comment written since this was "
+        "posted, and asks you when there is none."
+    )
 
 
 def _ready_to_move(source: Status, action: Action, when: str) -> str:
@@ -123,18 +134,9 @@ def spec_gate(
     proposals: Sequence[ProposedTicket] = (),
 ) -> str:
     lines = [
-        f"## Specification v{revision:03d} ready for review: {token}",
-        f"**To approve** ({approvers}): comment this, then choose **Approve specification** "
-        f"{_moves(Status.SPECIFICATION_REVIEW, Action.APPROVE_SPECIFICATION)}.",
-        "```",
-        approve_template(DecisionKind.APPROVE_SPEC, token),
-        "```",
-        "**To request changes**: comment this with numbered items, then choose **Request "
-        "specification changes** "
-        f"{_moves(Status.SPECIFICATION_REVIEW, Action.REQUEST_SPECIFICATION_CHANGES)}.",
-        "```",
-        change_template(DecisionKind.CHANGE_SPEC, token),
-        "```",
+        f"## Specification v{revision:03d} ready for review",
+        _approve(approvers, Status.SPECIFICATION_REVIEW, Action.APPROVE_SPECIFICATION),
+        _change(Status.SPECIFICATION_REVIEW, Action.REQUEST_SPECIFICATION_CHANGES),
         f"[Specification v{revision:03d}]({url})",
     ]
     if plan:
@@ -159,17 +161,10 @@ def findings_gate(
 ) -> str:
     """A spike's findings, reviewed in Plan review. Accepting them completes the spike."""
     lines = [
-        f"## Findings v{revision:03d} ready for review: {token}",
-        f"**To accept the findings** ({approvers}): comment this, then choose **Approve plan** "
-        f"{_moves(Status.PLAN_REVIEW, Action.APPROVE_PLAN)}. The spike then closes as Done.",
-        "```",
-        approve_template(DecisionKind.APPROVE_PLAN, token),
-        "```",
-        "**To ask for more investigation**: comment this with numbered items, then choose **Request "
-        f"plan changes** {_moves(Status.PLAN_REVIEW, Action.REQUEST_PLAN_CHANGES)}.",
-        "```",
-        change_template(DecisionKind.CHANGE_PLAN, token),
-        "```",
+        f"## Findings v{revision:03d} ready for review",
+        _approve(approvers, Status.PLAN_REVIEW, Action.APPROVE_PLAN, "To accept the findings")
+        + " The spike then closes as Done.",
+        _change(Status.PLAN_REVIEW, Action.REQUEST_PLAN_CHANGES, "To ask for more investigation"),
         f"[Findings v{revision:03d}]({url})",
         "",
         summary,
@@ -201,19 +196,18 @@ def spike_done(revision: int, url: str, token: str, proposals: Sequence[Proposed
     return "\n".join(lines)
 
 
-def fast_track_plan(token: str, url: str, revision: int, spec_token: str) -> str:
+def fast_track_plan(url: str, revision: int) -> str:
     return "\n".join(
         [
-            f"## Plan v{revision:03d} approved with the specification: {token}",
+            f"## Plan v{revision:03d} approved with the specification",
             f"Nothing to do: development starts by itself (moving into "
             f"**{_into(Status.PLANNING, Action.USE_APPROVED_PLAN)}**). "
-            f"[Plan v{revision:03d}]({url}) was approved with `{spec_token}`.",
+            f"[Plan v{revision:03d}]({url}) was approved with the specification.",
         ]
     )
 
 
 def plan_gate(
-    token: str,
     url: str,
     footprint_url: str,
     revision: int,
@@ -222,17 +216,9 @@ def plan_gate(
     overlap: list[OverlapFinding],
 ) -> str:
     lines = [
-        f"## Plan v{revision:03d} ready for review: {token}",
-        f"**To approve** ({approvers}): comment this, then choose **Approve plan** "
-        f"{_moves(Status.PLAN_REVIEW, Action.APPROVE_PLAN)}.",
-        "```",
-        approve_template(DecisionKind.APPROVE_PLAN, token),
-        "```",
-        "**To request changes**: comment this with numbered items, then choose **Request plan "
-        f"changes** {_moves(Status.PLAN_REVIEW, Action.REQUEST_PLAN_CHANGES)}.",
-        "```",
-        change_template(DecisionKind.CHANGE_PLAN, token),
-        "```",
+        f"## Plan v{revision:03d} ready for review",
+        _approve(approvers, Status.PLAN_REVIEW, Action.APPROVE_PLAN),
+        _change(Status.PLAN_REVIEW, Action.REQUEST_PLAN_CHANGES),
         f"[Plan v{revision:03d}]({url}) · [change footprint]({footprint_url})",
         "",
         summary,
@@ -245,24 +231,18 @@ def plan_gate(
     return "\n".join(lines)
 
 
-def questions(round_token: str, draft_url: str, qs: list[Question], who: str, stage: str) -> str:
+def questions(draft_url: str, qs: list[Question], who: str, stage: str) -> str:
     answers = _stage_def(stage).answers_action
     title = STAGE_TITLES.get(stage, stage)
     lines = [
-        f"## Questions: {round_token}",
-        f"**To answer** ({who}): comment the template below with an answer to each question, then "
-        f"choose **Submit {title.lower()} answers** {_moves(Status.NEEDS_CLARIFICATION, answers)}.",
+        "## Questions",
+        f"**To answer** ({who}): reply in a comment, in your own words (one comment or several), "
+        f"then choose **Submit {title.lower()} answers** {_moves(Status.NEEDS_CLARIFICATION, answers)}.",
         "",
     ]
     for q in qs:
         lines.append(f"- **{q.id}** {q.question}" + (f" _(why: {q.rationale})_" if q.rationale else ""))
-    lines += [
-        "",
-        "```",
-        answer_template(round_token, [q.id for q in qs]),
-        "```",
-        f"[Current draft]({draft_url})",
-    ]
+    lines += ["", f"[Current draft]({draft_url})"]
     return "\n".join(lines)
 
 
@@ -336,7 +316,7 @@ def _next_steps(ticket: str, steps: list[dict[str, str]]) -> list[str]:
     for n, st in enumerate(steps, 1):
         kind, text, who = st["kind"], st["text"].strip(), st.get("who") or "the developer"
         if kind == "jira_comment":
-            head = f"**{n}. Paste this comment on {ticket}** ({who})."
+            head = f"**{n}. Add this comment to {ticket}** ({who})."
         elif kind == "jira_action":
             action = next(
                 (a for a, name in DEFAULT_ACTION_NAMES.items() if name.lower() == text.lower()), None
@@ -441,7 +421,7 @@ def _failed_checks(results: Iterable[CheckResult]) -> list[str]:
 
 
 def code_gate(
-    code_token: str,
+    candidate_no: int,
     pr_url: str,
     candidate: str,
     review_url: str,
@@ -455,34 +435,26 @@ def code_gate(
     base: str = "main",
     merge_conflicts: list[dict[str, Any]] | None = None,
     deviations: list[DeviationRecord] | None = None,
-    approvers_only: bool = True,
     claude_resolves: bool = False,
     reproduction: dict[str, Any] | None = None,
 ) -> str:
     """The code decision only. Acceptance is its own step with its own comment (acceptance_ready)."""
     devs = deviations or []
     lines = [
-        f"## Candidate ready for code review: {code_token}",
+        f"## Candidate c{candidate_no} ready for code review",
         f"**To approve the code**: an independent human ({reviewers}) approves the PR on GitHub at "
-        "the current head with required CI passing. Then comment this and choose **Approve code** "
-        f"{_moves(Status.CODE_REVIEW, Action.APPROVE_CODE)}. Acceptance is the next step and gets its "
-        "own comment.",
-        "```",
-        approve_template(DecisionKind.APPROVE_CODE, code_token),
-        "```",
-        "**To request changes**: comment this with numbered items, then choose **Request code "
-        f"changes** {_moves(Status.CODE_REVIEW, Action.REQUEST_CODE_CHANGES)}. Unresolved PR review "
-        "conversations are included, so the items can be left out if the PR comments say it all.",
-        "```",
-        change_template(DecisionKind.CHANGE_CODE, code_token),
-        "```",
+        "the current head with required CI passing, then anyone allowed to decide chooses **Approve "
+        f"code** {_moves(Status.CODE_REVIEW, Action.APPROVE_CODE)}. No comment needed. Acceptance is "
+        "the next step and gets its own comment.",
+        _change(Status.CODE_REVIEW, Action.REQUEST_CODE_CHANGES)
+        + " Unresolved PR review conversations are included too.",
         f"PR: {pr_url} · candidate `{candidate}` · [Independent review]({review_url}) · "
         f"[Verification report]({verification_url})",
     ]
     lines += _failed_checks(checks)
     lines += reproduction_lines(reproduction, base)
     lines += conflicts_section(merge_conflicts or [], base, claude_resolves=claude_resolves)
-    lines += deviations_section(devs, code_token, Status.CODE_REVIEW, approvers_only=approvers_only)
+    lines += deviations_section(devs, Status.CODE_REVIEW)
     if findings:
         lines += ["", "**Non-blocking findings** (in the review): " + ", ".join(f.id for f in findings)]
     if unverified:
@@ -490,7 +462,7 @@ def code_gate(
     if overlap:
         lines += ["", "**Integration scrutiny requested** for overlapping work:"]
         lines += [f"- {o.warning_id}: {o.other} ({', '.join(o.details[:3])})" for o in overlap]
-    lines += ["", "Any new commit on the PR supersedes this token."]
+    lines += ["", "Any new commit on the PR needs verifying again before the code can be approved."]
     return "\n".join(lines)
 
 
@@ -523,18 +495,14 @@ def _deviation_lines(devs: list[DeviationRecord]) -> list[str]:
     return out
 
 
-def deviations_section(
-    devs: list[DeviationRecord], code_token: str, here: Status, *, approvers_only: bool = True
-) -> list[str]:
+def deviations_section(devs: list[DeviationRecord], here: Status) -> list[str]:
     """Working differences from the approved specification: a question, never a failure.
 
-    Accepting one rewrites the specification (no new refinement round); rejecting one sends it
-    to development. One left undecided is never changed back, but release preparation waits.
+    Approving the code accepts them (the specification is rewritten before release preparation,
+    no new refinement round); one named in a change request goes back to development.
     """
     if not devs:
         return []
-    accept = f"{DecisionKind.ACCEPT_DEVIATIONS.value} {code_token}"
-    who = " (an approver)" if approvers_only else ""
     lines = [
         "",
         "**Deviations from the approved specification** (not failures; is each acceptable?):",
@@ -543,41 +511,20 @@ def deviations_section(
     if here is Status.CODE_REVIEW:
         return [
             *lines,
-            f"**If acceptable**{who}: comment this, then choose **Submit follow-up changes** "
-            f"{_moves(Status.CODE_REVIEW, Action.SUBMIT_FOLLOW_UP)}. Claude updates the specification "
-            "without a new refinement round; the code is not reviewed again and the tokens stay. "
-            "List IDs on the lines below to accept only some.",
-            "```",
-            accept,
-            "```",
-            "**If not**: comment this with what to do about each, choose **Request code changes** "
-            f"{_moves(Status.CODE_REVIEW, Action.REQUEST_CODE_CHANGES)}, then **Submit implementation "
-            "changes**.",
-            "```",
-            f"{DecisionKind.CHANGE_CODE.value} {code_token}",
-            f"{devs[0].id}: <follow the specification: ...>",
-            "```",
-            "Release preparation waits until each is decided.",
+            "**If acceptable**: nothing extra to do. Approving the code accepts them, and Claude "
+            "updates the specification before release preparation (no new refinement round).",
+            "**If not**: choose **Request code changes** and name each in a comment (for example "
+            f"`{devs[0].id}: follow the specification`); development changes it back.",
         ]
     return [
         *lines,
-        f"**If acceptable**{who}: comment this before choosing what happens next (list IDs on the "
-        "lines below to accept only some). Claude updates the specification before the next run.",
-        "```",
-        accept,
-        "```",
-        f"**If not**: name each in the `SUBMIT CHANGES` comment (for example `{devs[0].id}: follow the "
-        "specification`) and choose **Submit implementation changes**. One nobody names is left as is.",
+        "**If not acceptable**: name each in a comment (for example "
+        f"`{devs[0].id}: follow the specification`) before choosing **Submit implementation "
+        "changes**. One nobody names is left as is, and accepted when the code is approved.",
     ]
 
 
-def spec_amended(
-    revision: int,
-    url: str,
-    accepted: list[DeviationRecord],
-    summary: str,
-    next_steps: list[str],
-) -> str:
+def spec_amended(revision: int, url: str, accepted: list[DeviationRecord], summary: str) -> str:
     lines = [
         f"## Specification v{revision:03d}: accepted deviations included",
         f"[Specification v{revision:03d}]({url}) now includes the deviations below and is the approved "
@@ -587,24 +534,7 @@ def spec_amended(
     ]
     if summary:
         lines += ["", f"**What changed**: {_clip(summary)}"]
-    return "\n".join([*lines, *next_steps])
-
-
-def back_to_code_review(
-    code_token: str,
-    candidate_no: int,
-    remaining: list[DeviationRecord],
-    *,
-    approvers_only: bool = True,
-) -> list[str]:
-    """After accepting deviations from Code review: the same candidate and token carry on."""
-    return [
-        "",
-        f"**Back in Code review**: candidate c{candidate_no} is unchanged, so the code review comment "
-        f"above still applies. Comment `{approve_template(DecisionKind.APPROVE_CODE, code_token)}` "
-        "then choose **Approve code**.",
-        *deviations_section(remaining, code_token, Status.CODE_REVIEW, approvers_only=approvers_only),
-    ]
+    return "\n".join(lines)
 
 
 def reproduction_lines(rep: dict[str, Any] | None, base: str) -> list[str]:
@@ -652,7 +582,6 @@ def conflicts_section(
 
 
 def verification_failed(
-    code_token: str,
     pr_url: str,
     candidate_no: int,
     candidate: str,
@@ -665,7 +594,6 @@ def verification_failed(
     base: str = "main",
     merge_conflicts: list[dict[str, Any]] | None = None,
     deviations: list[DeviationRecord] | None = None,
-    approvers_only: bool = True,
     claude_resolves: bool = False,
 ) -> str:
     serious = [f for f in findings if f.severity in (Severity.BLOCKER, Severity.MAJOR)]
@@ -678,14 +606,10 @@ def verification_failed(
         f"c{candidate_no + 1}.",
     ]
     if findings:
-        lines += [
-            "To fix only some findings, comment this first with the F-IDs and a note on each "
-            "(R-items are always included):",
-            "```",
-            f"{DecisionKind.SUBMIT_CHANGES.value} {code_token}",
-            *(f"{f.id}: <what to do>" for f in (serious or findings)[:3]),
-            "```",
-        ]
+        lines.append(
+            "To fix only some findings, say which in a comment first (for example `only F2 and F3`); "
+            "R-items are always included."
+        )
     lines += [
         "Other options: **Revise scope** to change what is built "
         f"{_moves(Status.CHANGES_REQUESTED, Action.REVISE_SCOPE)}, or **Submit follow-up changes** to "
@@ -702,16 +626,13 @@ def verification_failed(
     if others:
         lines.append(f"- Other findings (in the reports): {', '.join(f.id for f in others)}")
     lines += _failed_checks(checks)
-    lines += deviations_section(
-        deviations or [], code_token, Status.CHANGES_REQUESTED, approvers_only=approvers_only
-    )
+    lines += deviations_section(deviations or [], Status.CHANGES_REQUESTED)
     lines += conflicts_section(merge_conflicts or [], base, claude_resolves=claude_resolves)
     return "\n".join(lines)
 
 
 def acceptance_ready(
     key: str,
-    accept_token: str,
     candidate_no: int,
     candidate: str,
     pr_url: str,
@@ -725,16 +646,9 @@ def acceptance_ready(
     """Posted when a ticket enters Acceptance review: the product decision, then how to try it."""
     lines = [
         f"## Code approved: ready for acceptance (candidate c{candidate_no})",
-        "**To accept** (product decision against the brief): comment this, then choose **Accept "
-        f"delivery** {_moves(Status.ACCEPTANCE_REVIEW, Action.ACCEPT_DELIVERY)}.",
-        "```",
-        approve_template(DecisionKind.ACCEPT_DELIVERY, accept_token),
-        "```",
-        "**To request changes**: comment this with numbered items, then choose **Request acceptance "
-        f"changes** {_moves(Status.ACCEPTANCE_REVIEW, Action.REQUEST_ACCEPTANCE_CHANGES)}.",
-        "```",
-        change_template(DecisionKind.CHANGE_ACCEPTANCE, accept_token),
-        "```",
+        f"**To accept** (product decision against the brief): choose **Accept delivery** "
+        f"{_moves(Status.ACCEPTANCE_REVIEW, Action.ACCEPT_DELIVERY)}. No comment needed.",
+        _change(Status.ACCEPTANCE_REVIEW, Action.REQUEST_ACCEPTANCE_CHANGES),
         "**Try it**:",
     ]
     if local_app:
@@ -752,7 +666,6 @@ def acceptance_ready(
 
 
 def release_gate(
-    release_token: str,
     url: str,
     revision: int,
     candidate: str,
@@ -762,20 +675,12 @@ def release_gate(
 ) -> str:
     return "\n".join(
         [
-            f"## Release proposal v{revision:03d} ready: {release_token}",
-            f"**To approve** ({approvers}): comment this, then choose **Approve release** "
-            f"{_moves(Status.RELEASE_REVIEW, Action.APPROVE_RELEASE)}. Then a human merges the PR: "
-            f"that is the release, which the coordinator records in `{environment}` "
-            f"(moving into **{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**) and verifies. "
-            "It never merges or deploys.",
-            "```",
-            approve_template(DecisionKind.APPROVE_RELEASE, release_token),
-            "```",
-            "**To request changes**: comment this with numbered items, then choose **Request release "
-            f"changes** {_moves(Status.RELEASE_REVIEW, Action.REQUEST_RELEASE_CHANGES)}.",
-            "```",
-            change_template(DecisionKind.CHANGE_RELEASE, release_token),
-            "```",
+            f"## Release proposal v{revision:03d} ready",
+            _approve(approvers, Status.RELEASE_REVIEW, Action.APPROVE_RELEASE)
+            + f" Then a human merges the PR: that is the release, which the coordinator records in "
+            f"`{environment}` (moving into **{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**) "
+            "and verifies. It never merges or deploys.",
+            _change(Status.RELEASE_REVIEW, Action.REQUEST_RELEASE_CHANGES),
             f"[Release proposal]({url}) · accepted candidate `{candidate}`",
             *(["", note] if note else []),
         ]
@@ -859,11 +764,14 @@ def follow_up(
 
 
 def follow_up_revision(stage: str, replaces: str, requests: list[str]) -> str:
-    """The summary of a revision published from a session left open after its stage."""
+    """The summary of a revision published from a session left open after its stage. Approving is
+    a move, so it says plainly that the next move approves this revision, not the one it replaces."""
+    m = GATE_TOKEN.match(replaces)
+    old = f"v{int(m.group('rev')):03d}" if m else replaces
     return "\n".join(
         [
-            f"**Follow-up revision** superseding {replaces}: an approval of that revision does not "
-            f"cover this one. Changed in the open {STAGE_TITLES.get(stage, stage).lower()} session:",
+            f"**Follow-up revision** replacing {old}: moving the ticket on now approves this "
+            f"revision, not {old}. Changed in the open {STAGE_TITLES.get(stage, stage).lower()} session:",
             *[f"- {r}" for r in requests],
         ]
     )

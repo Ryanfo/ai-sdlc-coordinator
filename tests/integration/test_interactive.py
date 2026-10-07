@@ -103,9 +103,9 @@ def _prompts(w: World, procedure: str) -> list[str]:
 
 async def _to_development(w: World, sup: Supervisor) -> None:
     await step(sup)
-    w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+    w.move(KEY, Status.READY_PLANNING)
     await step(sup)
-    w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+    w.move(KEY, Status.READY_DEVELOPMENT)
 
 
 async def _exit_development(w: World, sup: Supervisor) -> None:
@@ -230,8 +230,8 @@ async def test_a_change_after_verification_sends_the_ticket_back(world: World) -
 
 
 async def test_a_specification_rewrite_session_closes_once_it_hands_over(world: World) -> None:
-    """Accepting a deviation runs amend-spec; its session must not linger as if it were a
-    development session (verification would wait for it to close)."""
+    """Approving code with a deviation runs amend-spec before release preparation; its session
+    must not linger as if it were an open document session."""
     w = world
     green = {"id": "D1", "description": "The button is green.", "requested": True}
     w.scenario({"review-ticket": [{"deviations": [green]}, {}]})
@@ -243,9 +243,11 @@ async def test_a_specification_rewrite_session_closes_once_it_hands_over(world: 
         await _exit_development(w, sup)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
-        w.decide(KEY, f"ACCEPT DEVIATIONS {KEY}-CODE-c1", Status.READY_VERIFICATION)
+        w.github.approve(w.record(KEY).pr_number or 0, REVIEWER)
+        w.move(KEY, Status.ACCEPTANCE_REVIEW)
+        w.move(KEY, Status.READY_RELEASE_PREPARATION)
         assert await step(sup) == [KEY]
-        assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
+        assert w.jira.status_of(KEY) is Status.RELEASE_REVIEW, w.last_comment(KEY)
         assert w.token(KEY, "SPEC") == f"{KEY}-SPEC-v2"
         assert any(i["procedure"] == "amend-spec" for i in w.invocations())
         assert _open(w, "amend-spec") is None
@@ -345,46 +347,32 @@ async def _to_review(w: World, sup: Supervisor, stage: Stage) -> None:
     await step(sup)
     if stage is Stage.REFINEMENT:
         return
-    w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+    w.move(KEY, Status.READY_PLANNING)
     await step(sup)
     if stage is Stage.PLANNING:
         return
-    w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+    w.move(KEY, Status.READY_DEVELOPMENT)
     await step(sup)
     await _exit_development(w, sup)
     await step(sup)
     pr = w.record(KEY).pr_number
     assert pr is not None
     w.github.approve(pr, REVIEWER)
-    w.decide(KEY, f"APPROVE CODE {w.token(KEY, 'CODE')}", Status.ACCEPTANCE_REVIEW)
-    w.decide(KEY, f"ACCEPT DELIVERY {w.token(KEY, 'ACCEPT')}", Status.READY_RELEASE_PREPARATION)
+    w.move(KEY, Status.ACCEPTANCE_REVIEW)
+    w.move(KEY, Status.READY_RELEASE_PREPARATION)
     await step(sup)
 
 
 @pytest.mark.parametrize(
-    ("stage", "kind", "folder", "approve", "approved_to", "then"),
+    ("stage", "kind", "folder", "approved_to", "then"),
     [
-        (
-            Stage.REFINEMENT,
-            "SPEC",
-            "specification",
-            "APPROVE SPEC",
-            Status.READY_PLANNING,
-            Status.PLAN_REVIEW,
-        ),
-        (Stage.PLANNING, "PLAN", "plan", "APPROVE PLAN", Status.READY_DEVELOPMENT, Status.READY_VERIFICATION),
-        (
-            Stage.RELEASE_PREPARATION,
-            "RELEASE",
-            "releases",
-            "APPROVE RELEASE",
-            Status.READY_RELEASE,
-            Status.READY_RELEASE,
-        ),
+        (Stage.REFINEMENT, "SPEC", "specification", Status.READY_PLANNING, Status.PLAN_REVIEW),
+        (Stage.PLANNING, "PLAN", "plan", Status.READY_DEVELOPMENT, Status.READY_VERIFICATION),
+        (Stage.RELEASE_PREPARATION, "RELEASE", "releases", Status.READY_RELEASE, Status.READY_RELEASE),
     ],
 )
 async def test_a_document_changed_in_its_open_session_is_published_as_the_next_revision(
-    world: World, stage: Stage, kind: str, folder: str, approve: str, approved_to: Status, then: Status
+    world: World, stage: Stage, kind: str, folder: str, approved_to: Status, then: Status
 ) -> None:
     w = world
     doc = DOCUMENTS[stage]
@@ -421,8 +409,8 @@ async def test_a_document_changed_in_its_open_session_is_published_as_the_next_r
             assert fp["plan_revision"] == 2 and "src/descriptions.ts" in fp["paths"]
             assert w.record(KEY).footprint_ref["revision"] == 2  # type: ignore[index]
         gate_comment = w.last_comment(KEY)
-        assert second in gate_comment and "Follow-up revision" in gate_comment
-        assert first in gate_comment and "AC2 also covers descriptions" in gate_comment
+        assert "v002 ready" in gate_comment and "Follow-up revision replacing v001" in gate_comment
+        assert "now approves this revision" in gate_comment and "AC2 also covers descriptions" in gate_comment
         rec = _open(w, doc.procedure)
         assert rec is not None and rec.revision == 2 and not rec.held
 
@@ -434,7 +422,7 @@ async def test_a_document_changed_in_its_open_session_is_published_as_the_next_r
         assert w.token(KEY, kind) == second
 
         # Approving the follow-up revision moves the ticket on; changes made after that wait.
-        w.decide(KEY, f"{approve} {second}", approved_to)
+        w.move(KEY, approved_to)
         await step(sup)
         assert w.jira.status_of(KEY) is then, w.last_comment(KEY)
         stops = _stops(rec)
@@ -452,16 +440,12 @@ async def test_change_requests_and_development_end_by_asking_what_else(world: Wo
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
         await step(sup)
-        w.decide(
-            KEY,
-            f"CHANGE SPEC {w.token(KEY, 'SPEC')}\nF1: Search must also match descriptions.",
-            Status.READY_REFINEMENT,
-        )
+        w.decide(KEY, Status.READY_REFINEMENT, "F1: Search must also match descriptions.")
         await step(sup)
         assert w.jira.status_of(KEY) is Status.SPECIFICATION_REVIEW, w.last_comment(KEY)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)
-        w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+        w.move(KEY, Status.READY_DEVELOPMENT)
         await step(sup)
     ask = "Are there any further changes you'd like to make?"
     first, changed = _prompts(w, "refine-ticket")

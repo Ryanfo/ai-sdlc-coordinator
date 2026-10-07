@@ -65,9 +65,7 @@ async def test_reminders_after_a_long_wait_mention_approvers_and_stop(tmp_path: 
             "content"
         ]
         # A new move starts a new wait.
-        w.decide(
-            "PILOT-1", f"CHANGE SPEC {w.token('PILOT-1', 'SPEC')}\nF1: more detail", Status.READY_REFINEMENT
-        )
+        w.decide("PILOT-1", Status.READY_REFINEMENT, "F1: more detail")
         await step(sup)
         entered = w.jira.clock
         sup.reminders.clock = lambda: entered + timedelta(hours=25)

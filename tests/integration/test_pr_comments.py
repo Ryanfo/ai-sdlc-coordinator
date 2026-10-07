@@ -27,9 +27,9 @@ async def _to_code_review(w: World, sup: Supervisor) -> int:
     w.new_ticket(KEY)
     w.submit(KEY)
     await step(sup)
-    w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+    w.move(KEY, Status.READY_PLANNING)
     await step(sup)
-    w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+    w.move(KEY, Status.READY_DEVELOPMENT)
     await step(sup)
     await step(sup)
     assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
@@ -63,9 +63,8 @@ async def test_pr_review_comments_become_change_items(tmp_path: Path) -> None:
         )
         assert "Unresolved PR review conversations are included" in w.last_comment(KEY)
 
-        # A change request with no F-items of its own: the PR comments say it all.
-        code = w.token(KEY, "CODE")
-        w.decide(KEY, f"CHANGE CODE {code}\nSee the comments on the pull request.", Status.CHANGES_REQUESTED)
+        # A change request with nothing written in Jira: the PR comments say it all.
+        w.move(KEY, Status.CHANGES_REQUESTED)
         w.jira.human_move(KEY, Status.READY_DEVELOPMENT, DEV)
         assert await step(sup) == [KEY]
         assert w.jira.status_of(KEY) is Status.READY_VERIFICATION, w.last_comment(KEY)
@@ -77,34 +76,34 @@ async def test_pr_review_comments_become_change_items(tmp_path: Path) -> None:
         assert items["G2"] == "GitHub review by @reviewer (requested changes): Needs an empty state."
 
 
-async def test_jira_items_and_pr_comments_together_and_submit_changes_keeps_pr_comments(
-    tmp_path: Path,
-) -> None:
+async def test_jira_comments_and_pr_comments_together(tmp_path: Path) -> None:
     w = make_world(tmp_path)
     w.scenario({"implement-ticket": TWO_RUNS})
     async with Supervisor(w.deps) as sup:
         pr = await _to_code_review(w, sup)
         w.github.comment_on_line(pr, "src/pilot-1.ts", 1, "Add a test for this", REVIEWER)
-        code = w.token(KEY, "CODE")
-        w.decide(
-            KEY, f"CHANGE CODE {code}\nF1: use the shared helper\nF2: rename it", Status.CHANGES_REQUESTED
-        )
-        # Only F1 from Jira; the PR's open conversation stays in (resolve it to leave it out).
-        w.jira.human_comment(KEY, DEV, f"SUBMIT CHANGES {code}\nF1: as asked")
+        w.decide(KEY, Status.CHANGES_REQUESTED, "F1: use the shared helper\nF2: rename it")
+        # Narrowing the work is said in words; Claude follows it (the PR conversation stays in
+        # until it is resolved on GitHub).
+        w.jira.human_comment(KEY, DEV, "Only F1 please, keep the name.")
         w.jira.human_move(KEY, Status.READY_DEVELOPMENT, DEV)
         await step(sup)
-        items = _envelope(w, "implement-ticket")["feedback_items"]
-        assert set(items) == {"F1", "G1"}
-        assert "Add a test for this" in items["G1"]
+        env = _envelope(w, "implement-ticket")
+        assert env["feedback_items"] == {
+            "F1": "use the shared helper",
+            "F2": "rename it",
+            "F3": "Only F1 please, keep the name.",
+            "G1": env["feedback_items"]["G1"],
+        }
+        assert "Add a test for this" in env["feedback_items"]["G1"] and env["changes_requested"]
 
 
-async def test_a_change_request_with_nothing_to_change_still_waits(tmp_path: Path) -> None:
+async def test_a_change_request_with_nothing_written_starts_and_claude_asks(tmp_path: Path) -> None:
     w = make_world(tmp_path)
     async with Supervisor(w.deps) as sup:
         await _to_code_review(w, sup)
-        code = w.token(KEY, "CODE")
-        w.decide(KEY, f"CHANGE CODE {code}\nPlease improve it.", Status.CHANGES_REQUESTED)
+        w.move(KEY, Status.CHANGES_REQUESTED)
         w.jira.human_move(KEY, Status.READY_DEVELOPMENT, DEV)
-        assert await step(sup) == []
-        text = w.last_comment(KEY)
-        assert "no feedback items selected" in text and "review comments on the pull request" in text
+        assert await step(sup) == [KEY]
+        env = _envelope(w, "implement-ticket")
+        assert env["changes_requested"] and env["feedback_items"] == {}

@@ -183,10 +183,10 @@ async def test_isolated_ports_and_worktrees_for_concurrent_development(tmp_path:
             w.submit(k)
         await step(sup)
         for k in keys:
-            w.decide(k, f"APPROVE SPEC {w.token(k, 'SPEC')}", Status.READY_PLANNING)
+            w.move(k, Status.READY_PLANNING)
         await step(sup)
         for k in keys:
-            w.decide(k, f"APPROVE PLAN {w.token(k, 'PLAN')}", Status.READY_DEVELOPMENT)
+            w.move(k, Status.READY_DEVELOPMENT)
         assert sorted(await step(sup)) == keys
     for k in keys:
         assert w.jira.status_of(k) is Status.READY_VERIFICATION, w.last_comment(k)

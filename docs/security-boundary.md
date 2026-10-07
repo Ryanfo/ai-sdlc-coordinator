@@ -123,8 +123,8 @@ cache under `node_modules`, binds a local port and connects to it.
   The same holds for the repository's Git hooks when `repository.run_git_hooks` is on (off by
   default: the coordinator's commits skip hooks).
 - **Single Jira identity.** With the default profile, Jira cannot distinguish coordinator and
-  human transitions. The coordinator never performs a human route and checks authors of both
-  the decision comment and the transition, but strict separation needs a worker service
+  human transitions. The coordinator never performs a human route and checks the author of the
+  transition that makes each decision, but strict separation needs a worker service
   account and Jira conditions (paid plans).
 - **No distributed lock.** One supervisor per identity per machine is enforced with an OS lock.
   Two machines running the same identity can race; doctor warns when it sees another worker's

@@ -151,7 +151,7 @@ def preview_ready(
                 (
                     "Decide",
                     "accept or request changes in Jira; the ticket's latest comment has the "
-                    "acceptance guide and the templates. The app stops when it leaves Acceptance review",
+                    "acceptance guide and the actions. The app stops when it leaves Acceptance review",
                 ),
                 ("Jira", ticket_url(cfg, key)),
                 ("Reopen", f"delivery preview {key}"),

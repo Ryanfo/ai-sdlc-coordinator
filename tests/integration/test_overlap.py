@@ -36,7 +36,7 @@ def two_developers(tmp_path: Path, checks: dict[str, list[str]] | None = None) -
 
 async def _plan(w: World, sup: Supervisor, key: str) -> None:
     await step(sup)
-    w.decide(key, f"APPROVE SPEC {w.token(key, 'SPEC')}", Status.READY_PLANNING)
+    w.move(key, Status.READY_PLANNING)
     await step(sup)
 
 
@@ -59,8 +59,8 @@ async def test_overlapping_plans_from_two_developers_get_linked_deduplicated_war
         assert "PILOT-1" in warn_b[0] and "PILOT-2" in warn_a[0]
         assert "src/search" in "".join(warn_b)
         # Same-file overlap is a warning, not a block: both proceed to development.
-        a.decide("PILOT-1", f"APPROVE PLAN {a.token('PILOT-1', 'PLAN')}", Status.READY_DEVELOPMENT)
-        b.decide("PILOT-2", f"APPROVE PLAN {b.token('PILOT-2', 'PLAN')}", Status.READY_DEVELOPMENT)
+        a.move("PILOT-1", Status.READY_DEVELOPMENT)
+        b.move("PILOT-2", Status.READY_DEVELOPMENT)
         await step(sa)
         await step(sb)
         assert a.jira.status_of("PILOT-1") is Status.READY_VERIFICATION
@@ -96,7 +96,7 @@ async def test_shared_interface_and_declared_dependency_are_flagged_never_paused
         assert any("declared_dependency" in c and "PILOT-2 depends on PILOT-1" in c for c in warnings)
         assert not any("OVERLAP OVL-" in c for c in b.comments("PILOT-2"))
         # No decision is needed: development starts as soon as the plan is approved.
-        b.decide("PILOT-2", f"APPROVE PLAN {b.token('PILOT-2', 'PLAN')}", Status.READY_DEVELOPMENT)
+        b.move("PILOT-2", Status.READY_DEVELOPMENT)
         await step(sb)
         assert b.jira.status_of("PILOT-2") is Status.READY_VERIFICATION, b.last_comment("PILOT-2")
         assert b.record("PILOT-2").pause is None
@@ -126,7 +126,7 @@ async def test_behavioural_overlap_caught_by_integration_tree_without_text_confl
     async with Supervisor(a.deps) as sa, Supervisor(b.deps) as sb:
         for w, s, k in ((a, sa, "PILOT-1"), (b, sb, "PILOT-2")):
             await _plan(w, s, k)
-            w.decide(k, f"APPROVE PLAN {w.token(k, 'PLAN')}", Status.READY_DEVELOPMENT)
+            w.move(k, Status.READY_DEVELOPMENT)
             await step(s)
         await step(sa)  # A verifies alone: passes (B's candidate is published but merges cleanly)
         await step(sb)  # B's integration tree includes A's candidate: the combined check fails

@@ -140,12 +140,6 @@ class FakeJira:
             self.issues[key].updated = t  # as Jira does
         return c
 
-    def edit_comment(self, key: str, cid: str, text: str) -> None:
-        lst = self.comments_by_key[key]
-        for i, c in enumerate(lst):
-            if c.id == cid:
-                lst[i] = JiraComment(c.id, c.author_account_id, c.created, self.tick(), text)
-
     def human_move(self, key: str, target: Status, author: str) -> None:
         """A human performs a transition; only routes offered by the workflow are allowed."""
         issue = self.issues[key]

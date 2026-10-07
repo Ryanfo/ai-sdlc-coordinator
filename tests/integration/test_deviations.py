@@ -1,7 +1,8 @@
 """Deviations from the approved specification are questions for a human, never failures.
 
-Accepted, Claude rewrites the specification (no new refinement or planning round); not
-accepted, development changes the code back to the specification.
+Approving the code accepts them, and Claude rewrites the specification before release
+preparation (no new refinement or planning round); one named in a change request goes back to
+development, which changes the code back to the specification.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from typing import Any
 
 from conftest import APPROVER, DEV
 from delivery.intake import Intake, load_context
-from delivery.models import GateKind, GateState
+from delivery.models import GateState
 from delivery.runtime import RunContext
 from delivery.supervisor import Supervisor
 from delivery.workflow import Status
@@ -51,14 +52,14 @@ async def _to_code_review(w: World, sup: Supervisor) -> None:
     w.new_ticket(KEY)
     w.submit(KEY)
     await step(sup)
-    w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+    w.move(KEY, Status.READY_PLANNING)
     await step(sup)
-    w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+    w.move(KEY, Status.READY_DEVELOPMENT)
     await step(sup)  # development c1
     await step(sup)  # verification of c1
 
 
-async def test_deviation_is_flagged_and_accepting_it_rewrites_the_spec(tmp_path: Path) -> None:
+async def test_deviation_is_flagged_and_approving_the_code_accepts_it(tmp_path: Path) -> None:
     w = make_world(tmp_path)
     w.scenario({"review-ticket": [{"deviations": [GREEN], "evidence": DEVIATES}, {}]})
     async with Supervisor(w.deps) as sup:
@@ -68,7 +69,7 @@ async def test_deviation_is_flagged_and_accepting_it_rewrites_the_spec(tmp_path:
         gate = w.last_comment(KEY)
         assert "Deviations from the approved specification" in gate
         assert "D1 (asked for by the developer; changes AC1)" in gate
-        assert f"ACCEPT DEVIATIONS {KEY}-CODE-c1" in gate
+        assert "Approving the code accepts them" in gate and "ACCEPT DEVIATIONS" not in gate
         rec = w.record(KEY)
         assert [(d.id, d.state) for d in rec.deviations] == [("D1", "open")]
         assert rec.deviations[0].announced_at is not None
@@ -80,48 +81,42 @@ async def test_deviation_is_flagged_and_accepting_it_rewrites_the_spec(tmp_path:
             Path(review_env["output"]["artifact_dir"]).parents[1] / "inputs" / "candidate-commits.txt"
         ).exists()
 
-        # An approver accepts it and moves the ticket on; only the specification changes.
+        # Approving the code and accepting the delivery accept it: release preparation first has
+        # the specification rewritten; only the specification changes.
         plan_token = w.token(KEY, "PLAN")
-        w.decide(KEY, f"ACCEPT DEVIATIONS {KEY}-CODE-c1", Status.READY_VERIFICATION)
+        w.github.approve(rec.pr_number or 0, REVIEWER)
+        w.move(KEY, Status.ACCEPTANCE_REVIEW)
+        w.move(KEY, Status.READY_RELEASE_PREPARATION)
         assert await step(sup) == [KEY]
-        assert w.jira.status_of(KEY) is Status.CODE_REVIEW
+        assert w.jira.status_of(KEY) is Status.RELEASE_REVIEW, w.last_comment(KEY)
         assert len(_calls(w, "review-ticket")) == 1 and len(_calls(w, "verify-ticket")) == 1
         amend = _envelope(_calls(w, "amend-spec")[0])
         assert "make the search button green" in amend["feedback_items"]["D1"]
         assert amend["approved_artefacts"][0]["revision"] == 1
         rec = w.record(KEY)
         spec = next(g for g in rec.gates if g.token == f"{KEY}-SPEC-v2")
-        assert spec.state is GateState.APPROVED and spec.evidence and spec.evidence.comment_author == APPROVER
+        assert spec.state is GateState.APPROVED
+        assert spec.evidence and spec.evidence.transition_author == APPROVER
         assert w.token(KEY, "PLAN") == plan_token  # the plan still stands
-        assert w.token(KEY, "CODE") == f"{KEY}-CODE-c1"  # same candidate, same tokens
         assert [(d.id, d.state, d.spec_revision) for d in rec.deviations] == [("D1", "accepted", 2)]
-        text = "\n".join(w.comments(KEY)[-2:])
-        assert "Specification v002: accepted deviations included" in text
-        assert f"APPROVE CODE {KEY}-CODE-c1" in text
+        assert any("Specification v002: accepted deviations included" in c for c in w.comments(KEY))
         names = await w.repo.ls_tree(f"origin/delivery/{KEY}", f"docs/delivery/{KEY}/specification/")
         assert f"docs/delivery/{KEY}/specification/v002.md" in names
+        release = _envelope(_calls(w, "prepare-release")[0])
+        spec_input = next(a for a in release["approved_artefacts"] if a["kind"] == "specification")
+        assert spec_input["revision"] == 2
 
-        # Publishing the same decision again (as after a crash) changes nothing.
+        # Publishing the same run again (as after a crash) changes nothing.
         before, gates = len(w.comments(KEY)), w.record(KEY).gates
         entry = w.deps.store.latest_run(KEY)
-        assert entry and entry.record and entry.record.outputs["decision"]["outcome"] == "amended"
+        assert entry and entry.record
         ctx = await load_context(w.jira, w.cfg, KEY)
         intake = Intake.restore(entry.record.outputs["intake"], ctx)
         rc = RunContext(w.deps, ctx, intake, entry.record, entry.journal, ctx.record)
         again = await sup.executor.resume_publication(rc)
         assert again.state.value == "awaiting_human", again.reason
         assert len(w.comments(KEY)) == before and w.record(KEY).gates == gates
-        assert w.jira.status_of(KEY) is Status.CODE_REVIEW
-
-        # The usual approvals then carry on with the amended specification.
-        w.github.approve(rec.pr_number or 0, REVIEWER)
-        w.decide(KEY, f"APPROVE CODE {KEY}-CODE-c1", Status.ACCEPTANCE_REVIEW)
-        w.decide(KEY, f"ACCEPT DELIVERY {KEY}-ACCEPT-c1", Status.READY_RELEASE_PREPARATION)
-        await step(sup)
-        assert w.jira.status_of(KEY) is Status.RELEASE_REVIEW, w.last_comment(KEY)
-        release = _envelope(_calls(w, "prepare-release")[0])
-        spec_input = next(a for a in release["approved_artefacts"] if a["kind"] == "specification")
-        assert spec_input["revision"] == 2
+        assert w.jira.status_of(KEY) is Status.RELEASE_REVIEW
 
 
 async def test_rejected_deviation_goes_back_to_development(tmp_path: Path) -> None:
@@ -135,7 +130,7 @@ async def test_rejected_deviation_goes_back_to_development(tmp_path: Path) -> No
     async with Supervisor(w.deps) as sup:
         await _to_code_review(w, sup)
         assert w.jira.status_of(KEY) is Status.CODE_REVIEW
-        w.decide(KEY, f"CHANGE CODE {KEY}-CODE-c1\nD2: drop the Export button", Status.CHANGES_REQUESTED)
+        w.decide(KEY, Status.CHANGES_REQUESTED, "D2: drop the Export button")
         w.jira.human_move(KEY, Status.READY_DEVELOPMENT, DEV)
         await step(sup)  # development c2 changes the code back
         assert w.jira.status_of(KEY) is Status.READY_VERIFICATION, w.last_comment(KEY)
@@ -147,7 +142,7 @@ async def test_rejected_deviation_goes_back_to_development(tmp_path: Path) -> No
         assert w.record(KEY).candidate_number == 2
 
 
-async def test_accepted_with_other_changes_rewrites_spec_before_development(tmp_path: Path) -> None:
+async def test_deviations_named_with_other_changes_go_back_and_the_rest_wait(tmp_path: Path) -> None:
     w = make_world(tmp_path)
     major = [{"id": "F1", "severity": "major", "description": "Search ignores accents."}]
     w.scenario(
@@ -164,46 +159,16 @@ async def test_accepted_with_other_changes_rewrites_spec_before_development(tmp_
         assert "Deviations from the approved specification" in failed
         why = failed.split("Why it failed")[1].split("Deviations from")[0]
         assert "F1" in why and "D1" not in why and "D2" not in why
-        w.jira.human_comment(KEY, APPROVER, f"ACCEPT DEVIATIONS {KEY}-CODE-c1\nD1")
-        w.jira.human_comment(
-            KEY, DEV, f"SUBMIT CHANGES {KEY}-CODE-c1\nF1: fold accents\nD2: no Export button"
-        )
+        w.jira.human_comment(KEY, DEV, "D2: no Export button")
         w.jira.human_move(KEY, Status.READY_DEVELOPMENT, DEV)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.READY_VERIFICATION, w.last_comment(KEY)
-        amend = _envelope(_calls(w, "amend-spec")[0])
-        assert set(amend["feedback_items"]) == {"D1"}
         implement = _envelope(_calls(w, "implement-ticket")[-1])
-        assert set(implement["feedback_items"]) == {"F1", "D2"}
+        assert set(implement["feedback_items"]) == {"F1", "D2"}  # D1 is not named: left as built
+        # Nothing is accepted before the code is approved: the specification is unchanged.
+        assert not _calls(w, "amend-spec")
         spec_input = next(a for a in implement["approved_artefacts"] if a["kind"] == "specification")
-        assert spec_input["revision"] == 2  # works to the rewritten specification
-        rec = w.record(KEY)
-        approved = [g for g in rec.gates if g.kind is GateKind.SPEC and g.state is GateState.APPROVED]
-        assert [g.revision for g in approved] == [2]
-        assert any(g.kind is GateKind.PLAN and g.state is GateState.APPROVED for g in rec.gates)
-
-
-async def test_release_preparation_waits_for_undecided_deviations(tmp_path: Path) -> None:
-    w = make_world(tmp_path)
-    w.scenario({"review-ticket": [{"deviations": [EXPORT]}, {}]})
-    async with Supervisor(w.deps) as sup:
-        await _to_code_review(w, sup)
-        rec = w.record(KEY)
-        w.github.approve(rec.pr_number or 0, REVIEWER)
-        w.decide(KEY, f"APPROVE CODE {KEY}-CODE-c1", Status.ACCEPTANCE_REVIEW)
-        w.decide(KEY, f"ACCEPT DELIVERY {KEY}-ACCEPT-c1", Status.READY_RELEASE_PREPARATION)
-        assert await step(sup) == []
-        assert w.jira.status_of(KEY) is Status.READY_RELEASE_PREPARATION
-        assert "not decided: D2" in w.last_comment(KEY)
-        assert f"ACCEPT DEVIATIONS {KEY}-CODE-c1" in w.last_comment(KEY)
-        # Only an approver can accept; the developer's comment is not enough.
-        w.jira.human_comment(KEY, "someone-else", f"ACCEPT DEVIATIONS {KEY}-CODE-c1")
-        assert await step(sup) == []
-        w.jira.human_comment(KEY, APPROVER, f"ACCEPT DEVIATIONS {KEY}-CODE-c1")
-        assert await step(sup) == [KEY]
-        assert w.jira.status_of(KEY) is Status.RELEASE_REVIEW, w.last_comment(KEY)
-        assert w.token(KEY, "SPEC") == f"{KEY}-SPEC-v2"
-        assert [d.state for d in w.record(KEY).deviations] == ["accepted"]
+        assert spec_input["revision"] == 1
 
 
 async def test_with_no_approver_list_anyone_can_decide(tmp_path: Path) -> None:
@@ -216,19 +181,17 @@ async def test_with_no_approver_list_anyone_can_decide(tmp_path: Path) -> None:
         w.submit(KEY)
         await step(sup)
         assert "To approve (anyone)" in w.last_comment(KEY)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING, author=anyone)
+        w.move(KEY, Status.READY_PLANNING, author=anyone)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.PLAN_REVIEW, w.last_comment(KEY)
-        w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT, author=anyone)
+        w.move(KEY, Status.READY_DEVELOPMENT, author=anyone)
         await step(sup)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
-        assert "If acceptable: comment this" in w.last_comment(KEY)
-        w.decide(KEY, f"ACCEPT DEVIATIONS {KEY}-CODE-c1", Status.READY_VERIFICATION, author=anyone)
-        await step(sup)
-        assert w.token(KEY, "SPEC") == f"{KEY}-SPEC-v2", w.last_comment(KEY)
+        assert "If acceptable: nothing extra to do" in w.last_comment(KEY)
         w.github.approve(w.record(KEY).pr_number or 0, REVIEWER)
-        w.decide(KEY, f"APPROVE CODE {KEY}-CODE-c1", Status.ACCEPTANCE_REVIEW, author=anyone)
-        w.decide(KEY, f"ACCEPT DELIVERY {KEY}-ACCEPT-c1", Status.READY_RELEASE_PREPARATION, author=anyone)
+        w.move(KEY, Status.ACCEPTANCE_REVIEW, author=anyone)
+        w.move(KEY, Status.READY_RELEASE_PREPARATION, author=anyone)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.RELEASE_REVIEW, w.last_comment(KEY)
+        assert w.token(KEY, "SPEC") == f"{KEY}-SPEC-v2"

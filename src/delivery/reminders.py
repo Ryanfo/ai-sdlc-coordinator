@@ -39,8 +39,8 @@ def reminder(status: Status, hours: float, since: datetime, step: str, mention: 
         [
             f"## Reminder: waiting {waited(hours)} in {STATUS_NAMES[status]}",
             f"{who}This ticket has been in **{STATUS_NAMES[status]}** since "
-            f"{since:%d %b %H:%M} UTC. Next: {step}. The latest comment that asks for it has the "
-            "template and the action to choose.",
+            f"{since:%d %b %H:%M} UTC. Next: {step}. The latest comment that asks for it says "
+            "which action to choose.",
         ]
     )
 

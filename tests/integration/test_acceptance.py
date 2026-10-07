@@ -53,9 +53,9 @@ async def _to_code_review(w: World, sup: Supervisor) -> str:
     w.new_ticket(KEY)
     w.submit(KEY)
     await step(sup)
-    w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+    w.move(KEY, Status.READY_PLANNING)
     await step(sup)
-    w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+    w.move(KEY, Status.READY_DEVELOPMENT)
     await step(sup)
     await step(sup)
     assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
@@ -68,7 +68,7 @@ def _approve_code(w: World) -> None:
     rec = w.record(KEY)
     assert rec.pr_number
     w.github.approve(rec.pr_number, REVIEWER)
-    w.decide(KEY, f"APPROVE CODE {w.token(KEY, 'CODE')}", Status.ACCEPTANCE_REVIEW)
+    w.move(KEY, Status.ACCEPTANCE_REVIEW)
 
 
 async def test_acceptance_review_says_how_to_try_the_candidate_and_what_to_check(tmp_path: Path) -> None:
@@ -87,8 +87,8 @@ async def test_acceptance_review_says_how_to_try_the_candidate_and_what_to_check
         assert "ready for acceptance (candidate c1)" in text
         assert "AC1: title search" in text and "only the task called Milk" in text
         assert "# Acceptance guide" not in text and "delivery provenance" not in text
-        assert f"ACCEPT DELIVERY {w.token(KEY, 'ACCEPT')}" in text
-        assert f"CHANGE ACCEPTANCE {w.token(KEY, 'ACCEPT')}" in text
+        assert "choose Accept delivery" in text and "Request acceptance changes" in text
+        assert "ACCEPT DELIVERY" not in text
         # No app is configured: nothing runs here and `delivery try` is not offered.
         assert "delivery try" not in text and "test-laptop" not in text
         # Once per entry into Acceptance review.
@@ -97,7 +97,7 @@ async def test_acceptance_review_says_how_to_try_the_candidate_and_what_to_check
         assert len(w.comments(KEY)) == before
         assert AcceptanceStore(w.cfg.runtime.state_dir).load(KEY) is not None
         # Accepted: it leaves Acceptance review and its record goes.
-        w.decide(KEY, f"ACCEPT DELIVERY {w.token(KEY, 'ACCEPT')}", Status.READY_RELEASE_PREPARATION)
+        w.move(KEY, Status.READY_RELEASE_PREPARATION)
         await sup.acceptance.tick(full=True)
         assert AcceptanceStore(w.cfg.runtime.state_dir).load(KEY) is None
 
@@ -168,11 +168,7 @@ async def test_the_approved_candidate_runs_while_the_ticket_is_in_acceptance_rev
             url = again.preview.url
 
             # Changes requested: it leaves Acceptance review, the app stops and its worktree goes.
-            w.decide(
-                KEY,
-                f"CHANGE ACCEPTANCE {w.token(KEY, 'ACCEPT')}\nF1: search the description too",
-                Status.CHANGES_REQUESTED,
-            )
+            w.decide(KEY, Status.CHANGES_REQUESTED, "F1: search the description too")
             await sup.acceptance.tick(full=True)
             assert app() is None and not Path(st.worktree).exists()
             assert _get(url) is None

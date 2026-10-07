@@ -2,6 +2,11 @@
 
 Version 1.0 | 1 October 2026 | Owner Ryan | Status Ready for implementation discovery
 
+> **Superseded in part (7 Oct 2026):** human decisions are now the Jira move alone, with no token
+> comment; comments are plain feedback. See "Decisions are moves" in
+> [Implementation_Decisions.md](Implementation_Decisions.md) and
+> [docs/human-templates.md](../human-templates.md). The token-comment rules below are history.
+
 ## 1 Purpose and instructions to Claude Code
 
 Build a reusable delivery framework that lets a developer use Jira to drive specification, planning, implementation, independent verification and human release gates through locally installed Claude Code. The desired result is a working coordinator and reusable delivery plugin that can connect to an existing Jira Cloud project and GitHub repository. Demonstrate it by taking a real test ticket through the lifecycle and implementing a small feature.

@@ -1,10 +1,11 @@
 """Human gate validation, GitHub review/check evidence and approval supersession.
 
-A human decision counts only when an authorised account posted the exact decision
-token for the current artefact revision AND an authorised account performed the
-matching Jira transition. The coordinator never performs a human route, so a human
-route in the changelog was not made by the coordinator, even when the coordinator
-authenticates as the same Jira account (a limitation recorded in the setup profile).
+A human decision is the Jira move out of a review status: an authorised account moving the
+ticket on after the revision was published approves it; moving it to the change status asks
+for changes, with whatever people wrote since the revision was published as the feedback. No
+comment is needed for either. The coordinator never performs a human route, so a human route in
+the changelog was not made by the coordinator, even when the coordinator authenticates as the
+same Jira account (a limitation recorded in the setup profile).
 """
 
 from __future__ import annotations
@@ -13,13 +14,7 @@ from collections.abc import Container, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from delivery.feedback import (
-    CommentDecision,
-    DecisionKind,
-    FeedbackSet,
-    collect_feedback,
-    decisions,
-)
+from delivery.feedback import items, said
 from delivery.models import (
     CheckResult,
     DecisionEvidence,
@@ -41,6 +36,7 @@ GATE_REVISION_PREFIX = {
 
 
 def gate_token(ticket_key: str, kind: GateKind, revision: int) -> str:
+    """The gate's name: internal (records, supersession, publication IDs); nobody types it."""
     token_kind = "RELEASE" if kind is GateKind.RECORD else kind.value
     return f"{ticket_key}-{token_kind}-{GATE_REVISION_PREFIX[kind]}{revision}"
 
@@ -48,9 +44,7 @@ def gate_token(ticket_key: str, kind: GateKind, revision: int) -> str:
 class GateOutcome(StrEnum):
     APPROVED = "approved"
     CHANGES_REQUESTED = "changes_requested"
-    WAITING = "waiting"
     REJECTED = "rejected"
-    CONFLICT = "conflict"
 
 
 @dataclass(frozen=True)
@@ -58,19 +52,17 @@ class GateEval:
     outcome: GateOutcome
     reason: str
     evidence: DecisionEvidence | None = None
-    feedback: FeedbackSet | None = None
-    decisions: tuple[CommentDecision, ...] = ()
+    # What people wrote since the revision was published: the change request's feedback, or
+    # notes that go with an approval.
+    comments: tuple[JiraComment, ...] = ()
+    items: dict[str, str] = field(default_factory=dict)
     next_action: str = ""
 
 
-def _evidence(cd: CommentDecision, change: StatusChange) -> DecisionEvidence:
+def _evidence(change: StatusChange) -> DecisionEvidence:
     return DecisionEvidence(
-        comment_id=cd.comment.id,
-        comment_author=cd.comment.author_account_id,
-        comment_digest=cd.body_digest,
-        comment_updated=cd.comment.updated,
         history_id=change.history_id,
-        transition_author=change.author_account_id,
+        transition_author=change.author_account_id or "",
         transition_at=change.created,
     )
 
@@ -83,22 +75,17 @@ def evaluate_human_gate(
     review_status_id: str,
     approve_status_id: str,
     change_status_id: str | None,
-    approve_kind: DecisionKind,
-    change_kinds: set[DecisionKind],
     approvers: Container[str],
-    excluded_comment_ids: set[str] | None = None,
-    allow_empty_change: bool = False,
 ) -> GateEval:
-    """Validate the human decision that moved a ticket out of a review status.
+    """Validate the human move that took a ticket out of a review status.
 
     ``entry`` is the status change that brought the ticket into its current status.
-    ``allow_empty_change``: a change request needs no numbered items of its own.
     """
     if gate.state is GateState.SUPERSEDED:
         return GateEval(
             GateOutcome.REJECTED,
             f"gate {gate.token} was superseded by {gate.superseded_by or 'a newer revision'}",
-            next_action="Review the current revision and use its token.",
+            next_action="Review the current revision.",
         )
     if entry.from_id != review_status_id:
         return GateEval(GateOutcome.REJECTED, "ticket did not arrive from the review status")
@@ -107,21 +94,6 @@ def evaluate_human_gate(
             GateOutcome.REJECTED,
             f"transition predates gate {gate.token}; it belongs to an older revision",
         )
-    exclude = excluded_comment_ids or set()
-    approvals = decisions(
-        comments,
-        token=gate.token,
-        kinds={approve_kind},
-        since=gate.published_at,
-        exclude_ids=exclude,
-    )
-    changes = decisions(
-        comments, token=gate.token, kinds=change_kinds, since=gate.published_at, exclude_ids=exclude
-    )
-    auth_approvals = [cd for cd in approvals if cd.comment.author_account_id in approvers]
-    auth_changes = [cd for cd in changes if cd.comment.author_account_id in approvers]
-    unauthorised = [cd for cd in approvals + changes if cd not in auth_approvals + auth_changes]
-
     if entry.author_account_id is None:
         return GateEval(
             GateOutcome.REJECTED,
@@ -133,69 +105,24 @@ def evaluate_human_gate(
             f"transition by account {entry.author_account_id} who is not an authorised approver",
             next_action="An authorised approver must make this decision.",
         )
-    if auth_approvals and auth_changes:
-        return GateEval(
-            GateOutcome.CONFLICT,
-            f"conflicting decisions for {gate.token}: approval and change request both present",
-            decisions=tuple(auth_approvals + auth_changes),
-            next_action="Resolve the conflict in Jira, then repeat the intended action.",
-        )
-
+    written = tuple(said(comments, since=gate.published_at, authors=approvers))
     if entry.to_id == approve_status_id:
-        if not auth_approvals:
-            reason = (
-                "approval comment is from an unauthorised account"
-                if unauthorised
-                else f"no `{approve_kind.value} {gate.token}` comment found"
-            )
-            return GateEval(
-                GateOutcome.WAITING,
-                reason,
-                next_action=f"Add the comment `{approve_kind.value} {gate.token}`.",
-            )
-        edited = [cd for cd in auth_approvals if cd.comment.edited]
-        if edited:
-            return GateEval(
-                GateOutcome.CONFLICT,
-                f"approval comment {edited[0].comment.id} was edited after posting",
-                next_action="Add a fresh, unedited approval comment.",
-            )
-        problems = [p for cd in auth_approvals for p in cd.decision.problems]
-        if problems:
-            return GateEval(GateOutcome.REJECTED, "; ".join(problems))
         return GateEval(
             GateOutcome.APPROVED,
-            f"{approve_kind.value} {gate.token} by {auth_approvals[0].comment.author_account_id}",
-            evidence=_evidence(auth_approvals[0], entry),
-            decisions=tuple(auth_approvals),
+            f"{gate.token} approved by {entry.author_account_id}",
+            evidence=_evidence(entry),
+            comments=written,
         )
-
     if change_status_id is not None and entry.to_id == change_status_id:
-        fb = collect_feedback(
-            comments,
-            token=gate.token,
-            kinds=change_kinds,
-            since=gate.published_at,
-            allowed_authors=approvers,
-            allow_empty=allow_empty_change,
-        )
-        if not fb.comments:
-            kind = sorted(change_kinds)[0]
-            return GateEval(
-                GateOutcome.WAITING,
-                f"no `{kind.value} {gate.token}` change request found",
-                next_action=f"Comment `{kind.value} {gate.token}` with numbered F1.. items.",
-            )
-        if fb.problems:
-            return GateEval(GateOutcome.WAITING, "; ".join(fb.problems), feedback=fb)
+        fb = items(list(written), named="FD", free="F")
         return GateEval(
             GateOutcome.CHANGES_REQUESTED,
-            f"{len(fb.items)} feedback items for {gate.token}",
-            evidence=_evidence(fb.comments[0], entry),
-            feedback=fb,
-            decisions=fb.comments,
+            f"changes requested for {gate.token}"
+            + (f" ({len(fb)} items)" if fb else " (no comment: Claude asks what to change)"),
+            evidence=_evidence(entry),
+            comments=written,
+            items=fb,
         )
-
     return GateEval(GateOutcome.REJECTED, "transition target does not belong to this gate")
 
 

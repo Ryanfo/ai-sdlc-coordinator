@@ -21,7 +21,7 @@ from delivery import comments, deviations
 from delivery.checks import all_passed, run_checks
 from delivery.claude import ChildHandle, ClaudeInvocation, ClaudeOutcome, ClaudeStatus, OpenSession
 from delivery.diagnose import install_root
-from delivery.feedback import DecisionKind, claude_notes, parse_decision
+from delivery.feedback import claude_notes
 from delivery.gates import (
     approved_gate,
     current_gate,
@@ -92,7 +92,17 @@ from delivery.runtime import Decision, RunContext
 from delivery.session_hook import read_events
 from delivery.tmux import for_config as tmux_for
 from delivery.transcript import render_file, write_transcript
-from delivery.workflow import RESOLVED_ACTIONS, ROUTES, STAGES, Action, Actor, Requirement, Stage, Status
+from delivery.workflow import (
+    CHANGE_REQUIREMENTS,
+    RESOLVED_ACTIONS,
+    ROUTES,
+    STAGES,
+    Action,
+    Actor,
+    Requirement,
+    Stage,
+    Status,
+)
 
 MAX_OUTPUT_FILE_BYTES = 2_000_000
 # Written by verify-ticket next to its report: how a person checks each criterion by hand.
@@ -409,6 +419,7 @@ class StageStrategy:
             clarification_round=ctx.intake.round_token,
             feedback_token=ctx.intake.feedback_token,
             feedback_items=dict(ctx.intake.feedback_items if feedback is None else feedback),
+            changes_requested=ctx.intake.requirement in CHANGE_REQUIREMENTS,
             notes=self.notes(),
             project_guidance=str(ctx.guidance) if ctx.guidance else None,
             approved_artefacts=approved or [],
@@ -771,7 +782,7 @@ class StageStrategy:
             return {}
 
     async def amend_specification(self) -> Decision | None:
-        """Rewrite the approved specification to include the deviations an approver accepted
+        """Rewrite the approved specification to include the deviations accepted with the code
         (``intake.accepted_deviations``), without a new refinement round. The rewrite becomes
         ``self.amended_spec`` for the rest of this run and is published, already approved, by
         ``publish_amendment``. Returns a decision only when the rewrite could not be made."""
@@ -840,11 +851,11 @@ class StageStrategy:
         self.amended_spec = ArtefactPointer(kind=ArtifactKind.SPECIFICATION, path=str(dest), revision=rev)
         return None
 
-    async def publish_amendment(self, next_steps: list[str] | None = None) -> None:
+    async def publish_amendment(self) -> None:
         """Publish this run's rewritten specification as the approved revision. Approval comes
-        from the approver's ``ACCEPT DEVIATIONS`` comment and the human move that started this
-        run; the plan and the candidate's gates still stand (only the specification changed, to
-        match the code). Repeating it after a crash changes nothing."""
+        from the human move that started this run (Accept delivery, after Approve code); the plan
+        and the candidate's gates still stand (only the specification changed, to match the
+        code). Repeating it after a crash changes nothing."""
         ctx = self.ctx
         done = ctx.record.outputs.get("amendment")
         if not done:
@@ -853,20 +864,15 @@ class StageStrategy:
         ids = list(done["accepted"])
         token = gate_token(ctx.key, GateKind.SPEC, rev)
         spec_rel = f"{ctx.doc_root}/specification/v{rev:03d}.md"
-        accept = [
-            c
-            for c in ctx.intake.selected
-            if (pd := parse_decision(c.body_text)) and pd.kind is DecisionKind.ACCEPT_DEVIATIONS
-        ]
-        by = accept[-1] if accept else None
+        entry = ctx.intake.entry
         header = provenance_header(
             ctx,
             "specification",
             f"v{rev:03d}",
             {
-                "status": "approved (deviations accepted during development)",
+                "status": "approved (deviations accepted with the code)",
                 "deviations": ",".join(ids),
-                "accepted_in_comment": by.id if by else "-",
+                "accepted_by_transition": entry.history_id if entry else "-",
                 "amends": f"v{int(done.get('amends', rev - 1)):03d}",
             },
         )
@@ -877,7 +883,6 @@ class StageStrategy:
             f"v{rev}",
             f"{ctx.key}: specification v{rev:03d} (accepted deviations {', '.join(ids)})",
         )
-        entry = ctx.intake.entry
         at = datetime.fromisoformat(done["at"]) if done.get("at") else utcnow()
         gate = GateRecord(
             token=token,
@@ -892,24 +897,24 @@ class StageStrategy:
             state=GateState.APPROVED,
             decided_at=at,
             evidence=DecisionEvidence(
-                comment_id=by.id,
-                comment_author=by.author_account_id,
-                comment_digest=digest(by.body_text),
-                comment_updated=by.updated,
-                history_id=entry.history_id if entry else None,
-                transition_author=entry.author_account_id if entry else None,
-                transition_at=entry.created if entry else None,
+                history_id=entry.history_id,
+                transition_author=entry.author_account_id,
+                transition_at=entry.created,
             )
-            if by
+            if entry
             else None,
         )
+        # Published again after a crash: the gate is replaced where it is, so nothing changes.
         gates = [
-            g.model_copy(update={"state": GateState.SUPERSEDED, "superseded_by": token})
+            gate
+            if g.token == token
+            else g.model_copy(update={"state": GateState.SUPERSEDED, "superseded_by": token})
             if g.kind is GateKind.SPEC and g.state is not GateState.SUPERSEDED
             else g
             for g in ctx.shared.gates
-            if g.token != token
         ]
+        if not any(g.token == token for g in gates):
+            gates.append(gate)
         n = ctx.shared.candidate_number
         devs = [
             d.model_copy(update={"state": "accepted", "spec_revision": rev})
@@ -920,7 +925,7 @@ class StageStrategy:
         url = blob_url(ctx.cfg.repository.url, sha, spec_rel)
         ctx.shared = ctx.shared.model_copy(
             update={
-                "gates": [*gates, gate],
+                "gates": gates,
                 "spec_revision": rev,
                 "artefacts": {**ctx.shared.artefacts, "specification": f"{spec_rel}@{sha}"},
                 "deviations": devs,
@@ -934,7 +939,6 @@ class StageStrategy:
                 url,
                 [d for d in devs if d.id in ids and d.candidate == n],
                 str(done.get("summary", "")),
-                next_steps or [],
             ),
             f"v{rev}",
         )
@@ -1220,9 +1224,7 @@ class RefinementStage(StageStrategy):
             )
             await self.announce(
                 "questions",
-                comments.questions(
-                    token, url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value
-                ),
+                comments.questions(url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value),
                 f"r{n}",
                 pause=True,
             )
@@ -1504,9 +1506,7 @@ class PlanningStage(StageStrategy):
             )
             await self.announce(
                 "questions",
-                comments.questions(
-                    token, url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value
-                ),
+                comments.questions(url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value),
                 f"r{n}",
                 pause=True,
             )
@@ -1545,7 +1545,6 @@ class PlanningStage(StageStrategy):
             )
             if self.spike
             else comments.plan_gate(
-                token,
                 url,
                 blob_url(ctx.cfg.repository.url, sha, fp_rel),
                 rev,
@@ -1650,7 +1649,7 @@ class PlanningStage(StageStrategy):
         if fast:
             await self.announce(
                 "fast-track",
-                comments.fast_track_plan(token, url, rev, str(d.extra.get("spec_token", ""))),
+                comments.fast_track_plan(url, rev),
                 f"v{rev}",
                 gate_tokens=(token,),
             )
@@ -1666,7 +1665,6 @@ class PlanningStage(StageStrategy):
         await self.announce(
             "plan-gate",
             comments.plan_gate(
-                token,
                 url,
                 blob_url(ctx.cfg.repository.url, sha, fp_rel),
                 rev,
@@ -1750,10 +1748,6 @@ class DevelopmentStage(StageStrategy):
         start_sha = ctx.record.outputs.get("start_sha") or await repo.worktree_head(wt)
         ctx.record.outputs["start_sha"] = start_sha
         ctx.save("worktree_ready", start_sha=start_sha)
-        # Deviations accepted alongside the change request go into the specification first, so
-        # development keeps them while it makes the other changes.
-        if (d := await self.amend_specification()) is not None:
-            return d
         spec = await self.spec_input()
         plan = await self.approved_input(GateKind.PLAN, ArtifactKind.PLAN)
         if spec is None or plan is None:
@@ -1990,7 +1984,6 @@ class DevelopmentStage(StageStrategy):
     async def publish(self, d: Decision) -> None:
         ctx = self.ctx
         pub = ctx.publisher()
-        await self.publish_amendment()
         if d.outcome == "blocked":
             await self.publish_block(d, Status.DEVELOPING)
             return
@@ -2021,9 +2014,7 @@ class DevelopmentStage(StageStrategy):
             pr_url = ctx.record.pr_url or ctx.cfg.repository.url
             await self.announce(
                 "questions",
-                comments.questions(
-                    token, pr_url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value
-                ),
+                comments.questions(pr_url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value),
                 f"r{n}",
                 pause=True,
             )
@@ -2163,18 +2154,6 @@ class VerificationStage(StageStrategy):
                 action="Use Submit implementation changes via Changes requested, or resume once fixed.",
                 blocker_kind="candidate_changed",
                 resume_stage=Stage.DEVELOPMENT.value,
-            )
-        if (d := await self.amend_specification()) is not None:
-            return d
-        if self.amended_spec is not None and self.verified_before(candidate):
-            # Accepted from Code review: this candidate already passed review and verification,
-            # and the behaviour now in the specification is what they observed. Nothing to redo.
-            return Decision(
-                outcome="amended",
-                reason=f"specification v{self.amended_spec.revision:03d} includes the accepted "
-                f"deviations {', '.join(ctx.intake.accepted_deviations)}; candidate "
-                f"c{ctx.shared.candidate_number} was already reviewed and verified",
-                extra={"candidate": candidate},
             )
         base = ctx.cfg.repository.base_branch
         base_sha = await repo.remote_sha(base) or ""
@@ -2403,11 +2382,6 @@ class VerificationStage(StageStrategy):
         state = {"failed": "reproduced", "passed": "not_reproduced"}.get(res.conclusion, "error")
         return {**out, "state": state, "result": res.model_dump(mode="json")}
 
-    def verified_before(self, candidate: str) -> bool:
-        """The candidate passed review and verification: its code gate is the current one."""
-        code = current_gate(self.ctx.shared.gates, GateKind.CODE)
-        return code is not None and code.candidate_sha == candidate
-
     async def setup_and_check(
         self,
         wt: Path,
@@ -2516,10 +2490,6 @@ class VerificationStage(StageStrategy):
     async def publish(self, d: Decision) -> None:
         ctx = self.ctx
         pub = ctx.publisher()
-        if d.outcome == "amended":
-            await self.publish_amended()
-            return
-        await self.publish_amendment()
         if d.outcome == "blocked":
             await self.publish_block(d, Status.VERIFYING)
             return
@@ -2611,7 +2581,6 @@ class VerificationStage(StageStrategy):
             posted = await self.announce(
                 "verification-failed",
                 comments.verification_failed(
-                    code_token,
                     pr_url,
                     n,
                     candidate,
@@ -2624,7 +2593,6 @@ class VerificationStage(StageStrategy):
                     merge_conflicts=conflicts,
                     claude_resolves=ctx.cfg.flow.resolve_conflicts,
                     deviations=records,
-                    approvers_only=not ctx.cfg.approvals.anyone,
                 ),
                 candidate[:12],
             )
@@ -2669,7 +2637,7 @@ class VerificationStage(StageStrategy):
         posted = await self.announce(
             "code-gate",
             comments.code_gate(
-                code_token,
+                n,
                 pr_url,
                 candidate,
                 review_url,
@@ -2682,7 +2650,6 @@ class VerificationStage(StageStrategy):
                 base=base_branch,
                 merge_conflicts=conflicts,
                 deviations=records,
-                approvers_only=not ctx.cfg.approvals.anyone,
                 claude_resolves=ctx.cfg.flow.resolve_conflicts,
                 reproduction=d.extra.get("reproduction"),
             ),
@@ -2701,33 +2668,6 @@ class VerificationStage(StageStrategy):
             for d in sh.deviations
         ]
         self.ctx.shared = sh.model_copy(update={"deviations": devs})
-
-    async def publish_amended(self) -> None:
-        """Deviations accepted from Code review: publish the rewritten specification and return
-        the unchanged candidate to Code review. Its gates and tokens stay as they were."""
-        ctx = self.ctx
-        n = ctx.shared.candidate_number
-        accepted = set(ctx.intake.accepted_deviations)
-        remaining = [d for d in deviations.open_deviations(ctx.shared) if d.id not in accepted]
-        await self.publish_amendment(
-            comments.back_to_code_review(
-                gate_token(ctx.key, GateKind.CODE, n),
-                n,
-                remaining,
-                approvers_only=not ctx.cfg.approvals.anyone,
-            )
-        )
-        ctx.shared = ctx.shared.model_copy(
-            update={
-                "current_run_id": ctx.run_id,
-                "current_stage": self.stage,
-                "current_state": RunState.AWAITING_HUMAN,
-                "updated_at": utcnow(),
-            }
-        )
-        pub = ctx.publisher()
-        await pub.save_record(ctx.key, ctx.shared, "amended")
-        await pub.transition(ctx.key, Status.VERIFYING, Action.COMPLETE_VERIFICATION)
 
 
 # --------------------------------------------------------------------------- release preparation
@@ -2847,22 +2787,26 @@ class ReleasePreparationStage(StageStrategy):
             )
         sha = await self.publish_files(files, "release", f"v{rev}", f"{ctx.key}: release proposal v{rev:03d}")
         token = gate_token(ctx.key, GateKind.RELEASE, rev)
-        gate = GateRecord(
-            token=token,
-            kind=GateKind.RELEASE,
-            ticket_key=ctx.key,
-            revision=rev,
-            artefact_path=rel,
-            artefact_commit=sha,
-            candidate_sha=d.extra["candidate"],
-            pr_number=ctx.shared.pr_number,
-            published_at=utcnow(),
-            approvers=ctx.cfg.approvals.jira_account_ids,
-        )
+        # Published again after a crash: the gate recorded the first time stands.
+        gates = ctx.shared.gates
+        if not any(g.token == token for g in gates):
+            gate = GateRecord(
+                token=token,
+                kind=GateKind.RELEASE,
+                ticket_key=ctx.key,
+                revision=rev,
+                artefact_path=rel,
+                artefact_commit=sha,
+                candidate_sha=d.extra["candidate"],
+                pr_number=ctx.shared.pr_number,
+                published_at=utcnow(),
+                approvers=ctx.cfg.approvals.jira_account_ids,
+            )
+            gates = supersede_for_new_revision(gates, GateKind.RELEASE, token) + [gate]
         ctx.shared = ctx.shared.model_copy(
             update={
                 "release_revision": rev,
-                "gates": supersede_for_new_revision(ctx.shared.gates, GateKind.RELEASE, token) + [gate],
+                "gates": gates,
                 "artefacts": {**ctx.shared.artefacts, "release": f"{rel}@{sha}"},
                 "current_run_id": ctx.run_id,
                 "current_stage": self.stage,
@@ -2873,7 +2817,6 @@ class ReleasePreparationStage(StageStrategy):
         await self.announce(
             "release-gate",
             comments.release_gate(
-                token,
                 blob_url(ctx.cfg.repository.url, sha, rel),
                 rev,
                 d.extra["candidate"],
@@ -3351,17 +3294,15 @@ class ResolutionStage(StageStrategy):
         reason = pause.reason if pause else ctx.intake.reason
         record = entry.record if entry is not None else None
         # What the coordinator reads on this ticket, so that nothing Claude asks a person to do is a
-        # guess: the tokens a decision comment must carry, the decision comments already there and
-        # how each is read, the coordinator's templates, and the actions Jira offers when Blocked.
+        # guess: its gates, the request comments already there and how each is read, the human
+        # templates, and the actions Jira offers when Blocked.
         blocked_actions = {
             ctx.cfg.workflow.action_name(r.action).lower(): r.resume_stage.value if r.resume_stage else None
             for r in ROUTES
             if r.source is Status.BLOCKED and r.actor is Actor.HUMAN
         }
-        round_token = pause.round_token if pause else None
         expect_extra: dict[str, Any] = {
             "tokens": current_tokens(ctx.shared.gates),
-            "round_token": round_token,
             "blocked_actions": blocked_actions,
             "resume_stage": resume.value,
             "release_environment": ctx.cfg.release.environment,
@@ -3395,7 +3336,6 @@ class ResolutionStage(StageStrategy):
                 gates=ctx.shared.gates,
                 comments=ctx.ticket.comments,
                 resume_stage=resume.value,
-                round_token=round_token,
                 blocked_actions=blocked_actions,
             ),
         )

@@ -23,8 +23,10 @@ specification, plus a change footprint the coordinator uses to detect overlappin
    the scope. Do not add scope. If it cannot be implemented as written, ask a question.
    Open the designs in `attachments` and `designs` that the specification refers to, so the plan's
    components, states and tests match them.
-2. If `prior_drafts` contains an earlier plan, revise it and apply every numbered feedback
-   item in `selected_comments`.
+2. If `prior_drafts` contains an earlier plan, revise it and apply every item in
+   `feedback_items` and every request in `selected_comments`. If `changes_requested` is true
+   and nothing says what to change, ask (stage contract, *Decisions, change requests and
+   answers*).
 3. Study the codebase in the working directory: architecture, conventions, test layout,
    scripts. Follow the application's standards in `CLAUDE.md` and `docs/`.
 4. Write `output.artifact_dir/plan.md` using `${CLAUDE_PLUGIN_ROOT}/templates/plan.md`:

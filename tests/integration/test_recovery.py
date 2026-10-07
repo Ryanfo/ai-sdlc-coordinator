@@ -16,9 +16,9 @@ from harness import World, drain, make_world, step
 
 async def _to_development(w: World, sup: Supervisor, key: str) -> None:
     await step(sup)
-    w.decide(key, f"APPROVE SPEC {w.token(key, 'SPEC')}", Status.READY_PLANNING)
+    w.move(key, Status.READY_PLANNING)
     await step(sup)
-    w.decide(key, f"APPROVE PLAN {w.token(key, 'PLAN')}", Status.READY_DEVELOPMENT)
+    w.move(key, Status.READY_DEVELOPMENT)
 
 
 async def test_lost_comment_response_reconciles_without_duplicate(tmp_path: Path) -> None:
@@ -141,7 +141,7 @@ async def test_diverged_remote_blocks_without_force_push(tmp_path: Path) -> None
         await step(sup)
         # Someone else pushes to the ticket's delivery branch between runs.
         external_commit(tmp_path, w.origin, "delivery/PILOT-1", "docs/other.md", "x\n", "intruder")
-        w.decide("PILOT-1", f"CHANGE SPEC {w.token('PILOT-1', 'SPEC')}\nF1: more", Status.READY_REFINEMENT)
+        w.decide("PILOT-1", Status.READY_REFINEMENT, "F1: more")
         await step(sup)
     latest = w.deps.store.latest_run("PILOT-1")
     assert latest and latest.record

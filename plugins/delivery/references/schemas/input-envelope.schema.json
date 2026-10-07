@@ -815,6 +815,11 @@
       "title": "Feedback Items",
       "type": "object"
     },
+    "changes_requested": {
+      "default": false,
+      "title": "Changes Requested",
+      "type": "boolean"
+    },
     "notes": {
       "items": {
         "$ref": "#/$defs/SelectedComment"

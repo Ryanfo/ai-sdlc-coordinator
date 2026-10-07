@@ -28,11 +28,10 @@ from pathlib import Path
 from pydantic import Field
 
 from delivery import comments, console
-from delivery.gates import current_gate, gate_token
 from delivery.git import GitError, blob_url
 from delivery.intake import RecordCorrupt, TicketContext, load_context
 from delivery.journal import RunJournal, atomic_write_json, ensure_private_dir
-from delivery.models import GateKind, Model, SharedExecutionRecord, utcnow
+from delivery.models import Model, SharedExecutionRecord, utcnow
 from delivery.ownership import acceptance_jql
 from delivery.ports import IntegrationError
 from delivery.preview import ACCEPTANCE, Previews, PreviewState, open_url
@@ -201,8 +200,6 @@ class Acceptance:
 
     async def _announce(self, ctx: TicketContext, st: AcceptanceState) -> None:
         key, rec = ctx.key, ctx.record
-        accept = current_gate(rec.gates, GateKind.ACCEPT)
-        token = accept.token if accept else gate_token(key, GateKind.ACCEPT, rec.candidate_number)
         repo_url = self.cfg.repository.url.removesuffix(".git")
         guide, guide_url = await self._guide(rec)
         journal = RunJournal(self.cfg.runtime.state_dir / "intake" / key)
@@ -212,7 +209,6 @@ class Acceptance:
             "acceptance",
             comments.acceptance_ready(
                 key,
-                token,
                 rec.candidate_number,
                 st.candidate_sha,
                 f"{repo_url}/pull/{rec.pr_number}" if rec.pr_number else repo_url,

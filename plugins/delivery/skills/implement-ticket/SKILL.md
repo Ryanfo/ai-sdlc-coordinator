@@ -38,7 +38,9 @@ acceptance criterion in the approved specification is met, following the approve
   changes, `R1`... problems the coordinator found, `D1`... deviations from the specification
   that a human did not accept, `G1`... review comments a reviewer left on the pull request,
   naming the file and line they are about), and `selected_comments` may add the human's notes
-  on them. A `G` item is a reviewer's comment, not a decision: act on it where it fits the
+  on them (a note can narrow the work, such as "only F2": follow it, but `R` items always stay).
+  If `changes_requested` is true and nothing says what to change, ask (stage contract,
+  *Decisions, change requests and answers*). A `G` item is a reviewer's comment, not a decision: act on it where it fits the
   approved specification, and say in `summary` if you did not and why.
   Address each item and say how in `summary`; if an item is not a code problem (for example
   it reports missing inputs), say so instead of changing code. For a `D` item, change the

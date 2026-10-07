@@ -49,6 +49,12 @@ class World:
         d = self.scenario_path.parent / "invocations"
         return [json.loads(p.read_text()) for p in sorted(d.glob("*.json"))] if d.exists() else []
 
+    def envelope(self, procedure: str) -> dict[str, Any]:
+        """The input envelope of the latest run of ``procedure``."""
+        inv = [i for i in self.invocations() if f"/delivery:{procedure}" in " ".join(i["argv"])][-1]
+        prompt = inv["argv"][inv["argv"].index("-p") + 1]
+        return dict(json.loads(Path(prompt.split(" ", 1)[1].split("\n", 1)[0]).read_text()))
+
     def record(self, key: str) -> SharedExecutionRecord:
         return SharedExecutionRecord.model_validate(self.jira.issues[key].properties[PROPERTY_KEY])
 
@@ -70,7 +76,12 @@ class World:
     def submit(self, key: str, author: str = DEV) -> None:
         self.jira.human_move(key, Status.READY_REFINEMENT, author)
 
-    def decide(self, key: str, text: str, target: Status, author: str = APPROVER) -> None:
+    def move(self, key: str, target: Status, author: str = APPROVER) -> None:
+        """A decision: the Jira move alone."""
+        self.jira.human_move(key, target, author)
+
+    def decide(self, key: str, target: Status, text: str, author: str = APPROVER) -> None:
+        """Say something in a comment (what to change, an answer), then make the move."""
         self.jira.human_comment(key, author, text)
         self.jira.human_move(key, target, author)
 

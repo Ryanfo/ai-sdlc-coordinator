@@ -23,7 +23,7 @@ async def test_card_dragged_into_working_status_is_taken_over(tmp_path: Path) ->
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
         await step(sup)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         # The developer drags the card to "Agent working" before the next poll.
         w.jira.human_move(KEY, Status.PLANNING, DEV)
         before = len(w.jira.changes_by_key[KEY])
@@ -44,7 +44,7 @@ async def test_approval_counts_after_manual_moves_and_resume(tmp_path: Path) -> 
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
         await step(sup)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         for target in (Status.PLANNING, Status.NEEDS_CLARIFICATION, Status.READY_PLANNING):
             w.jira.human_move(KEY, target, DEV)
         await step(sup)
