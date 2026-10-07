@@ -51,7 +51,7 @@ def test_set_value_keeps_inline_comments() -> None:
     assert 'github_logins = ["sam"]  # add the reviewer\nother = "c"  # real one\n' in text
     text = set_value(template_text(), "claude.interactive", "window", "iTerm")
     assert 'window = "iTerm"       # or "iTerm", or "none"' in text
-    assert tomllib.loads(text)["claude"]["interactive"] == {"window": "iTerm"}
+    assert tomllib.loads(text)["claude"]["interactive"] == {"enabled": True, "window": "iTerm"}
 
 
 def test_set_value_switches_on_commented_examples() -> None:
@@ -284,7 +284,7 @@ FIRST_RUN: list[tuple[str, str | BaseException]] = [
     ("usernames", "reviewer-1"),
     ("Use these", ""),
     ("Claude model", "opus"),
-    ("Open a window", ""),
+    ("Open a window", "n"),
     ("Figma", "n"),
     ("Save to", ""),
 ]
