@@ -142,8 +142,8 @@ permission_profile = "local_pilot"
 
 # Watch Claude work and type to it: each session runs as a normal interactive `claude` in tmux
 # (brew install tmux) with the same restrictions, and a terminal window opens on it.
-# [claude.interactive]
-# enabled = true
+[claude.interactive]
+enabled = true
 # window = "Terminal"       # or "iTerm", or "none" (then: delivery attach <ticket>)
 # keep_open = true          # stay open for questions after handing over the result; changes
 #                           # you ask for there are published: a development session's as a
@@ -194,6 +194,16 @@ allow_skipped = []
 # Actual Jira status IDs, filled in by `delivery setup` or generated with
 #   delivery workflow inspect --config <this file>
 # Every status in the setup instructions is required before `delivery run`.
+# Keys, each set to that status's numeric Jira ID in quotes (e.g. backlog = "10001"):
+#   backlog, ready_refinement, refining, specification_review,
+#   ready_planning, planning, plan_review,
+#   ready_development, developing,
+#   ready_verification, verifying, code_review, acceptance_review,
+#   changes_requested, needs_clarification, blocked,
+#   ready_release_preparation, preparing_release, release_review,
+#   ready_release, ready_release_verification, verifying_release,
+#   done, cancelled
+# Optional (a developer-attended session that clears a blocker): ready_resolution, resolving
 
 [workflow.actions]
 # Transition names. Defaults match the setup instructions; override only if your
@@ -224,8 +234,8 @@ max_image_mb = 20
 # code-approved candidate the same way until the ticket leaves Acceptance review. Anyone with
 # this config can run a ticket's candidate with `delivery try <ticket>`. `delivery preview
 # <ticket>` reopens a running app.
-# [preview]
-# command = ["npm", "run", "dev"]   # "{port}" is replaced by its port, also exported as PORT
+[preview]
+command = ["npm", "run", "dev"]   # "{port}" is replaced by its port, also exported as PORT
 # setup = ["npm", "ci"]             # run first; default checks.setup, [] for nothing
 # seed = ["npm", "run", "seed"]     # run after setup, before the app (demo data); default nothing
 # url = "http://localhost:{port}/"
