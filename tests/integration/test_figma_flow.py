@@ -39,7 +39,7 @@ async def test_design_is_pinned_at_refinement_and_drift_is_reported(tmp_path: Pa
         assert w.record(KEY).design_versions == {FILE: v1}
         # The designer changes the copy after the specification was written.
         fig.publish(FILE, {"1:2": frame("1:2", "Home", text("1:3", "Hello, world!"))})
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)
         [d] = _envelope(w, "plan-ticket")["designs"]
         assert d["version"] == v1 and d["changed_in_figma_since"] is True

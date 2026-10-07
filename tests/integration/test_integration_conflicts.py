@@ -18,10 +18,10 @@ async def _to_development(w: World, sup: Supervisor, *keys: str) -> None:
         w.submit(key)
     await step(sup)
     for key in keys:
-        w.decide(key, f"APPROVE SPEC {w.token(key, 'SPEC')}", Status.READY_PLANNING)
+        w.move(key, Status.READY_PLANNING)
     await step(sup)
     for key in keys:
-        w.decide(key, f"APPROVE PLAN {w.token(key, 'PLAN')}", Status.READY_DEVELOPMENT)
+        w.move(key, Status.READY_DEVELOPMENT)
 
 
 def _run_file(w: World, key: str, stage: str, name: str) -> list[Path]:
@@ -49,7 +49,7 @@ async def test_conflicting_tickets_both_reach_code_review_with_the_conflict_flag
         await step(sup)  # both verified; each integration tree meets the other's candidate
         for key, other in (("PILOT-1", "PILOT-2"), ("PILOT-2", "PILOT-1")):
             assert w.jira.status_of(key) is Status.CODE_REVIEW, w.last_comment(key)
-            gate = next(c for c in w.comments(key) if "Candidate ready for code review" in c)
+            gate = next(c for c in w.comments(key) if "ready for code review" in c)
             assert "Merge conflicts" in gate and "resolve them in the PR when you merge" in gate
             assert f"{other}'s candidate" in gate and "src/app.ts" in gate
     # The approved specification and plan reach Claude as two different files.
@@ -87,7 +87,7 @@ async def test_conflict_with_base_is_flagged_and_never_blocks(tmp_path: Path) ->
         )  # not a reason
         assert "Merge conflicts" in failed
         assert "Submit implementation changes" in failed and "Submit follow-up changes" in failed
-        assert "SUBMIT CHANGES PILOT-1-CODE-c1" in failed
+        assert "say which in a comment first" in failed
 
         # Choosing Submit follow-up changes by hand verifies the same code again, and says so.
         w.jira.human_move("PILOT-1", Status.READY_VERIFICATION, DEV)
@@ -96,9 +96,9 @@ async def test_conflict_with_base_is_flagged_and_never_blocks(tmp_path: Path) ->
         assert "unchanged since its last verification" in started
         assert w.jira.status_of("PILOT-1") is Status.CHANGES_REQUESTED
 
-        # Fix only F1 (the coordinator's R-items always go along). The session stops on a
-        # blocker; after Resume the next session still gets the same items.
-        w.jira.human_comment("PILOT-1", DEV, "SUBMIT CHANGES PILOT-1-CODE-c1\nF1: rename it")
+        # Fix only F1, said in words (the coordinator's R-items always go along). The session
+        # stops on a blocker; after Resume the next session still gets the same items.
+        w.jira.human_comment("PILOT-1", DEV, "Only F1 please: rename it")
         w.jira.human_move("PILOT-1", Status.READY_DEVELOPMENT, DEV)
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.BLOCKED, w.last_comment("PILOT-1")
@@ -118,7 +118,7 @@ async def test_conflict_with_base_is_flagged_and_never_blocks(tmp_path: Path) ->
         )
     envs = _run_file(w, "PILOT-1", "development", "envelope-implement-ticket.json")
     items = [set(json.loads(e.read_text())["feedback_items"]) for e in envs[1:]]
-    assert items == [{"F1", "R1", "R2"}] * 2  # F2 was not selected
+    assert items == [{"F1", "F2", "F3", "R1", "R2"}] * 2  # F3 is the comment saying "only F1"
     notes = json.loads(envs[-1].read_text())["notes"]
     assert [n["body"] for n in notes] == ["Use the constant x."]
 

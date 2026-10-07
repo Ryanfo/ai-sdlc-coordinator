@@ -3,26 +3,20 @@
 People change things during development (usually by asking for them in the open Claude
 session), so a candidate can differ from the approved specification in ways that work. The
 review and verification report those as deviations (D1, D2...), separately from defects, and
-a deviation never fails verification. For each one a human decides:
+a deviation never fails verification. For each one a human decides, by moving the ticket:
 
-- acceptable: an approver comments ``ACCEPT DEVIATIONS <code token>`` (optionally listing the
-  IDs). The next coordinator run on the ticket has Claude rewrite the specification to include
-  them and publishes that revision as approved: no new refinement or planning round.
-- not acceptable: the D-item goes in a change request (``CHANGE CODE`` / ``SUBMIT CHANGES``)
-  and development changes the code back to the specification.
+- acceptable: Approve code and Accept delivery accept the candidate as it is, deviations
+  included. Release preparation first has Claude rewrite the specification to include them and
+  publishes that revision as approved: no new refinement or planning round.
+- not acceptable: request changes and name the D-item in a comment (``D2: follow the
+  specification``); development changes the code back to the specification.
 
 A deviation nobody names is never sent back to development: work is not undone unless asked.
 """
 
 from __future__ import annotations
 
-from collections.abc import Container
-from dataclasses import dataclass
-from datetime import datetime
-
-from delivery.feedback import CommentDecision, DecisionKind, decisions
 from delivery.models import Deviation, DeviationRecord, SharedExecutionRecord
-from delivery.ports import JiraComment
 
 SUMMARY_CHARS = 280
 
@@ -49,50 +43,6 @@ def to_records(found: list[Deviation], candidate: int) -> list[DeviationRecord]:
 def open_deviations(rec: SharedExecutionRecord) -> list[DeviationRecord]:
     """Undecided deviations of the current candidate (a new candidate is verified afresh)."""
     return [d for d in rec.deviations if d.state == "open" and d.candidate == rec.candidate_number]
-
-
-@dataclass(frozen=True)
-class Acceptance:
-    ids: tuple[str, ...]
-    comments: tuple[CommentDecision, ...]
-    problems: tuple[str, ...]
-
-
-def accepted(
-    comments: list[JiraComment],
-    rec: SharedExecutionRecord,
-    *,
-    token: str,
-    approvers: Container[str],
-) -> Acceptance:
-    """Open deviations an approver accepted with ``ACCEPT DEVIATIONS <token>``. A comment with
-    no IDs accepts every deviation open when it was written."""
-    pending = open_deviations(rec)
-    if not pending:
-        return Acceptance((), (), ())
-    times = [d.announced_at for d in pending if d.announced_at is not None]
-    since: datetime | None = min(times) if times else None
-    found = decisions(comments, token=token, kinds={DecisionKind.ACCEPT_DEVIATIONS}, since=since)
-    ids = {d.id for d in pending}
-    chosen: set[str] = set()
-    used: list[CommentDecision] = []
-    problems: list[str] = []
-    for cd in found:
-        if cd.comment.author_account_id not in approvers:
-            problems.append(f"comment {cd.comment.id} is not from an approver (only approvers accept)")
-            continue
-        problems.extend(cd.decision.problems)
-        named = set(cd.decision.items)
-        other = sorted(n for n in named if not n.startswith("D"))
-        unknown = sorted(n for n in named - ids if n.startswith("D"))
-        if other:
-            problems.append(f"comment {cd.comment.id} lists {', '.join(other)}; deviations are D1, D2...")
-        if unknown:
-            problems.append(f"comment {cd.comment.id} names {', '.join(unknown)}: not open deviations")
-        chosen |= (named & ids) if named else ids
-        used.append(cd)
-    order = [d.id for d in pending if d.id in chosen]
-    return Acceptance(tuple(order), tuple(used), tuple(problems))
 
 
 def change_back(record: DeviationRecord, note: str) -> str:

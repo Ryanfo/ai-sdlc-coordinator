@@ -22,8 +22,10 @@ specification review, or ask the questions that block a usable specification.
 
 1. Read `brief`, `selected_comments`, every file in `attachments` and `designs` (designs and screenshots
    are part of the brief) and every file in `prior_drafts`. If a prior draft
-   exists, revise it: keep what was not challenged, apply every answer and every numbered
-   feedback item (`F1`...), and record each change in the revision history.
+   exists, revise it: keep what was not challenged, apply every answer and every feedback
+   item (`F1`...), and record each change in the revision history. If `changes_requested` is
+   true and nothing says what to change, ask (stage contract, *Decisions, change requests and
+   answers*).
 2. Read the application's standards from the working directory (`CLAUDE.md`, `docs/`) and
    enough of the codebase to describe current behaviour accurately. Do not design the
    implementation; that is the plan stage.

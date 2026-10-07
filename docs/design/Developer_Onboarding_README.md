@@ -4,6 +4,11 @@ README blueprint for Claude Code to implement and verify | Version 1.0 | 1 Octob
 
 **This is the intended onboarding guide, not a claim that the coordinator package already exists.** Claude Code must turn this into the delivery repository's root README, replace source locations with real ones, implement the specified commands and verify the instructions from a clean developer setup before removing this notice.
 
+> **Superseded in part (7 Oct 2026):** human decisions are now the Jira move alone, with no token
+> comment; comments are plain feedback. See "Decisions are moves" in
+> [Implementation_Decisions.md](Implementation_Decisions.md) and
+> [docs/human-templates.md](../human-templates.md). The token-comment rules below are history.
+
 ## What you will run
 
 You run a Python coordinator locally. It watches an agreed Jira project for tickets assigned to your Jira account that enter a ready status. It starts your local Claude Code, publishes versioned artefacts and a feature PR, records results in Jira and pauses for human decisions.

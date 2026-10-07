@@ -28,9 +28,9 @@ async def test_a_bug_gets_the_story_it_was_found_in(tmp_path: Path) -> None:
         w.new_ticket("PILOT-1", summary="Search tasks")
         w.submit("PILOT-1")
         await step(sup)
-        w.decide("PILOT-1", f"APPROVE SPEC {w.token('PILOT-1', 'SPEC')}", Status.READY_PLANNING)
+        w.move("PILOT-1", Status.READY_PLANNING)
         await step(sup)
-        w.decide("PILOT-1", f"APPROVE PLAN {w.token('PILOT-1', 'PLAN')}", Status.READY_DEVELOPMENT)
+        w.move("PILOT-1", Status.READY_DEVELOPMENT)
         await step(sup)
         assert w.record("PILOT-1").pr_number
 

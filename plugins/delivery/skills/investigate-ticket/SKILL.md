@@ -28,7 +28,9 @@ accepting them completes the spike. Nothing you do here is merged.
    a useful answer contains (its acceptance criteria) and any time box or exclusions. Read
    `linked_tickets`, `attachments` and `designs` it refers to.
 2. If `prior_drafts` holds earlier findings, revise them: keep what was not challenged and
-   address every numbered item in `feedback_items` and `selected_comments`.
+   address every item in `feedback_items` and every request in `selected_comments`. If
+   `changes_requested` is true and nothing says what to change, ask (stage contract,
+   *Decisions, change requests and answers*).
 3. Investigate. Read the code in the working directory (a disposable checkout of the base
    branch), its tests and documentation. You may run commands and try small experiments in
    `output.artifact_dir` or your temporary directory to measure or prove a point; do not edit

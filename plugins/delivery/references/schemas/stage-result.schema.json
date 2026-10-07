@@ -303,7 +303,7 @@
     },
     "NextStep": {
       "additionalProperties": false,
-      "description": "Something a person must do now that the blocker could not be cleared from the session.\n\nThe coordinator checks every step against the ticket before accepting the result (see\ndelivery.resolution.check_next_steps): a comment must be one it would recognise, with the\nticket's current token; an action must be one Jira offers on a Blocked ticket.",
+      "description": "Something a person must do now that the blocker could not be cleared from the session.\n\nThe coordinator checks every step against the ticket before accepting the result (see\ndelivery.resolution.check_next_steps): a decision must be a Jira action (never a comment); a\nrequest comment must carry the ticket's current token; an action must be one Jira offers on a\nBlocked ticket.",
       "properties": {
         "kind": {
           "enum": [

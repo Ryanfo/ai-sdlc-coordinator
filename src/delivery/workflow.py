@@ -268,6 +268,19 @@ class Requirement(StrEnum):
     RESOLVED = "resolved"
 
 
+# Requirements of the routes by which a person asks for changes: the move alone is the request,
+# and what to change is whatever people wrote (or, when nobody did, Claude asks).
+CHANGE_REQUIREMENTS = frozenset(
+    {
+        Requirement.SPEC_CHANGES,
+        Requirement.PLAN_CHANGES,
+        Requirement.IMPLEMENTATION_CHANGES,
+        Requirement.SCOPE_REVISION,
+        Requirement.RELEASE_CHANGES,
+    }
+)
+
+
 @dataclass(frozen=True)
 class StageDef:
     stage: Stage

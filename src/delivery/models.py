@@ -187,8 +187,9 @@ class NextStep(Model):
     """Something a person must do now that the blocker could not be cleared from the session.
 
     The coordinator checks every step against the ticket before accepting the result (see
-    delivery.resolution.check_next_steps): a comment must be one it would recognise, with the
-    ticket's current token; an action must be one Jira offers on a Blocked ticket.
+    delivery.resolution.check_next_steps): a decision must be a Jira action (never a comment); a
+    request comment must carry the ticket's current token; an action must be one Jira offers on a
+    Blocked ticket.
     """
 
     kind: Literal["jira_comment", "jira_action", "command", "other"]
@@ -422,9 +423,14 @@ class InputEnvelope(Model):
     prior_work: PriorWork | None = None
     clarification_round: str | None = None
     feedback_token: str | None = None
-    # The change items this run must address (F-IDs from findings or a change request, R-IDs
-    # for coordinator-detected problems), keyed by ID.
+    # The change items this run must address (F-IDs from findings or what people wrote, R-IDs
+    # for coordinator-detected problems), keyed by ID; for answers, Q-IDs a person named and A-IDs
+    # for what they wrote in their own words.
     feedback_items: dict[str, str] = Field(default_factory=dict)
+    # A person asked for changes (a Request ... changes move, Revise scope, Submit implementation
+    # changes). The move is the whole request: with no feedback_items nobody wrote what to change,
+    # so ask, never guess.
+    changes_requested: bool = False
     # Guidance the developer or an approver wrote for Claude (`FOR CLAUDE` comments).
     notes: list[SelectedComment] = Field(default_factory=list)
     # The project's guidance for every ticket (`FOR CLAUDE project`, delivery.guidance): a file.
@@ -580,20 +586,26 @@ class GateState(StrEnum):
     APPROVED = "approved"
     CHANGES_REQUESTED = "changes_requested"
     SUPERSEDED = "superseded"
-    CONFLICT = "conflict"
 
 
 class DecisionEvidence(Model):
-    comment_id: str
-    comment_author: str
-    comment_digest: str
-    comment_updated: datetime
+    """The Jira move that decided a gate (and, for code, the GitHub review behind it)."""
+
     history_id: str | None = None
     transition_author: str | None = None
     transition_at: datetime | None = None
     github_review_id: int | None = None
     github_reviewer: str | None = None
     github_review_commit: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_comment_evidence(cls, data: Any) -> Any:
+        """Gates decided before approval became the move alone also recorded the approval
+        comment; those records are still in Jira, so the old keys are dropped on load."""
+        if isinstance(data, dict):
+            data = {k: v for k, v in data.items() if not k.startswith("comment_")}
+        return data
 
 
 class GateRecord(Model):

@@ -23,14 +23,14 @@ INDENT = "    "
 # What each human action does next, for the actions people pick from a waiting status.
 ACTION_EFFECTS: dict[Action, str] = {
     Action.SUBMIT_IMPLEMENTATION_CHANGES: "development fixes the pending items as a new candidate",
-    Action.SUBMIT_FOLLOW_UP: "verifies the same candidate again (no code change); after ACCEPT "
-    "DEVIATIONS from Code review, rewrites the specification instead",
+    Action.SUBMIT_FOLLOW_UP: "verifies the same candidate again (no code change)",
     Action.REVISE_SCOPE: "back to refinement to change what is being built",
-    Action.REQUEST_CODE_CHANGES: "needs a CHANGE CODE comment (no items needed when the PR's review "
-    "comments say it all); then Submit implementation changes",
-    Action.REQUEST_ACCEPTANCE_CHANGES: "needs a CHANGE ACCEPTANCE comment",
-    Action.APPROVE_CODE: "needs APPROVE CODE and an independent GitHub approval at the current head",
-    Action.ACCEPT_DELIVERY: "needs an ACCEPT DELIVERY comment (posted once the code is approved)",
+    Action.REQUEST_CODE_CHANGES: "then Submit implementation changes; comments since the candidate "
+    "was posted and the PR's open review conversations say what to change (Claude asks if none do)",
+    Action.REQUEST_ACCEPTANCE_CHANGES: "then Submit implementation changes; comments say what to change",
+    Action.APPROVE_CODE: "needs an independent GitHub approval at the current head; approving also "
+    "accepts any deviations from the specification",
+    Action.ACCEPT_DELIVERY: "the product decision (offered once the code is approved)",
     Action.CANCEL: "stops all work on the ticket",
     Action.USE_APPROVED_PLAN: "the coordinator's: a fast-track plan approved with the specification",
     Action.COMPLETE_SPIKE: "the coordinator's: closes a spike whose findings were accepted",

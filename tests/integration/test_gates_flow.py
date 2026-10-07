@@ -18,9 +18,9 @@ NO_BUG = ["sh", "-c", "! grep -rq bug src"]
 
 async def _approve_to_development(w: World, sup: Supervisor, key: str) -> None:
     await step(sup)
-    w.decide(key, f"APPROVE SPEC {w.token(key, 'SPEC')}", Status.READY_PLANNING)
+    w.move(key, Status.READY_PLANNING)
     await step(sup)
-    w.decide(key, f"APPROVE PLAN {w.token(key, 'PLAN')}", Status.READY_DEVELOPMENT)
+    w.move(key, Status.READY_DEVELOPMENT)
 
 
 async def test_failing_candidate_cannot_progress_and_fixed_candidate_supersedes(tmp_path: Path) -> None:
@@ -58,12 +58,11 @@ async def test_code_gate_requires_independent_github_review_on_current_head(tmp_
         await step(sup)
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.CODE_REVIEW
-        code, accept = w.token("PILOT-1", "CODE"), w.token("PILOT-1", "ACCEPT")
         pr = w.record("PILOT-1").pr_number
         assert pr
         w.github.approve(pr, "dev-bot")  # the PR author approving their own PR does not count
-        w.decide("PILOT-1", f"APPROVE CODE {code}", Status.ACCEPTANCE_REVIEW)
-        w.decide("PILOT-1", f"ACCEPT DELIVERY {accept}", Status.READY_RELEASE_PREPARATION)
+        w.move("PILOT-1", Status.ACCEPTANCE_REVIEW)
+        w.move("PILOT-1", Status.READY_RELEASE_PREPARATION)
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.BLOCKED
         assert "independent human GitHub approval" in w.last_comment("PILOT-1")
@@ -85,12 +84,10 @@ async def test_new_commit_after_code_approval_invalidates_candidate(tmp_path: Pa
         rec = w.record("PILOT-1")
         assert rec.pr_number
         w.github.approve(rec.pr_number, REVIEWER)
-        w.decide("PILOT-1", f"APPROVE CODE {w.token('PILOT-1', 'CODE')}", Status.ACCEPTANCE_REVIEW)
+        w.move("PILOT-1", Status.ACCEPTANCE_REVIEW)
         # Someone pushes a "small" change after approval.
         external_commit(tmp_path, w.origin, "feature/PILOT-1", "src/late.ts", "x\n", "late")
-        w.decide(
-            "PILOT-1", f"ACCEPT DELIVERY {w.token('PILOT-1', 'ACCEPT')}", Status.READY_RELEASE_PREPARATION
-        )
+        w.move("PILOT-1", Status.READY_RELEASE_PREPARATION)
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.BLOCKED
         assert "not the verified candidate" in w.last_comment("PILOT-1")
@@ -103,12 +100,12 @@ async def test_unauthorised_approval_blocks_then_approver_resume_redecides(tmp_p
     async with Supervisor(w.deps) as sup:
         await step(sup)
         token = w.token("PILOT-1", "SPEC")
-        w.decide("PILOT-1", f"APPROVE SPEC {token}", Status.READY_PLANNING, author=DEV)  # not an approver
+        w.move("PILOT-1", Status.READY_PLANNING, author=DEV)  # not an approver
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.BLOCKED
         assert "not an authorised approver" in w.last_comment("PILOT-1")
         assert w.record("PILOT-1").pause.resume_stage.value == "planning"  # type: ignore[union-attr]
-        w.jira.human_comment("PILOT-1", APPROVER, f"APPROVE SPEC {token}")
+        # An approver's Resume is the decision: no comment.
         w.jira.human_move("PILOT-1", Status.READY_PLANNING, APPROVER)
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.PLAN_REVIEW
@@ -134,7 +131,7 @@ async def test_wrong_resume_action_is_rejected_without_field_enforcement(tmp_pat
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.NEEDS_CLARIFICATION
         w.jira.issues["PILOT-1"].fields.clear()  # a site without the field condition
-        w.jira.human_comment("PILOT-1", DEV, "ANSWERS PILOT-1-REFINE-R1\nQ1: title")
+        w.jira.human_comment("PILOT-1", DEV, "title")
         w.jira.human_move("PILOT-1", Status.READY_PLANNING, DEV)  # wrong: "Submit planning answers"
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.BLOCKED
@@ -145,19 +142,29 @@ async def test_wrong_resume_action_is_rejected_without_field_enforcement(tmp_pat
         assert w.jira.status_of("PILOT-1") is Status.SPECIFICATION_REVIEW
 
 
-async def test_edited_approval_requires_fresh_decision(tmp_path: Path) -> None:
+async def test_the_move_alone_approves_and_review_comments_go_with_it(tmp_path: Path) -> None:
     w = make_world(tmp_path)
     w.new_ticket("PILOT-1")
     w.submit("PILOT-1")
     async with Supervisor(w.deps) as sup:
         await step(sup)
         token = w.token("PILOT-1", "SPEC")
-        c = w.jira.human_comment("PILOT-1", APPROVER, f"APPROVE SPEC {token}")
-        w.jira.edit_comment("PILOT-1", c.id, f"APPROVE SPEC {token}")
+        # A comment alone decides nothing.
+        w.jira.human_comment("PILOT-1", APPROVER, "Looks good, but call the button Download.")
+        assert await step(sup) == []
+        assert w.jira.status_of("PILOT-1") is Status.SPECIFICATION_REVIEW
         w.jira.human_move("PILOT-1", Status.READY_PLANNING, APPROVER)
         await step(sup)
-        assert w.jira.status_of("PILOT-1") is Status.BLOCKED
-        assert "edited" in w.last_comment("PILOT-1")
+        assert w.jira.status_of("PILOT-1") is Status.PLAN_REVIEW
+        spec = next(g for g in w.record("PILOT-1").gates if g.token == token)
+        assert (
+            spec.state is GateState.APPROVED and spec.evidence and spec.evidence.transition_author == APPROVER
+        )
+        notes = [c["body"] for c in w.envelope("plan-ticket")["selected_comments"]]
+        assert notes == ["Looks good, but call the button Download."]
+        # Only coordinator comments on the ticket: nobody had to write a decision.
+        humans = [c for c in w.jira.comments_by_key["PILOT-1"] if "delivery-op:" not in c.body_text]
+        assert [c.body_text for c in humans] == ["Looks good, but call the button Download."]
 
 
 async def test_protected_paths_cannot_change_in_a_feature_ticket(tmp_path: Path) -> None:

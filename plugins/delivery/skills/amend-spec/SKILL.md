@@ -15,10 +15,11 @@ the envelope at `$envelope`.
 
 ## Goal
 
-The code differs from the approved specification in ways an approver has accepted. Write
+The code differs from the approved specification in ways people accepted by approving the code
+and accepting the delivery. Write
 specification revision `output.next_revision`: the approved specification, changed only as
-far as needed to describe the delivered behaviour for each accepted deviation. An approver
-has already accepted these changes, so the coordinator publishes your revision as the new
+far as needed to describe the delivered behaviour for each accepted deviation. People have
+already accepted these changes, so the coordinator publishes your revision as the new
 approved specification; there is no further specification review.
 
 ## Inputs

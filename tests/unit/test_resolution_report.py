@@ -211,6 +211,13 @@ def test_the_quoted_sentence_from_the_first_session_is_refused() -> None:
     assert problem and "would not be recognised" in problem and problem.startswith("next step 1")
 
 
+def test_decisions_are_actions_and_plain_comments_are_any_wording() -> None:
+    for old in ("APPROVE RELEASE PILOT-1-RELEASE-v1", "ANSWERS PILOT-1-RELVERIFY-R1\nQ1: yes"):
+        problem = check_next_steps(_blocked(_step("jira_comment", old)), EXPECT) or ""
+        assert "decisions are Jira moves" in problem and "jira_action" in problem
+    assert check_next_steps(_blocked(_step("jira_comment", "Use the staging database.")), EXPECT) is None
+
+
 def test_a_token_the_ticket_does_not_have_is_refused() -> None:
     problem = check_next_steps(_blocked(_step("jira_comment", _record(ref="PILOT-1-RELEASE-v2"))), EXPECT)
     assert problem and "PILOT-1-RELEASE-v2 is not the current RELEASE token" in problem
@@ -248,7 +255,9 @@ def test_a_blocked_resolution_must_say_what_to_do_and_a_completed_one_must_not_a
 
 def test_every_problem_is_reported_with_its_step_number() -> None:
     bad = _blocked(
-        _step("jira_comment", _record()), _step("jira_comment", "nonsense"), _step("jira_action", "Nope")
+        _step("jira_comment", _record()),
+        _step("jira_comment", "APPROVE CODE PILOT-1-CODE-c1"),
+        _step("jira_action", "Nope"),
     )
     problem = check_next_steps(bad, EXPECT) or ""
     assert "next step 2" in problem and "next step 3" in problem and "next step 1" not in problem
@@ -286,7 +295,6 @@ def test_the_briefing_shows_which_record_the_coordinator_actually_uses() -> None
             gates=gates,
             comments=comments,
             resume_stage="release_verification",
-            round_token=None,
             blocked_actions=EXPECT["blocked_actions"],  # type: ignore[arg-type]
         )
     )

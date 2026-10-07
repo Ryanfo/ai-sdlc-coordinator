@@ -25,11 +25,12 @@ answer that question.
   to this developer** is in a *Ready for…* status and the input that stage needs is present
   and valid (the `intake` line says what it is waiting for). Routes are a fixed table
   (`src/delivery/workflow.py`); it never guesses where a ticket goes.
-- People decide by a **token comment plus the matching Jira action**, for example
-  `APPROVE SPEC SDLC-7-SPEC-v2` and then **Approve specification**. A comment alone never
-  restarts work; an action without the right comment makes the coordinator wait or bounce
-  the ticket back. A newer revision or candidate supersedes older tokens. Templates are in
-  `docs/human-templates.md`.
+- People decide by **moving the ticket** with a Jira action, for example **Approve
+  specification**; no comment is needed. Asking for changes is a move too: whatever people
+  wrote on the ticket since the revision was posted says what to change, and Claude asks when
+  nobody wrote anything. A comment alone never restarts work. A move counts only when it is
+  made by someone allowed to decide, after the current revision was posted. The only comments
+  with a fixed format are `RECORD RELEASE` and `CREATE TICKETS` (`docs/human-templates.md`).
 - Each stage runs a Claude session in a sandbox and returns a structured result. The
   coordinator validates it, publishes documents to `delivery/<KEY>` and code to
   `feature/<KEY>`, runs the configured checks itself, comments in Jira and moves the ticket.
@@ -54,8 +55,9 @@ answer that question.
    **Why**: the specific cause, with the evidence (a log line, a gate, a comment, a check
    output), quoted briefly with where it came from.
 
-   **What to do**: numbered steps the developer can follow now. For Jira, give the exact
-   comment text to paste (with the current token from the briefing) and the action to choose.
+   **What to do**: numbered steps the developer can follow now. For Jira, give the action to
+   choose (and, only for a `RECORD RELEASE` or `CREATE TICKETS` request, the exact comment with
+   the current token from the briefing).
    For the coordinator, give the exact command (`coordinator recover <KEY> --resume`,
    `coordinator restart`, …). Say who has to do it when it is not the developer (an
    approver, the GitHub reviewer).
@@ -67,8 +69,7 @@ answer that question.
 ## Boundaries
 
 - **Diagnose and advise; do not act on your own.** Never post Jira comments or move tickets
-  (you have no Jira access and must not look for the token). Write the comment for the
-  developer to paste.
+  (you have no Jira access). Name the action for the developer to choose.
 - Commands that change something (`coordinator recover`, `stop`, `handover`, `restart`,
   `dispatch`, `clean`, `revert`, anything that pushes, merges or edits files) are the
   developer's decision: propose them, explain the effect, and run one only when the developer

@@ -554,8 +554,8 @@ class Accounts:
 
 
 class ApprovalsConfig(StrictModel):
-    # Who may approve, accept, answer and resume in Jira. Empty: anyone who can comment on
-    # and move the ticket, so a decision is never stuck waiting for one particular person.
+    # Who may approve, accept, answer and resume in Jira (by moving the ticket). Empty: anyone
+    # who can move the ticket, so a decision is never stuck waiting for one particular person.
     jira_account_ids: list[str] = Field(default_factory=list)
     github_logins: list[str] = Field(default_factory=list)
     require_independent_github_review: bool = True

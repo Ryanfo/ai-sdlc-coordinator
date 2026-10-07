@@ -58,9 +58,9 @@ async def _blocked_in_development(w: World, sup: Supervisor) -> None:
     w.new_ticket(KEY)
     w.submit(KEY)
     await step(sup)
-    w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+    w.move(KEY, Status.READY_PLANNING)
     await step(sup)
-    w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+    w.move(KEY, Status.READY_DEVELOPMENT)
     await step(sup)
     assert w.jira.status_of(KEY) is Status.BLOCKED, w.last_comment(KEY)
     assert w.record(KEY).pause is not None
@@ -347,11 +347,11 @@ async def test_a_step_the_coordinator_would_not_recognise_is_refused_in_the_sess
     w = world
     wrong = {
         "kind": "jira_comment",
-        "text": "APPROVE PLAN PILOT-1-PLAN-v2",  # the ticket has no v2: it would be ignored
+        "text": "APPROVE PLAN PILOT-1-PLAN-v1",  # decisions are moves: this comment does nothing
         "why": "approves the plan again",
         "verified_by": "read the plan",
     }
-    right = {**wrong, "text": "APPROVE PLAN PILOT-1-PLAN-v1"}
+    right = {**wrong, "kind": "jira_action", "text": "Resume development"}
     w.scenario(
         {
             "implement-ticket": [DEV_BLOCKED],
@@ -373,11 +373,10 @@ async def test_a_step_the_coordinator_would_not_recognise_is_refused_in_the_sess
         await step(sup)
         assert w.jira.status_of(KEY) is Status.BLOCKED
     comment = w.last_comment(KEY)
-    assert _code_blocks(w, KEY) == ["APPROVE PLAN PILOT-1-PLAN-v1"] and "PLAN-v2" not in comment
-    assert "1. Paste this comment on PILOT-1 (the developer)." in comment
+    assert _code_blocks(w, KEY) == [] and "APPROVE PLAN" not in comment
+    assert "Resume development" in comment
     run = w.deps.store.latest_run(KEY)
     assert run is not None
     events = read_events(run.journal.dir / "sessions" / "resolve-blocker")
     refused = [e for e in events if e.get("event") == "stop" and e.get("result") == "blocked"]
-    assert refused and "PILOT-1-PLAN-v2 is not the current PLAN token" in refused[0]["detail"]
-    assert "PILOT-1-PLAN-v1" in refused[0]["detail"]
+    assert refused and "decisions are Jira moves, not comments" in refused[0]["detail"]

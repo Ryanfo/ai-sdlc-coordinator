@@ -16,27 +16,27 @@ async def _to_ready_release(w: World, sup: Supervisor, key: str) -> tuple[int, s
     w.new_ticket(key)
     w.submit(key)
     await step(sup)
-    w.decide(key, f"APPROVE SPEC {w.token(key, 'SPEC')}", Status.READY_PLANNING)
+    w.move(key, Status.READY_PLANNING)
     await step(sup)
-    w.decide(key, f"APPROVE PLAN {w.token(key, 'PLAN')}", Status.READY_DEVELOPMENT)
+    w.move(key, Status.READY_DEVELOPMENT)
     await step(sup)
     await step(sup)
     rec = w.record(key)
     assert rec.pr_number
     w.github.approve(rec.pr_number, REVIEWER)
-    w.decide(key, f"APPROVE CODE {w.token(key, 'CODE')}", Status.ACCEPTANCE_REVIEW)
-    w.decide(key, f"ACCEPT DELIVERY {w.token(key, 'ACCEPT')}", Status.READY_RELEASE_PREPARATION)
+    w.move(key, Status.ACCEPTANCE_REVIEW)
+    w.move(key, Status.READY_RELEASE_PREPARATION)
     await step(sup)
     rel = w.token(key, "RELEASE")
-    w.decide(key, f"APPROVE RELEASE {rel}", Status.READY_RELEASE)
+    w.move(key, Status.READY_RELEASE)
     return rec.pr_number, rel
 
 
 def _record(w: World, key: str, rel: str, commit: str, pr: int) -> None:
     w.decide(
         key,
-        f"RECORD RELEASE {rel}\ncommit: {commit}\nenvironment: local-pilot\nmerged-pr: {pr}",
         Status.READY_RELEASE_VERIFICATION,
+        f"RECORD RELEASE {rel}\ncommit: {commit}\nenvironment: local-pilot\nmerged-pr: {pr}",
     )
 
 

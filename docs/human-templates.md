@@ -1,110 +1,60 @@
-# Human decision templates
+# How people decide, and the two request comments
 
-Generated from `src/delivery/feedback.py` (the parser uses the same grammar). The coordinator
-posts each template with the **current** token in Jira; copy it from there. Rules:
+**A decision is a Jira move.** Approving, asking for changes, answering questions and resuming
+all happen by choosing the action in Jira (or dragging the card): no comment is needed, and
+there is no token to copy. Rules:
 
-- Put the template on the first line of the comment; Jira code blocks are fine.
-- Then perform the matching Jira action. A comment alone never starts work.
-- Tokens are bound to one revision or candidate. A newer revision supersedes older tokens.
-- Who may decide is `[approvals] jira_account_ids`. Empty (the default) means anyone who can
-  comment on and move the ticket. With a list, approvals come from a listed approver, who also
-  makes the transition. Either way an automated transition never counts.
-- Do not edit a decision comment; add a new one. Edited decisions are treated as conflicts.
-- Several comments can answer one round; later answers to the same question win.
+- The move counts when it is made by someone allowed to decide, after the revision or candidate
+  it decides on was posted. Who may decide is `[approvals] jira_account_ids`. Empty (the default)
+  means anyone who can move the ticket. An automated transition never counts.
+- A comment alone never starts work.
+- Comments are what you want to say, in your own words. Everything written on the ticket since a
+  revision was posted reaches Claude with the next stage: as what to change after a change
+  request, as answers after Submit answers, or as notes after an approval ("fine, but call it
+  Download"). Numbering is optional: `F2: ...` or `D1: ...` lines keep their ID, and a comment
+  without them is one item.
+- Asking for changes without writing anything is fine: Claude asks what to change (in the open
+  session, or as questions in Jira).
+- If a kept-open session publishes a newer revision while the ticket is in review, its comment
+  says so, and the next move approves that newer revision.
 
-| Situation | Comment | Then choose |
+| Situation | Choose | Comment (optional unless noted) |
 |---|---|---|
-| Answer questions | `ANSWERS PILOT-123-REFINE-R1 + Q1:, Q2:` | Submit <stage> answers |
-| Approve specification | `APPROVE SPEC PILOT-123-SPEC-v2` | Approve specification |
-| Change specification | `CHANGE SPEC PILOT-123-SPEC-v2 + F1:, F2:` | Request specification changes |
-| Approve plan | `APPROVE PLAN PILOT-123-PLAN-v1` | Approve plan |
-| Change plan | `CHANGE PLAN PILOT-123-PLAN-v1 + F1:` | Request plan changes |
-| Approve code (after a GitHub review) | `APPROVE CODE PILOT-123-CODE-c2` | Approve code |
-| Request code changes | `CHANGE CODE PILOT-123-CODE-c2 + F1:` (and `D1:` for a deviation to change back; no items needed when the PR's review comments say it all) | Request code changes |
-| Accept deviations from the specification | `ACCEPT DEVIATIONS PILOT-123-CODE-c2` (+ `D1, D3` to accept only some) | Submit follow-up changes (from Code review), or the next action you choose |
-| Accept delivery | `ACCEPT DELIVERY PILOT-123-ACCEPT-c2` | Accept delivery |
-| Request behavioural changes | `CHANGE ACCEPTANCE PILOT-123-ACCEPT-c2 + F1:` | Request acceptance changes |
-| Select which findings to fix (optional; R-items are always fixed) | `SUBMIT CHANGES PILOT-123-CODE-c2 + F1:, F3:` (and `D2:` to change a deviation back) | Submit implementation changes |
-| Re-verify the same candidate (no code change) | none | Submit follow-up changes (from Changes requested) |
-| Tell Claude something for its next session | `FOR CLAUDE` or `FOR CLAUDE development` + your note | Resume, Submit … as usual |
-| Tell every Claude session on every ticket | `FOR CLAUDE project` + your note | nothing: it is added to the project guidance |
-| Create tickets Claude proposed (slices or a spike's follow-ups) | `CREATE TICKETS PILOT-123-SPEC-v2 + S1, S3` (or the findings' `PLAN` token) | nothing: they are created in Backlog |
-| Change scope after review | `REVISE SCOPE PILOT-123-SPEC-v3 + F1:` | Revise scope |
-| Approve release proposal | `APPROVE RELEASE PILOT-123-RELEASE-v1` | Approve release |
-| Change release proposal | `CHANGE RELEASE PILOT-123-RELEASE-v1 + F1:` | Request release changes |
-| Record a release by hand (optional: the coordinator records the PR merge itself) | `RECORD RELEASE PILOT-123-RELEASE-v1 + commit:, environment:` | Record release |
+| Answer questions | Submit <stage> answers | Your answers, in your own words (`Q2: ...` to name a question) |
+| Approve specification / plan / release proposal | Approve specification / Approve plan / Approve release | none |
+| Change specification / plan / release proposal | Request specification / plan / release changes | What to change |
+| Approve code (after an independent GitHub review with CI passing) | Approve code | none; approving also accepts any deviations listed |
+| Request code changes | Request code changes, then Submit implementation changes | What to change; `D1: follow the specification` changes a deviation back. Unresolved PR review conversations are included too |
+| Accept delivery | Accept delivery | none |
+| Request behavioural changes | Request acceptance changes, then Submit implementation changes | What to change |
+| Fix only some findings (R-items are always fixed) | Submit implementation changes | Say which, e.g. `only F1 and F3` |
+| Re-verify the same candidate (no code change) | Submit follow-up changes (from Changes requested) | none |
+| Change scope after review | Revise scope | What to change |
+| Tell Claude something for its next session | Resume, Submit … as usual | `FOR CLAUDE` or `FOR CLAUDE development` + your note |
+| Tell every Claude session on every ticket | nothing | `FOR CLAUDE project` + your note |
+| Create tickets Claude proposed | nothing | **Required**: `CREATE TICKETS <token>` + the IDs (below) |
+| Record a release by hand (optional) | Record release | **Required**: `RECORD RELEASE <token>` + `commit:`, `environment:` (below) |
 
-## Examples
+## Deviations from the specification
 
-Clarification answers:
+Something changed during development that works but is not what the approved specification
+says. The review lists them as `D1`, `D2`… and they never fail verification. Approving the code
+(and accepting the delivery) accepts them: release preparation first has Claude rewrite the
+specification to include them and publishes it as the approved revision, with no new refinement
+or planning round. To have one changed back instead, request code changes and name it in a
+comment with what to do (`D2: keep the specification's wording`). A deviation nobody names is
+left as it is.
 
-```text
-ANSWERS PILOT-123-REFINE-R1
-Q1: <your answer>
-Q2: <your answer>
-```
+## Notes for Claude
 
-Specification change request (one or more numbered items):
-
-```text
-CHANGE SPEC PILOT-123-SPEC-v2
-F1: <requested change>
-F2: <another change>
-```
-
-Approval:
-
-```text
-APPROVE SPEC PILOT-123-SPEC-v2
-```
-
-Release record. Not needed for an ordinary release: once the PR is merged, the coordinator
-reads the merge commit from GitHub and chooses Record release itself. If this comment is on the
-ticket when the release is recorded, its commit is verified instead of the merge commit. The
-**newest** comment with the release's current token is the one used, and only the current token
-counts (`RELEASE-v1` while that is the approved release; a `-v2` that does not exist is ignored),
-so a wrong record is corrected by a new comment with the same token and the right commit.
-
-```text
-RECORD RELEASE PILOT-123-RELEASE-v1
-commit: <released commit SHA on the base branch>
-environment: local-pilot
-merged-pr: <PR number>
-```
-
-Deviations from the specification (something changed during development that works but is
-not what the approved specification says). The review lists them as `D1`, `D2`… and they
-never fail verification. Accept all of them, or only the ones listed:
-
-```text
-ACCEPT DEVIATIONS PILOT-123-CODE-c2
-D1, D3
-```
-
-Claude then rewrites the specification to include them and publishes it as the approved
-revision, with no new refinement or planning round. To have one changed back instead, name it
-in the change request with what to do (`D2: keep the specification's wording`). A deviation
-nobody names is left as it is, but release preparation waits until each one is decided.
-
-Guidance for Claude. Not a decision and needs no token: every following Claude session of
-that stage (or of every stage, without a stage name) gets the note as input, oldest first, from
-the assignee or an approver. It never starts work by itself; choose the Jira action as usual.
-Stage names: `refinement`, `planning`, `development`, `verification`, `release`.
+Not a decision: every following Claude session of that stage (or of every stage, without a stage
+name) gets the note as input, oldest first, from the assignee or an approver. It never starts
+work by itself; choose the Jira action as usual. Stage names: `refinement`, `planning`,
+`development`, `verification`, `release`.
 
 ```text
 FOR CLAUDE development
 The e2e failure is the date picker's timezone; use the fixed clock in tests/clock.ts.
-```
-
-Review comments on the pull request. When changes to a candidate are submitted, the PR's
-unresolved review conversations, and written reviews, from since the candidate was published
-reach development as `G1`, `G2`… items next to your `F` items. Resolve a conversation on GitHub
-to leave it out. A `CHANGE CODE` comment needs no items of its own when the PR comments say it
-all:
-
-```text
-CHANGE CODE PILOT-123-CODE-c2
-See the review comments on the pull request.
 ```
 
 Guidance for every ticket. When the same correction keeps coming up, write it once: the
@@ -117,11 +67,25 @@ FOR CLAUDE project
 Dates go through src/lib/dates.ts; never call new Date() in components.
 ```
 
-Proposed tickets. A specification may propose slices of a ticket too big for one delivery,
-and a spike's findings may propose follow-up work, as `S1`, `S2`… in their review comment.
-Nothing is created until someone asks, with that revision's token and the IDs to create. A note
-after an ID goes into that ticket's description. They are created in Backlog, unassigned and
-linked to this ticket; this ticket carries on as it is.
+## Review comments on the pull request
+
+When changes to a candidate are submitted, the PR's unresolved review conversations, and written
+reviews, from since the candidate was published reach development as `G1`, `G2`… items next to
+anything written in Jira. Resolve a conversation on GitHub to leave it out. When the PR comments
+say it all, just choose Request code changes.
+
+## The two request comments
+
+These are not decisions, so they keep a fixed first line with the token of the revision they
+are about. The coordinator shows the token where it offers them: the review comment that
+proposes tickets, and the note that asks for a release record when no PR is recorded
+(`delivery inspect <KEY>` lists every gate's token too).
+
+Proposed tickets. A specification may propose slices of a ticket too big for one delivery, and
+a spike's findings may propose follow-up work, as `S1`, `S2`… in their review comment. Nothing
+is created until someone asks, with that revision's token (`SPEC`, or the findings' `PLAN`) and
+the IDs to create. A note after an ID goes into that ticket's description. They are created in
+Backlog, unassigned and linked to this ticket; this ticket carries on as it is.
 
 ```text
 CREATE TICKETS PILOT-123-SPEC-v2
@@ -129,12 +93,25 @@ S1
 S3: call it Export to CSV
 ```
 
+Release record. Not needed for an ordinary release: once the PR is merged, the coordinator reads
+the merge commit from GitHub and chooses Record release itself. If this comment is on the ticket
+when the release is recorded, its commit is verified instead of the merge commit. The **newest**
+comment with the release's current token is the one used, so a wrong record is corrected by a
+new comment with the same token and the right commit.
+
+```text
+RECORD RELEASE PILOT-123-RELEASE-v1
+commit: <released commit SHA on the base branch>
+environment: local-pilot
+merged-pr: <PR number>
+```
+
 ## What is never accepted
 
-- Free text such as "looks good, approved": approval needs the exact token.
-- A token for an older revision or candidate.
-- When approvers are listed: a decision by an account not on the list, or a transition made by one.
+- A move made before the revision or candidate it decides on was posted, or for a revision that
+  a newer one has replaced.
+- When approvers are listed: a move made by an account not on the list.
 - An automated transition (no human author).
-- Both an approval and a change request for the same token: a human resolves the conflict.
-- Code approval without an independent, non-author GitHub approval on the current PR head with required CI passing.
-
+- A comment alone: it never decides anything.
+- Code approval without an independent, non-author GitHub approval on the current PR head with
+  required CI passing.

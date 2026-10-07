@@ -22,32 +22,35 @@ async def test_full_lifecycle_with_clarification_change_request_and_release(tmp_
     w.new_ticket("PILOT-1")
     w.submit("PILOT-1")
     async with Supervisor(w.deps) as sup:
-        # Refinement -> questions in Jira, paused with the round token.
+        # Refinement -> questions in Jira: answer in your own words, then Submit answers.
         assert await step(sup) == ["PILOT-1"]
         assert w.jira.status_of("PILOT-1") is Status.NEEDS_CLARIFICATION
-        assert "ANSWERS PILOT-1-REFINE-R1" in w.last_comment("PILOT-1")
+        assert "Submit refinement answers" in w.last_comment("PILOT-1")
+        assert "ANSWERS" not in w.last_comment("PILOT-1")
         assert w.jira.issues["PILOT-1"].fields["customfield_10050"] == {"value": "refinement"}
 
         # A comment alone does not restart work.
-        w.jira.human_comment("PILOT-1", DEV, "ANSWERS PILOT-1-REFINE-R1\nQ1: Title only.")
+        w.jira.human_comment("PILOT-1", DEV, "Title only.")
         assert await step(sup) == []
         w.jira.human_move("PILOT-1", Status.READY_REFINEMENT, DEV)
         assert await step(sup) == ["PILOT-1"]
+        assert w.envelope("refine-ticket")["feedback_items"] == {"A1": "Title only."}
         assert w.jira.status_of("PILOT-1") is Status.SPECIFICATION_REVIEW
         spec_v2 = w.token("PILOT-1", "SPEC")
         assert spec_v2 == "PILOT-1-SPEC-v2"
 
-        # Change request bound to v2 produces v3; then approve v3.
-        w.decide("PILOT-1", f"CHANGE SPEC {spec_v2}\nF1: Include synopsis.", Status.READY_REFINEMENT)
+        # A change request (the move, with a comment saying what) produces v3; moving it on
+        # approves v3: no decision comments anywhere.
+        w.decide("PILOT-1", Status.READY_REFINEMENT, "F1: Include synopsis.")
         assert await step(sup) == ["PILOT-1"]
         spec_v3 = w.token("PILOT-1", "SPEC")
         assert spec_v3 == "PILOT-1-SPEC-v3"
-        w.decide("PILOT-1", f"APPROVE SPEC {spec_v3}", Status.READY_PLANNING)
+        w.move("PILOT-1", Status.READY_PLANNING)
 
         # Planning -> plan review -> approve.
         assert await step(sup) == ["PILOT-1"]
         assert w.jira.status_of("PILOT-1") is Status.PLAN_REVIEW
-        w.decide("PILOT-1", f"APPROVE PLAN {w.token('PILOT-1', 'PLAN')}", Status.READY_DEVELOPMENT)
+        w.move("PILOT-1", Status.READY_DEVELOPMENT)
 
         # Development -> PR -> ready for verification; verification runs on the next poll.
         assert await step(sup) == ["PILOT-1"]
@@ -56,23 +59,22 @@ async def test_full_lifecycle_with_clarification_change_request_and_release(tmp_
         assert rec.pr_number and rec.candidate_sha
         assert await step(sup) == ["PILOT-1"]
         assert w.jira.status_of("PILOT-1") is Status.CODE_REVIEW
-        code, accept = w.token("PILOT-1", "CODE"), w.token("PILOT-1", "ACCEPT")
 
-        # Human code gate: independent GitHub review + Jira decision; then acceptance.
+        # Human code gate: independent GitHub review + the Jira move; then acceptance.
         w.github.approve(rec.pr_number, REVIEWER)
-        w.decide("PILOT-1", f"APPROVE CODE {code}", Status.ACCEPTANCE_REVIEW)
-        w.decide("PILOT-1", f"ACCEPT DELIVERY {accept}", Status.READY_RELEASE_PREPARATION)
+        w.move("PILOT-1", Status.ACCEPTANCE_REVIEW)
+        w.move("PILOT-1", Status.READY_RELEASE_PREPARATION)
         assert await step(sup) == ["PILOT-1"]
         assert w.jira.status_of("PILOT-1") is Status.RELEASE_REVIEW
 
         # Release approval, human merge and release record, then verification -> Done.
         rel = w.token("PILOT-1", "RELEASE")
-        w.decide("PILOT-1", f"APPROVE RELEASE {rel}", Status.READY_RELEASE)
+        w.move("PILOT-1", Status.READY_RELEASE)
         merged = w.github.merge(rec.pr_number)
         w.decide(
             "PILOT-1",
-            f"RECORD RELEASE {rel}\ncommit: {merged}\nenvironment: local-pilot\nmerged-pr: {rec.pr_number}",
             Status.READY_RELEASE_VERIFICATION,
+            f"RECORD RELEASE {rel}\ncommit: {merged}\nenvironment: local-pilot\nmerged-pr: {rec.pr_number}",
         )
         assert await step(sup) == ["PILOT-1"]
         assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")

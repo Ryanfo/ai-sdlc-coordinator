@@ -82,16 +82,16 @@ async def test_a_spike_is_investigated_and_closed_when_its_findings_are_accepted
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
         await step(sup)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.PLAN_REVIEW, w.last_comment(KEY)
         findings = w.last_comment(KEY)
         token = w.token(KEY, "PLAN")
-        assert f"Findings v001 ready for review: {token}" in findings
+        assert "Findings v001 ready for review" in findings
         assert "closes as Done" in findings and f"CREATE TICKETS {token}" in findings
         assert "Use the existing index." in _show(w, f"delivery/{KEY}:docs/delivery/{KEY}/findings/v001.md")
         assert _calls(w, "plan-ticket") == 0 and _calls(w, "investigate-ticket") == 1
-        w.decide(KEY, f"APPROVE PLAN {token}", Status.READY_DEVELOPMENT)
+        w.move(KEY, Status.READY_DEVELOPMENT)
         assert await step(sup) == [KEY]
         assert w.jira.status_of(KEY) is Status.DONE
         assert "Spike complete: findings v001 accepted" in w.last_comment(KEY)
@@ -111,9 +111,9 @@ async def test_a_spike_without_the_complete_spike_transition_says_to_close_it_by
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
         await step(sup)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)
-        w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+        w.move(KEY, Status.READY_DEVELOPMENT)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.READY_DEVELOPMENT
         assert "Move it to Done by hand" in w.last_comment(KEY)
@@ -133,12 +133,14 @@ async def test_the_fast_track_approves_the_plan_with_the_specification(tmp_path:
         assert "Written with the specification." in _show(
             w, f"delivery/{KEY}:docs/delivery/{KEY}/plan/v001.md"
         )
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)  # planning publishes the approved plan: no Claude, no plan review
         assert w.jira.status_of(KEY) is Status.READY_DEVELOPMENT, w.last_comment(KEY)
         assert "approved with the specification" in w.last_comment(KEY)
         plan = next(g for g in w.record(KEY).gates if g.kind is GateKind.PLAN)
-        assert plan.state is GateState.APPROVED and plan.evidence and plan.evidence.comment_author == APPROVER
+        assert (
+            plan.state is GateState.APPROVED and plan.evidence and plan.evidence.transition_author == APPROVER
+        )
         assert w.record(KEY).footprint_ref
         assert _calls(w, "plan-ticket") == 0
         await step(sup)
@@ -159,7 +161,7 @@ async def test_the_fast_track_falls_back_to_plan_review(tmp_path: Path) -> None:
         await step(sup)
         assert "Fast track not used: no plan was written" in w.last_comment("PILOT-2")
         for key in (KEY, "PILOT-2"):
-            w.decide(key, f"APPROVE SPEC {w.token(key, 'SPEC')}", Status.READY_PLANNING)
+            w.move(key, Status.READY_PLANNING)
         await step(sup)
         # No Use approved plan transition: the plan written with the spec goes to Plan review.
         assert w.jira.status_of(KEY) is Status.PLAN_REVIEW
@@ -167,6 +169,6 @@ async def test_the_fast_track_falls_back_to_plan_review(tmp_path: Path) -> None:
         assert _calls(w, "plan-ticket") == 1  # only PILOT-2, which wrote no plan, was planned
         assert w.jira.status_of("PILOT-2") is Status.PLAN_REVIEW
         # Plan changes asked for: planned by Claude as usual, not the same plan again.
-        w.decide(KEY, f"CHANGE PLAN {w.token(KEY, 'PLAN')}\nF1: smaller steps", Status.READY_PLANNING)
+        w.decide(KEY, Status.READY_PLANNING, "F1: smaller steps")
         await step(sup)
         assert _calls(w, "plan-ticket") == 2 and w.token(KEY, "PLAN") == f"{KEY}-PLAN-v2"

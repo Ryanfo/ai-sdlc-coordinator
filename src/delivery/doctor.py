@@ -242,8 +242,8 @@ def check_config(cfg: Config, report: Report) -> None:
             "config",
             "approvers",
             "info",
-            "anyone who can comment on and move a ticket can approve, accept and answer "
-            "(approvals.jira_account_ids is empty); decisions still need the exact token and a human",
+            "anyone who can move a ticket can approve, accept and answer "
+            "(approvals.jira_account_ids is empty); a decision is still a move made by a person",
         )
     elif cfg.identity.developer_jira_account_id in cfg.approvals.jira_account_ids:
         report.add(

@@ -6,10 +6,10 @@ from delivery.feedback import (
     MARKER_PREFIX,
     DecisionKind,
     claude_notes,
-    collect_answers,
-    collect_feedback,
+    items,
     parse_decision,
     round_token,
+    said,
 )
 from delivery.gates import (
     GateOutcome,
@@ -21,7 +21,7 @@ from delivery.gates import (
     gate_token,
     supersede_for_new_revision,
 )
-from delivery.models import GateKind, GateRecord, GateState
+from delivery.models import DecisionEvidence, GateKind, GateRecord, GateState
 from delivery.ports import CheckRun, CommitStatus, JiraComment, PullRequest, Review, StatusChange
 from delivery.workflow import Stage
 
@@ -62,173 +62,117 @@ def evaluate(gate: GateRecord, comments: list[JiraComment], entry: StatusChange)
         review_status_id=SPEC_REVIEW,
         approve_status_id=READY_PLANNING,
         change_status_id=READY_REFINEMENT,
-        approve_kind=DecisionKind.APPROVE_SPEC,
-        change_kinds={DecisionKind.CHANGE_SPEC},
         approvers={APPROVER},
     )
 
 
-def test_parse_examples_from_handoff() -> None:
-    d = parse_decision(
-        "CHANGE SPEC PILOT-123-SPEC-v2\nF1: Search must include the synopsis as well as the title.\n"
-        "F2: Exclude external metadata APIs from this pilot."
-    )
-    assert d is not None and d.kind is DecisionKind.CHANGE_SPEC
-    assert d.items == {
-        "F1": "Search must include the synopsis as well as the title.",
-        "F2": "Exclude external metadata APIs from this pilot.",
-    }
-    a = parse_decision("ANSWERS PILOT-123-REFINE-R1\nQ1: Use synthetic programmes only.\nQ2: Match titles")
-    assert a is not None and a.items["Q2"] == "Match titles"
-    assert parse_decision("APPROVE SPEC PILOT-123-SPEC-v2").token == "PILOT-123-SPEC-v2"  # type: ignore[union-attr]
-    assert parse_decision("Looks good to me, approved!") is None
-    assert parse_decision("APPROVE SPEC PILOT-123-PLAN-v2").problems  # type: ignore[union-attr]
-
-
-def test_multiline_answers_and_record_release_fields() -> None:
-    d = parse_decision("ANSWERS PILOT-1-PLAN-R2\nQ1: first line\ncontinued here\nQ2: two")
-    assert d is not None and d.items["Q1"] == "first line\ncontinued here"
+def test_request_lines_parse_and_old_decision_lines_are_plain_text() -> None:
     r = parse_decision(
         f"RECORD RELEASE PILOT-1-RELEASE-v1\ncommit: {HEAD}\nenvironment: local-pilot\nmerged-pr: 7"
     )
-    assert r is not None and r.fields == {
-        "commit": HEAD,
-        "environment": "local-pilot",
-        "merged-pr": "7",
-    }
-    assert parse_decision("OVERLAP OVL-0123456789 WAIT PILOT-9") is None  # overlaps need no decision
+    assert r is not None and r.kind is DecisionKind.RECORD_RELEASE
+    assert r.fields == {"commit": HEAD, "environment": "local-pilot", "merged-pr": "7"}
+    c = parse_decision("CREATE TICKETS PILOT-1-SPEC-v2\nS1, S3\nS2: call it Download")
+    assert c is not None and c.items == {"S1": "", "S3": "", "S2": "call it Download"}
+    assert parse_decision("CREATE TICKETS PILOT-1-CODE-c1").problems  # type: ignore[union-attr]
+    # Decisions are moves: the old decision lines are just what someone wrote.
+    assert parse_decision("APPROVE SPEC PILOT-123-SPEC-v2") is None
+    assert parse_decision("ANSWERS PILOT-123-REFINE-R1\nQ1: x") is None
+    assert parse_decision("Looks good to me, approved!") is None
 
 
-def test_current_token_approval_with_matching_transition() -> None:
-    ev = evaluate(spec_gate(), [comment("c1", "APPROVE SPEC PILOT-123-SPEC-v2")], change(READY_PLANNING))
+def test_the_move_alone_approves() -> None:
+    ev = evaluate(spec_gate(), [], change(READY_PLANNING))
     assert ev.outcome is GateOutcome.APPROVED
-    assert ev.evidence and ev.evidence.comment_id == "c1" and ev.evidence.history_id == "h1"
+    assert ev.evidence == DecisionEvidence(
+        history_id="h1", transition_author=APPROVER, transition_at=T0 + timedelta(minutes=10)
+    )
 
 
-def test_stale_token_is_not_approval() -> None:
-    ev = evaluate(spec_gate(), [comment("c1", "APPROVE SPEC PILOT-123-SPEC-v1")], change(READY_PLANNING))
-    assert ev.outcome is GateOutcome.WAITING
-    assert "APPROVE SPEC PILOT-123-SPEC-v2" in ev.next_action
+def test_comments_written_during_review_go_with_the_approval_as_notes() -> None:
+    notes = [
+        comment("c1", "Fine, but call the button Download."),
+        comment("c0", "Old remark", minutes=-5),  # before this revision was published
+        comment("c2", f"Spec ready\n`{MARKER_PREFIX} x`"),  # the coordinator's own
+        comment("c3", "FOR CLAUDE: keep it short"),  # reaches Claude as a note already
+        comment("c4", "drive-by", author="stranger"),
+    ]
+    ev = evaluate(spec_gate(), notes, change(READY_PLANNING))
+    assert ev.outcome is GateOutcome.APPROVED
+    assert [c.id for c in ev.comments] == ["c1"]
 
 
 def test_superseded_gate_rejected() -> None:
-    ev = evaluate(
-        spec_gate(state=GateState.SUPERSEDED),
-        [comment("c1", "APPROVE SPEC PILOT-123-SPEC-v2")],
-        change(READY_PLANNING),
-    )
+    ev = evaluate(spec_gate(state=GateState.SUPERSEDED), [], change(READY_PLANNING))
     assert ev.outcome is GateOutcome.REJECTED
 
 
-def test_unauthorised_comment_or_transition_rejected() -> None:
-    ev = evaluate(
-        spec_gate(),
-        [comment("c1", "APPROVE SPEC PILOT-123-SPEC-v2", author=DEV)],
-        change(READY_PLANNING),
-    )
-    assert ev.outcome is GateOutcome.WAITING and "unauthorised" in ev.reason
-    ev = evaluate(spec_gate(), [comment("c1", "APPROVE SPEC PILOT-123-SPEC-v2")], change(READY_PLANNING, DEV))
+def test_move_by_someone_not_allowed_to_decide_is_rejected() -> None:
+    ev = evaluate(spec_gate(), [], change(READY_PLANNING, DEV))
     assert ev.outcome is GateOutcome.REJECTED and "not an authorised approver" in ev.reason
 
 
 def test_automated_transition_cannot_approve() -> None:
-    ev = evaluate(
-        spec_gate(), [comment("c1", "APPROVE SPEC PILOT-123-SPEC-v2")], change(READY_PLANNING, None)
-    )
+    ev = evaluate(spec_gate(), [], change(READY_PLANNING, None))
     assert ev.outcome is GateOutcome.REJECTED and "automation" in ev.reason
 
 
-def test_edited_and_conflicting_decisions_need_human_resolution() -> None:
-    ev = evaluate(
-        spec_gate(),
-        [comment("c1", "APPROVE SPEC PILOT-123-SPEC-v2", edited=True)],
-        change(READY_PLANNING),
-    )
-    assert ev.outcome is GateOutcome.CONFLICT
-    ev = evaluate(
-        spec_gate(),
-        [
-            comment("c1", "APPROVE SPEC PILOT-123-SPEC-v2"),
-            comment("c2", "CHANGE SPEC PILOT-123-SPEC-v2\nF1: x", minutes=6),
-        ],
-        change(READY_PLANNING),
-    )
-    assert ev.outcome is GateOutcome.CONFLICT
+def test_move_before_the_revision_was_published_is_rejected() -> None:
+    ev = evaluate(spec_gate(), [], change(READY_PLANNING, minutes=-1))
+    assert ev.outcome is GateOutcome.REJECTED and "older revision" in ev.reason
 
 
-def test_duplicate_valid_approvals_are_idempotent() -> None:
+def test_change_request_is_the_move_and_comments_say_what() -> None:
     ev = evaluate(
         spec_gate(),
-        [
-            comment("c1", "APPROVE SPEC PILOT-123-SPEC-v2"),
-            comment("c2", "APPROVE SPEC PILOT-123-SPEC-v2", minutes=7),
-        ],
-        change(READY_PLANNING),
-    )
-    assert ev.outcome is GateOutcome.APPROVED and ev.evidence and ev.evidence.comment_id == "c1"
-
-
-def test_change_request_bound_to_reviewed_revision() -> None:
-    ev = evaluate(
-        spec_gate(),
-        [comment("c1", "CHANGE SPEC PILOT-123-SPEC-v2\nF1: include synopsis\nF2: no APIs")],
+        [comment("c1", "Include the synopsis."), comment("c2", "F1: no APIs\nF2: dark mode", minutes=12)],
         change(READY_REFINEMENT),
     )
     assert ev.outcome is GateOutcome.CHANGES_REQUESTED
-    assert ev.feedback and set(ev.feedback.items) == {"F1", "F2"}
-    ev = evaluate(spec_gate(), [comment("c1", "CHANGE SPEC PILOT-123-SPEC-v2")], change(READY_REFINEMENT))
-    assert ev.outcome is GateOutcome.WAITING and "numbered feedback" in ev.reason
+    # Written after the move but before the next poll still counts.
+    assert ev.items == {"F1": "Include the synopsis.", "F1@c2": "no APIs", "F2": "dark mode"}
+    bare = evaluate(spec_gate(), [], change(READY_REFINEMENT))
+    assert bare.outcome is GateOutcome.CHANGES_REQUESTED and bare.items == {}
+    assert "Claude asks" in bare.reason
 
 
-def test_coordinator_comments_with_templates_are_never_decisions() -> None:
-    body = "Please review.\nAPPROVE SPEC PILOT-123-SPEC-v2\n\ndelivery-op: abc"
-    ev = evaluate(spec_gate(), [comment("c1", body)], change(READY_PLANNING))
-    assert ev.outcome is GateOutcome.WAITING
-
-
-def test_answers_across_several_comments_and_wrong_round() -> None:
-    token = round_token("PILOT-123", Stage.REFINEMENT, 1)
-    assert token == "PILOT-123-REFINE-R1"
-    comments = [
-        comment("c1", f"ANSWERS {token}\nQ1: synthetic only", author=DEV),
-        comment("c2", f"ANSWERS {token}\nQ2: case-insensitive", minutes=6),
-        comment("c3", "ANSWERS PILOT-123-REFINE-R2\nQ3: wrong round", minutes=7),
-        comment("c4", f"ANSWERS {token}\nQ1: sneaky", author="intruder-0001", minutes=8),
-    ]
-    a = collect_answers(
-        comments, token=token, question_ids=["Q1", "Q2"], since=T0, allowed_authors={DEV, APPROVER}
-    )
-    assert a.answers == {"Q1": "synthetic only", "Q2": "case-insensitive"}
-    assert a.complete and a.unauthorised == ("c4",)
-    partial = collect_answers(
-        comments[:1], token=token, question_ids=["Q1", "Q2"], since=T0, allowed_authors={DEV}
-    )
-    assert partial.missing == ("Q2",) and partial.usable and not partial.complete
-
-
-def test_answers_edited_after_submit_are_flagged() -> None:
-    token = "PILOT-1-REFINE-R1"
-    c = comment("c1", f"ANSWERS {token}\nQ1: x", author=DEV, edited=True)
-    a = collect_answers(
-        [c],
-        token=token,
-        question_ids=["Q1"],
+def test_answers_are_free_text_with_optional_question_ids() -> None:
+    assert round_token("PILOT-123", Stage.REFINEMENT, 1) == "PILOT-123-REFINE-R1"
+    written = said(
+        [
+            comment("c1", "Synthetic programmes only.", author=DEV),
+            comment("c2", "Q2: case-insensitive", minutes=6),
+            comment("c3", "Q2: case-insensitive, accents ignored", minutes=7),
+            comment("c4", "sneaky", author="intruder-0001", minutes=8),
+        ],
         since=T0,
-        allowed_authors={DEV},
-        submitted_at=T0 + timedelta(minutes=5, seconds=30),
+        authors={DEV, APPROVER},
     )
-    assert not a.usable and a.edited_after_submit == ("c1",)
+    assert items(written, named="Q", free="A") == {
+        "A1": "Synthetic programmes only.",
+        "Q2": "case-insensitive, accents ignored",  # a later answer replaces an earlier one
+    }
 
 
-def test_feedback_selected_ids() -> None:
-    fb = collect_feedback(
-        [comment("c1", "CHANGE CODE PILOT-1-CODE-c2\nF1: fix empty state\nF3: label")],
-        token="PILOT-1-CODE-c2",
-        kinds={DecisionKind.CHANGE_CODE},
-        since=T0,
-        allowed_authors={APPROVER},
+def test_numbered_items_avoid_ids_already_taken() -> None:
+    got = items(
+        [comment("c1", "only F2 please"), comment("c2", "F2: and keep the label")],
+        named="FD",
+        free="F",
+        taken={"F1", "F2"},
     )
-    assert list(fb.items) == ["F1", "F3"] and fb.comments[0].comment.id == "c1"
+    assert got == {"F3": "only F2 please", "F2@c2": "and keep the label"}
+
+
+def test_old_gate_evidence_with_the_approval_comment_still_loads() -> None:
+    old = {
+        "comment_id": "c1",
+        "comment_author": APPROVER,
+        "comment_digest": "x",
+        "comment_updated": T0.isoformat(),
+        "history_id": "h1",
+    }
+    assert DecisionEvidence.model_validate(old) == DecisionEvidence(history_id="h1")
 
 
 # --------------------------------------------------------------------------- GitHub

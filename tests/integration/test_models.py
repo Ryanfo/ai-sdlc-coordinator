@@ -24,7 +24,7 @@ async def test_each_procedure_runs_on_its_configured_model(tmp_path: Path) -> No
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
         await step(sup)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)
     used = {
         inv["argv"][inv["argv"].index("-p") + 1].split()[0]: _model(inv["argv"]) for inv in w.invocations()

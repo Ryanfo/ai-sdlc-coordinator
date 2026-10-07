@@ -20,7 +20,9 @@ Write release proposal revision `output.next_revision` for the accepted candidat
 ## Steps
 
 1. Read the approved specification, plan, review and verification reports in
-   `approved_artefacts`, and any release feedback in `selected_comments`.
+   `approved_artefacts`, and any release feedback in `feedback_items` and `selected_comments`.
+   If `changes_requested` is true and nothing says what to change, ask (stage contract,
+   *Decisions, change requests and answers*).
 2. Write `release.md` in `output.artifact_dir` from
    `${CLAUDE_PLUGIN_ROOT}/templates/release.md`: release notes for users, the exact
    candidate SHA, the release environment profile (`local-pilot` unless the envelope says

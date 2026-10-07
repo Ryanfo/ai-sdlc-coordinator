@@ -34,6 +34,6 @@ async def test_designs_reach_refinement_and_planning(tmp_path: Path) -> None:
         assert Path(ref["path"]).read_bytes() == PNG
         assert "/inputs/attachments/" in ref["path"]  # inside the run's read-only inputs
         assert env["attachments_skipped"][0]["filename"] == "script.svg"
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)
         assert [a["filename"] for a in _envelope(w, "plan-ticket")["attachments"]] == ["home.png"]

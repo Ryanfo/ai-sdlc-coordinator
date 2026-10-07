@@ -545,7 +545,6 @@ class StageExecutor:
         }.get(d.outcome, RunState.AWAITING_HUMAN)
         outcome = {
             "success": Outcome.COMPLETED,
-            "amended": Outcome.COMPLETED,
             "clarification": Outcome.NEEDS_CLARIFICATION,
             "blocked": Outcome.BLOCKED,
             "verification_failed": Outcome.FAILED,
@@ -719,8 +718,6 @@ def _next_action(outcome: str, stage: Stage, *, session_open: bool = False) -> s
         "clarification": f"Answer the questions in Jira, then Submit answers (moves into {ready}).",
         "verification_failed": "Submit implementation changes to fix (moves into Ready for development), "
         "or Revise scope.",
-        "amended": "The specification now includes the accepted deviations: independent GitHub review, "
-        "then Approve code in Jira (moves into Acceptance review).",
         "blocked": f"Resolve the blocker, then Resume in Jira (moves into {ready}).",
     }.get(outcome, "")
 

@@ -38,9 +38,9 @@ def test_human_comment_shapes_parse_as_decisions() -> None:
         "content": [
             {
                 "type": "paragraph",
-                "content": [{"type": "text", "text": "ANSWERS PILOT-1-REFINE-R1"}],
+                "content": [{"type": "text", "text": "CREATE TICKETS PILOT-1-SPEC-v1"}],
             },
-            {"type": "paragraph", "content": [{"type": "text", "text": "Q1: yes"}]},
+            {"type": "paragraph", "content": [{"type": "text", "text": "S1: yes"}]},
         ],
     }
     hard = {
@@ -50,9 +50,9 @@ def test_human_comment_shapes_parse_as_decisions() -> None:
             {
                 "type": "paragraph",
                 "content": [
-                    {"type": "text", "text": "ANSWERS PILOT-1-REFINE-R1"},
+                    {"type": "text", "text": "CREATE TICKETS PILOT-1-SPEC-v1"},
                     {"type": "hardBreak"},
-                    {"type": "text", "text": "Q1: yes"},
+                    {"type": "text", "text": "S1: yes"},
                 ],
             }
         ],
@@ -63,13 +63,13 @@ def test_human_comment_shapes_parse_as_decisions() -> None:
         "content": [
             {
                 "type": "codeBlock",
-                "content": [{"type": "text", "text": "ANSWERS PILOT-1-REFINE-R1\nQ1: yes"}],
+                "content": [{"type": "text", "text": "CREATE TICKETS PILOT-1-SPEC-v1\nS1: yes"}],
             }
         ],
     }
     for doc in (paragraphs, hard, code):
         d = parse_decision(adf_to_text(doc))
-        assert d is not None and d.items == {"Q1": "yes"}
+        assert d is not None and d.items == {"S1": "yes"}
 
 
 def test_unknown_nodes_and_mentions_do_not_crash() -> None:

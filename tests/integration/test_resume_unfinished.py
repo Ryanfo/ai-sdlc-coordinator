@@ -47,9 +47,9 @@ async def test_resume_continues_from_the_unfinished_changes(tmp_path: Path) -> N
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
         await step(sup)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)
-        w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+        w.move(KEY, Status.READY_DEVELOPMENT)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.BLOCKED
         blocked = w.last_comment(KEY)
@@ -78,9 +78,9 @@ async def test_a_looping_session_is_stopped_and_explained(tmp_path: Path, capsys
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
         await step(sup)
-        w.decide(KEY, f"APPROVE SPEC {w.token(KEY, 'SPEC')}", Status.READY_PLANNING)
+        w.move(KEY, Status.READY_PLANNING)
         await step(sup)
-        w.decide(KEY, f"APPROVE PLAN {w.token(KEY, 'PLAN')}", Status.READY_DEVELOPMENT)
+        w.move(KEY, Status.READY_DEVELOPMENT)
         await step(sup)
     assert w.jira.status_of(KEY) is Status.BLOCKED
     comment = w.last_comment(KEY)

@@ -2,12 +2,13 @@
 
 The coordinator reads the status change that brought the ticket into its current ready
 status, looks up the permitted route, and validates the input that route requires
-(brief, answers for the right round, feedback bound to the reviewed revision, a human
-decision for the current gate, a recorded release). Outcomes:
+(brief, the move that decided the current gate, what people wrote since the revision or
+questions were published, a recorded release). Outcomes:
 
 * READY: start the stage with the selected inputs.
-* WAIT: a human input is missing (for example the answer comment); explain once and
-  re-check on every poll. Nothing starts.
+* WAIT: something outside the ticket is missing (for example the PR is not merged yet);
+  explain once and re-check on every poll. Nothing starts. A human decision is the Jira move
+  itself: no comment is ever waited for.
 * BLOCK: the route or decision is invalid (wrong resume stage, unauthorised actor,
   conflicting or edited decision, missing prerequisite). The coordinator starts the stage
   only to move it to Blocked with the correct resume stage and an explanation.
@@ -16,7 +17,6 @@ decision for the current gate, a recorded release). Outcomes:
 from __future__ import annotations
 
 import re
-from collections.abc import Container
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
@@ -26,12 +26,7 @@ from pydantic import ValidationError
 
 from delivery import deviations
 from delivery.config import Config
-from delivery.feedback import (
-    DecisionKind,
-    collect_answers,
-    collect_feedback,
-    decisions,
-)
+from delivery.feedback import DecisionKind, decisions, items, said
 from delivery.gates import (
     GateEval,
     GateOutcome,
@@ -246,35 +241,13 @@ def _decided(gate: GateRecord, ev: GateEval, state: GateState) -> GateRecord:
     return gate.model_copy(update={"state": state, "evidence": ev.evidence, "decided_at": utcnow()})
 
 
-# Jira-only review gates: (review status, approve target, change target, approve, change kinds).
-# The code gate also needs GitHub evidence, so it is only decided on its own route.
-_JIRA_GATES: dict[GateKind, tuple[Status, Status, Status, DecisionKind, set[DecisionKind]]] = {
-    GateKind.SPEC: (
-        Status.SPECIFICATION_REVIEW,
-        Status.READY_PLANNING,
-        Status.READY_REFINEMENT,
-        DecisionKind.APPROVE_SPEC,
-        {DecisionKind.CHANGE_SPEC},
-    ),
-    GateKind.PLAN: (
-        Status.PLAN_REVIEW,
-        Status.READY_DEVELOPMENT,
-        Status.READY_PLANNING,
-        DecisionKind.APPROVE_PLAN,
-        {DecisionKind.CHANGE_PLAN},
-    ),
-    GateKind.RELEASE: (
-        Status.RELEASE_REVIEW,
-        Status.READY_RELEASE,
-        Status.READY_RELEASE_PREPARATION,
-        DecisionKind.APPROVE_RELEASE,
-        {DecisionKind.CHANGE_RELEASE},
-    ),
+# Jira-only review gates: (review status, approve target, change target). The code gate also
+# needs GitHub evidence, so it is only decided on its own route.
+_JIRA_GATES: dict[GateKind, tuple[Status, Status, Status]] = {
+    GateKind.SPEC: (Status.SPECIFICATION_REVIEW, Status.READY_PLANNING, Status.READY_REFINEMENT),
+    GateKind.PLAN: (Status.PLAN_REVIEW, Status.READY_DEVELOPMENT, Status.READY_PLANNING),
+    GateKind.RELEASE: (Status.RELEASE_REVIEW, Status.READY_RELEASE, Status.READY_RELEASE_PREPARATION),
 }
-
-
-# Stages that rewrite the specification first when deviations were accepted.
-AMENDING_STAGES = frozenset({Stage.DEVELOPMENT, Stage.VERIFICATION, Stage.RELEASE_PREPARATION})
 
 
 class IntakeEvaluator:
@@ -329,11 +302,6 @@ class IntakeEvaluator:
         review: Status,
         approve_to: Status,
         change_to: Status | None,
-        approve: DecisionKind,
-        change: set[DecisionKind],
-        approvers: Container[str] | None = None,
-        *,
-        allow_empty_change: bool = False,
     ) -> GateEval:
         return evaluate_human_gate(
             gate,
@@ -342,10 +310,7 @@ class IntakeEvaluator:
             review_status_id=self.ids[review],
             approve_status_id=self.ids[approve_to],
             change_status_id=self.ids[change_to] if change_to else None,
-            approve_kind=approve,
-            change_kinds=change,
-            approvers=approvers or self.approvers,
-            allow_empty_change=allow_empty_change,
+            approvers=self.approvers,
         )
 
     def catch_up_gates(self, ctx: TicketContext) -> SharedExecutionRecord:
@@ -355,11 +320,10 @@ class IntakeEvaluator:
         approval led to. If a human moved the ticket on before the next poll (for example by
         dragging it on the board), that moment is missed. The decision is still in Jira's
         history, so validate it there exactly as it would have been validated live: approval
-        transition out of the review status by an approver, after the gate was published, with
-        the current token in a comment.
+        transition out of the review status by an approver, after the gate was published.
         """
         rec = ctx.record
-        for kind, (review, approve_to, change_to, approve, change) in _JIRA_GATES.items():
+        for kind, (review, approve_to, change_to) in _JIRA_GATES.items():
             gate = current_gate(rec.gates, kind)
             if gate is None or gate.state is not GateState.PENDING:
                 continue
@@ -368,7 +332,7 @@ class IntakeEvaluator:
                     continue
                 if entry.created < gate.published_at:
                     continue
-                ev = self._gate_eval(ctx, gate, entry, review, approve_to, change_to, approve, change)
+                ev = self._gate_eval(ctx, gate, entry, review, approve_to, change_to)
                 if ev.outcome is GateOutcome.APPROVED:
                     rec = _with_gate(rec, _decided(gate, ev, GateState.APPROVED))
                     break
@@ -441,48 +405,26 @@ class IntakeEvaluator:
                     kind="missing_prerequisite",
                     entry=entry,
                 )
-            if stage in AMENDING_STAGES:
-                return self._deviation_decisions(ctx, stage, result)
+            if stage is Stage.RELEASE_PREPARATION:
+                return self._accept_deviations(ctx, result)
         return result
 
-    def _deviation_decisions(self, ctx: TicketContext, stage: Stage, intake: Intake) -> Intake:
-        """Deviations an approver accepted since verification announced them: this run first
-        has the specification rewritten to include them. Release preparation waits until
-        every deviation of the accepted candidate is decided, so the specification describes
-        what is released."""
+    def _accept_deviations(self, ctx: TicketContext, intake: Intake) -> Intake:
+        """Approving the code and accepting the delivery accepted the candidate as it is, so its
+        open deviations from the specification are accepted with it (a deviation someone wanted
+        changed back went to development in a change request, which made a new candidate).
+        Release preparation first has the specification rewritten to include them, so the
+        specification describes what is released."""
         rec = intake.record or ctx.record
-        pending = deviations.open_deviations(rec)
-        if not pending:
-            return intake
-        token = make_gate_token(ctx.key, GateKind.CODE, rec.candidate_number)
-        acc = deviations.accepted(ctx.comments, rec, token=token, approvers=self.approvers)
-        # Named for change in this run's change request: that explicit request wins.
-        ids = [d for d in acc.ids if d not in intake.feedback_items]
-        undecided = [d.id for d in pending if d.id not in ids]
-        if stage is Stage.RELEASE_PREPARATION and undecided:
-            return self._wait(
-                stage,
-                f"deviations from the approved specification are not decided: {', '.join(undecided)}"
-                + (f" ({'; '.join(acc.problems)})" if acc.problems else ""),
-                f"If they are acceptable, an approver comments `{DecisionKind.ACCEPT_DEVIATIONS.value} "
-                f"{token}` (add a line with the IDs to accept only some). Claude then rewrites the "
-                "specification to include them and release preparation starts. Changing them back "
-                "needs Request code changes or Request acceptance changes before delivery is accepted.",
-                intake.entry,
-            )
+        ids = [d.id for d in deviations.open_deviations(rec)]
         if not ids:
             return intake
-        seen = {c.id for c in intake.selected}
-        intake.selected += [cd.comment for cd in acc.comments if cd.comment.id not in seen]
         intake.accepted_deviations = ids
-        note = f"deviations {', '.join(ids)} accepted (the specification is rewritten to include them)"
-        if acc.problems:
-            note += f"; ignored: {'; '.join(acc.problems)}"
-        if stage is Stage.VERIFICATION:
-            # Not "verified again": a candidate that already passed is not reviewed again.
-            intake.reason = f"candidate c{rec.candidate_number}; {note}"
-        else:
-            intake.reason = f"{intake.reason}; {note}" if intake.reason else note
+        note = (
+            f"deviations {', '.join(ids)} accepted with the code (the specification is rewritten "
+            "to include them)"
+        )
+        intake.reason = f"{intake.reason}; {note}" if intake.reason else note
         return intake
 
     async def _resume(self, ctx: TicketContext, stage: Stage, src: Status, entry: StatusChange) -> Intake:
@@ -523,35 +465,21 @@ class IntakeEvaluator:
                     "Contact the delivery lead.",
                     entry=entry,
                 )
-            answers = collect_answers(
-                ctx.comments,
-                token=pause.round_token,
-                question_ids=pause.question_ids,
-                since=pause.published_at,
-                allowed_authors=self.humans,
-                submitted_at=entry.created,
-            )
-            usable = [cd for cd in answers.comments if cd.comment.id not in answers.edited_after_submit]
-            if not usable or not answers.answers:
-                hint = "; ".join(answers.problems) or f"no `ANSWERS {pause.round_token}` comment found"
-                return self._wait(
-                    stage,
-                    hint,
-                    f"Comment using the `ANSWERS {pause.round_token}` template (Q1:, Q2:...). "
-                    "The coordinator picks it up on its next poll.",
-                    entry,
-                    Requirement.CLARIFICATION_ANSWERS,
-                )
+            # Whatever people wrote since the questions were posted, in their own words: Claude
+            # matches it to the questions (``Q2: ...`` lines keep their question). With nothing
+            # written, the stage resumes anyway and asks again only if it still cannot proceed.
+            written = said(ctx.comments, since=pause.published_at, authors=self.humans)
+            answers = items(written, named="Q", free="A")
             return Intake(
                 IntakeKind.READY,
                 stage,
                 Requirement.CLARIFICATION_ANSWERS,
-                f"answers for {pause.round_token}: {', '.join(sorted(answers.answers))}"
-                + (f"; unanswered {', '.join(answers.missing)}" if answers.missing else ""),
+                f"answers for {pause.round_token}: "
+                + (", ".join(sorted(answers)) if answers else "none written (Claude asks again if needed)"),
                 entry=entry,
-                selected=[cd.comment for cd in usable],
+                selected=written,
                 round_token=pause.round_token,
-                feedback_items=answers.answers,
+                feedback_items=answers,
                 record=cleared,
             )
         # Blocked -> resume
@@ -583,16 +511,9 @@ class IntakeEvaluator:
                 "Review the current revision.",
                 entry=entry,
             )
-        approve = {
-            GateKind.SPEC: DecisionKind.APPROVE_SPEC,
-            GateKind.PLAN: DecisionKind.APPROVE_PLAN,
-            GateKind.CODE: DecisionKind.APPROVE_CODE,
-            GateKind.ACCEPT: DecisionKind.ACCEPT_DELIVERY,
-            GateKind.RELEASE: DecisionKind.APPROVE_RELEASE,
-        }.get(gate.kind)
-        if approve is None:
+        if gate.kind not in (GateKind.SPEC, GateKind.PLAN, GateKind.CODE, GateKind.ACCEPT, GateKind.RELEASE):
             return self._block(stage, f"cannot re-decide {token}", "Contact the delivery lead.", entry=entry)
-        ev = self._gate_eval(ctx, gate, entry, Status.BLOCKED, STAGES[stage].ready, None, approve, set())
+        ev = self._gate_eval(ctx, gate, entry, Status.BLOCKED, STAGES[stage].ready, None)
         if ev.outcome is not GateOutcome.APPROVED:
             return self._block(
                 stage,
@@ -673,8 +594,8 @@ class IntakeEvaluator:
             return self._wait(
                 stage,
                 "the ticket is Blocked because an approval or decision was rejected",
-                "Fix it by deciding again (comment with the current token, then the Jira action) and choose "
-                "Resume; a resolution session cannot change a human decision.",
+                "An approver chooses Resume to decide again; a resolution session cannot change a "
+                "human decision.",
                 entry,
                 Requirement.RESOLUTION_REQUEST,
             )
@@ -755,11 +676,6 @@ class IntakeEvaluator:
         stage: Stage,
         e: StatusChange,
         kind: GateKind,
-        review: Status,
-        approve_to: Status,
-        change_to: Status | None,
-        approve: DecisionKind,
-        change: set[DecisionKind],
         expect: GateOutcome,
     ) -> Intake:
         rec = ctx.record
@@ -771,10 +687,8 @@ class IntakeEvaluator:
                 "Return the ticket through the review gate.",
                 entry=e,
             )
-        ev = self._gate_eval(ctx, gate, e, review, approve_to, change_to, approve, change)
-        if ev.outcome is GateOutcome.WAITING:
-            return self._wait(stage, ev.reason, ev.next_action, e)
-        if ev.outcome in (GateOutcome.REJECTED, GateOutcome.CONFLICT) or ev.outcome is not expect:
+        ev = self._gate_eval(ctx, gate, e, *_JIRA_GATES[kind])
+        if ev.outcome is not expect:
             return self._block(
                 stage,
                 ev.reason,
@@ -786,96 +700,40 @@ class IntakeEvaluator:
             )
         state = GateState.APPROVED if expect is GateOutcome.APPROVED else GateState.CHANGES_REQUESTED
         rec = _with_gate(rec, _decided(gate, ev, state))
-        fb = ev.feedback
         return Intake(
             IntakeKind.READY,
             stage,
             reason=ev.reason,
             record=rec,
-            selected=[cd.comment for cd in (fb.comments if fb else ev.decisions)],
+            selected=list(ev.comments),
             feedback_token=gate.token,
-            feedback_items=dict(fb.items) if fb else {},
+            feedback_items=dict(ev.items),
         )
 
     async def _req_spec_changes(
         self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange
     ) -> Intake:
-        return await self._gate_route(
-            ctx,
-            stage,
-            e,
-            GateKind.SPEC,
-            Status.SPECIFICATION_REVIEW,
-            Status.READY_PLANNING,
-            Status.READY_REFINEMENT,
-            DecisionKind.APPROVE_SPEC,
-            {DecisionKind.CHANGE_SPEC},
-            GateOutcome.CHANGES_REQUESTED,
-        )
+        return await self._gate_route(ctx, stage, e, GateKind.SPEC, GateOutcome.CHANGES_REQUESTED)
 
     async def _req_spec_approval(
         self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange
     ) -> Intake:
-        return await self._gate_route(
-            ctx,
-            stage,
-            e,
-            GateKind.SPEC,
-            Status.SPECIFICATION_REVIEW,
-            Status.READY_PLANNING,
-            Status.READY_REFINEMENT,
-            DecisionKind.APPROVE_SPEC,
-            {DecisionKind.CHANGE_SPEC},
-            GateOutcome.APPROVED,
-        )
+        return await self._gate_route(ctx, stage, e, GateKind.SPEC, GateOutcome.APPROVED)
 
     async def _req_plan_changes(
         self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange
     ) -> Intake:
-        return await self._gate_route(
-            ctx,
-            stage,
-            e,
-            GateKind.PLAN,
-            Status.PLAN_REVIEW,
-            Status.READY_DEVELOPMENT,
-            Status.READY_PLANNING,
-            DecisionKind.APPROVE_PLAN,
-            {DecisionKind.CHANGE_PLAN},
-            GateOutcome.CHANGES_REQUESTED,
-        )
+        return await self._gate_route(ctx, stage, e, GateKind.PLAN, GateOutcome.CHANGES_REQUESTED)
 
     async def _req_plan_approval(
         self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange
     ) -> Intake:
-        return await self._gate_route(
-            ctx,
-            stage,
-            e,
-            GateKind.PLAN,
-            Status.PLAN_REVIEW,
-            Status.READY_DEVELOPMENT,
-            Status.READY_PLANNING,
-            DecisionKind.APPROVE_PLAN,
-            {DecisionKind.CHANGE_PLAN},
-            GateOutcome.APPROVED,
-        )
+        return await self._gate_route(ctx, stage, e, GateKind.PLAN, GateOutcome.APPROVED)
 
     async def _req_release_changes(
         self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange
     ) -> Intake:
-        return await self._gate_route(
-            ctx,
-            stage,
-            e,
-            GateKind.RELEASE,
-            Status.RELEASE_REVIEW,
-            Status.READY_RELEASE,
-            Status.READY_RELEASE_PREPARATION,
-            DecisionKind.APPROVE_RELEASE,
-            {DecisionKind.CHANGE_RELEASE},
-            GateOutcome.CHANGES_REQUESTED,
-        )
+        return await self._gate_route(ctx, stage, e, GateKind.RELEASE, GateOutcome.CHANGES_REQUESTED)
 
     async def _req_scope_revision(
         self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange
@@ -894,28 +752,17 @@ class IntakeEvaluator:
                 entry=e,
             )
         since = ctx.latest_entry(self.ids[Status.CHANGES_REQUESTED])
-        fb = collect_feedback(
-            ctx.comments,
-            token=spec.token,
-            kinds={DecisionKind.REVISE_SCOPE},
-            since=since.created if since else None,
-            allowed_authors=self.approvers,
-        )
-        if not fb.items or fb.problems:
-            return self._wait(
-                stage,
-                "; ".join(fb.problems) or f"no `REVISE SCOPE {spec.token}` comment found",
-                f"Comment `REVISE SCOPE {spec.token}` with numbered F1.. scope changes.",
-                e,
-            )
+        written = said(ctx.comments, since=since.created if since else None, authors=self.approvers)
+        fb = items(written, named="F", free="F")
         return Intake(
             IntakeKind.READY,
             stage,
-            reason=f"scope revision of {spec.token}",
+            reason=f"scope revision of {spec.token}"
+            + ("" if fb else " (no comment: Claude asks what to change)"),
             record=rec,
-            selected=[cd.comment for cd in fb.comments],
+            selected=written,
             feedback_token=spec.token,
-            feedback_items=dict(fb.items),
+            feedback_items=fb,
         )
 
     async def _req_implementation_changes(
@@ -938,13 +785,12 @@ class IntakeEvaluator:
                 entry=e,
             )
         origin = self.by_id.get(into[-1].from_id)
-        items: dict[str, str] = {}
-        selected: list[JiraComment] = []
+        found: dict[str, str] = {}
         token: str | None = None
-        chosen_d: dict[str, str] = {}
+        since = into[-1].created
         if origin is Status.VERIFYING:
             for f in rec.pending_feedback:
-                items[str(f.get("id"))] = str(f.get("description"))
+                found[str(f.get("id"))] = str(f.get("description"))
             # The failure comment names the candidate's code token even before any code gate
             # exists (a first candidate that failed verification).
             token = make_gate_token(ctx.key, GateKind.CODE, rec.candidate_number)
@@ -955,26 +801,11 @@ class IntakeEvaluator:
                 return self._block(
                     stage, f"no current {kind.value} gate", "Contact the delivery lead.", entry=e
                 )
-            change = DecisionKind.CHANGE_CODE if kind is GateKind.CODE else DecisionKind.CHANGE_ACCEPTANCE
-            approve = DecisionKind.APPROVE_CODE if kind is GateKind.CODE else DecisionKind.ACCEPT_DELIVERY
             approve_to = (
                 Status.ACCEPTANCE_REVIEW if kind is GateKind.CODE else Status.READY_RELEASE_PREPARATION
             )
-            # The PR's review comments may be the whole request (G-items, added below).
-            ev = self._gate_eval(
-                ctx,
-                gate,
-                into[-1],
-                origin,
-                approve_to,
-                Status.CHANGES_REQUESTED,
-                approve,
-                {change},
-                allow_empty_change=True,
-            )
-            if ev.outcome is GateOutcome.WAITING:
-                return self._wait(stage, ev.reason, ev.next_action, e)
-            if ev.outcome is not GateOutcome.CHANGES_REQUESTED or ev.feedback is None:
+            ev = self._gate_eval(ctx, gate, into[-1], origin, approve_to, Status.CHANGES_REQUESTED)
+            if ev.outcome is not GateOutcome.CHANGES_REQUESTED:
                 return self._block(
                     stage,
                     ev.reason,
@@ -982,52 +813,28 @@ class IntakeEvaluator:
                     kind="invalid_decision",
                     entry=e,
                 )
-            items, token = dict(ev.feedback.items), gate.token
-            selected = [cd.comment for cd in ev.feedback.comments]
+            token, since = gate.token, gate.published_at
             rec = _with_gate(rec, _decided(gate, ev, GateState.CHANGES_REQUESTED))
         if self.github is not None and rec.pr_number:
             # Unresolved review conversations on the PR since this candidate was published.
-            items.update(
+            found.update(
                 await review_items(self.github, rec.pr_number, self._candidate_published(ctx, into[-1]))
             )
-        if token:
-            sub = decisions(
-                ctx.comments,
-                token=token,
-                kinds={DecisionKind.SUBMIT_CHANGES},
-                since=into[-1].created,
-            )
-            sub = [cd for cd in sub if cd.comment.author_account_id in self.humans]
-            if sub:
-                chosen = set(sub[-1].decision.items)
-                chosen_d = {k: v for k, v in sub[-1].decision.items.items() if k.startswith("D")}
-                if chosen:
-                    # R-items are problems the coordinator found (failed checks, conflicts with
-                    # the base branch): the next candidate cannot pass without them. G-items are
-                    # the PR's open review conversations: resolving one on GitHub leaves it out.
-                    items = {
-                        k: v
-                        for k, v in items.items()
-                        if k.split("@")[0] in chosen or k.startswith(("R", "G"))
-                    }
-                selected.append(sub[-1].comment)
-        items = self._deviation_items(rec, items, chosen_d)
-        if not items:
-            return self._wait(
-                stage,
-                "no feedback items selected for the implementation changes",
-                "Comment the change request with numbered F1.. items, or leave review comments on "
-                "the pull request.",
-                e,
-            )
+        # What people wrote since the change was asked for (or the candidate failed), in their own
+        # words: each comment is an item, and one can narrow the work ("only F2") or name a
+        # deviation to change back ("D1: follow the specification"). With nothing written and
+        # nothing found, development starts anyway and asks what to change.
+        written = said(ctx.comments, since=since, authors=self.humans)
+        found.update(items(written, named="FD", free="F", taken=found))
+        found = self._deviation_items(rec, found)
         return Intake(
             IntakeKind.READY,
             stage,
-            reason=f"{len(items)} change items",
+            reason=f"{len(found)} change items" if found else "no change items: Claude asks what to change",
             record=rec,
-            selected=selected,
+            selected=written,
             feedback_token=token,
-            feedback_items=items,
+            feedback_items=found,
         )
 
     def _candidate_published(self, ctx: TicketContext, before: StatusChange) -> datetime | None:
@@ -1039,14 +846,12 @@ class IntakeEvaluator:
         ]
         return found[-1].created if found else None
 
-    def _deviation_items(
-        self, rec: SharedExecutionRecord, items: dict[str, str], named: dict[str, str]
-    ) -> dict[str, str]:
+    def _deviation_items(self, rec: SharedExecutionRecord, found: dict[str, str]) -> dict[str, str]:
         """Deviations named in the change request (`D2: <note>`) become work items that change
         the code back to the specification. Deviations nobody named are left as they are."""
         known = {d.id: d for d in deviations.open_deviations(rec)}
-        out = {k: v for k, v in items.items() if not k.startswith("D")}
-        for key, note in [*[(k, v) for k, v in items.items() if k.startswith("D")], *named.items()]:
+        out = {k: v for k, v in found.items() if not k.startswith("D")}
+        for key, note in [(k, v) for k, v in found.items() if k.startswith("D")]:
             did = key.split("@")[0]
             if did in known and did not in out:
                 out[did] = deviations.change_back(known[did], note)
@@ -1154,16 +959,13 @@ class IntakeEvaluator:
                 Status.CODE_REVIEW,
                 Status.ACCEPTANCE_REVIEW,
                 Status.CHANGES_REQUESTED,
-                DecisionKind.APPROVE_CODE,
-                {DecisionKind.CHANGE_CODE},
             )
             if ev.outcome is not GateOutcome.APPROVED:
-                kind = "invalid_decision"
                 return self._block(
                     stage,
                     f"code approval invalid: {ev.reason}",
                     ev.next_action or "Resolve the code decision.",
-                    kind=kind,
+                    kind="invalid_decision",
                     entry=e,
                     gate_token=code.token,
                 )
@@ -1178,9 +980,7 @@ class IntakeEvaluator:
                     entry=e,
                     gate_token=code.token,
                 )
-            evidence = ev.evidence
             rec = _with_gate(rec, _decided(code, ev, GateState.APPROVED))
-            _ = evidence
         ev2 = self._gate_eval(
             ctx,
             accept,
@@ -1188,11 +988,7 @@ class IntakeEvaluator:
             Status.ACCEPTANCE_REVIEW,
             Status.READY_RELEASE_PREPARATION,
             Status.CHANGES_REQUESTED,
-            DecisionKind.ACCEPT_DELIVERY,
-            {DecisionKind.CHANGE_ACCEPTANCE},
         )
-        if ev2.outcome is GateOutcome.WAITING:
-            return self._wait(stage, ev2.reason, ev2.next_action, e)
         if ev2.outcome is not GateOutcome.APPROVED:
             return self._block(
                 stage,
@@ -1208,7 +1004,7 @@ class IntakeEvaluator:
             stage,
             reason="code approved and delivery accepted",
             record=rec,
-            selected=[cd.comment for cd in ev2.decisions],
+            selected=list(ev2.comments),
         )
 
     async def _req_release_record(
@@ -1238,8 +1034,6 @@ class IntakeEvaluator:
                 Status.RELEASE_REVIEW,
                 Status.READY_RELEASE,
                 Status.READY_RELEASE_PREPARATION,
-                DecisionKind.APPROVE_RELEASE,
-                {DecisionKind.CHANGE_RELEASE},
             )
             if ev.outcome is not GateOutcome.APPROVED:
                 return self._block(
@@ -1321,11 +1115,13 @@ class IntakeEvaluator:
         """The release read from GitHub: the merge commit of the ticket's PR. In the local pilot
         profile the human merge is the release, so there is nothing else to wait for."""
         if self.github is None or rec.pr_number is None:
+            rel = current_gate(rec.gates, GateKind.RELEASE)
             return self._wait(
                 stage,
                 "no pull request is recorded, so the release cannot be read from GitHub",
-                "Comment `RECORD RELEASE <release token>` with `commit: <sha>` and "
-                f"`environment: {self.cfg.release.environment}`, then choose Record release.",
+                f"Comment `RECORD RELEASE {rel.token if rel else '<release token>'}` with "
+                f"`commit: <sha>` and `environment: {self.cfg.release.environment}`, then choose "
+                "Record release.",
                 e,
             )
         pr = await self.github.get_pr(rec.pr_number)
