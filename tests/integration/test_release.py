@@ -48,7 +48,8 @@ async def test_squash_merge_provenance_reaches_done(tmp_path: Path) -> None:
         _record(w, "PILOT-1", rel, merged, pr)
         await step(sup)
     assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
-    assert "squash" in w.last_comment("PILOT-1")
+    assert "squash" in str(w.record("PILOT-1").release)
+    assert "squash" not in w.last_comment("PILOT-1")
 
 
 async def test_released_commit_containing_later_unrelated_merges_is_accepted(tmp_path: Path) -> None:
@@ -116,8 +117,6 @@ async def test_conflict_resolved_when_merging_is_accepted_and_flagged(tmp_path: 
         _record(w, "PILOT-1", rel, merged, pr)
         await step(sup)
     assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
-    assert "conflict resolution" in w.last_comment("PILOT-1")
-    assert "src/pilot-1.ts" in w.last_comment("PILOT-1")
 
 
 async def test_merge_is_read_from_github_and_recorded_by_the_coordinator(tmp_path: Path) -> None:
@@ -132,7 +131,7 @@ async def test_merge_is_read_from_github_and_recorded_by_the_coordinator(tmp_pat
         merged = w.github.merge(pr, merged_by="release-owner", how="squash")
         assert await step(sup) == ["PILOT-1"]
     assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
-    assert merged in w.last_comment("PILOT-1") and "squash" in w.last_comment("PILOT-1")
+    assert merged in w.last_comment("PILOT-1") and "squash" in str(w.record("PILOT-1").release)
     started = [c for c in w.comments("PILOT-1") if c.startswith("Release verification started")]
     assert f"PR #{pr} merged by release-owner (read from GitHub)" in started[-1]
     record = w.record("PILOT-1").release["record"]
@@ -195,7 +194,7 @@ async def test_pr_merged_before_release_approval_is_flagged_not_blocked(tmp_path
         w.move("PILOT-1", Status.READY_RELEASE_PREPARATION)
         await step(sup)
         assert w.jira.status_of("PILOT-1") is not Status.BLOCKED, w.last_comment("PILOT-1")
-        assert f"PR #{pr} was already merged" in w.last_comment("PILOT-1")
+        assert f"PR #{pr} is already merged" in w.last_comment("PILOT-1")
         assert merged[:12] in w.last_comment("PILOT-1")
         w.move("PILOT-1", Status.READY_RELEASE)
         await step(sup)

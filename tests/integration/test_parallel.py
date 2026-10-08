@@ -78,7 +78,7 @@ async def test_blocked_failed_and_waiting_tickets_do_not_hold_others(tmp_path: P
     # A usage limit is not the ticket's fault: it waits for Claude instead of being blocked.
     assert w.jira.status_of("PILOT-1") is Status.REFINING
     assert "waiting for Claude" in w.last_comment("PILOT-1")
-    assert "usage limit" in w.last_comment("PILOT-1") and "No paid API fallback" in w.last_comment("PILOT-1")
+    assert "usage limit" in w.last_comment("PILOT-1")
     assert w.jira.status_of("PILOT-5") is Status.READY_REFINEMENT
     assert "Waiting before refinement" in w.last_comment("PILOT-5")
 

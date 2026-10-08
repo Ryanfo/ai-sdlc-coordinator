@@ -224,10 +224,9 @@ async def test_an_unresolved_blocker_returns_to_blocked_with_the_reason_and_keep
         assert "Traced it to a missing credential" not in comment
         assert "Resume development" in comment and "Request resolution" in comment
         assert "What to do now" in comment
-        assert "1. Run this command (the developer)." in comment
+        assert "1. Run this command." in comment
         assert _code_blocks(w, KEY) == ["export INDEX_KEY=<your key> && npm run build:index"]
         assert "2. Choose Resume development in Jira (moves into Ready for development)" in comment
-        assert "Checked: npm run build:index fails without INDEX_KEY" in comment
         pause = w.record(KEY).pause
         assert pause is not None and pause.resume_stage.value == "development"
         assert w.jira.issues[KEY].fields["customfield_10050"] == {"value": "development"}

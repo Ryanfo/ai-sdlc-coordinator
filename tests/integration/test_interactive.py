@@ -131,7 +131,7 @@ async def test_development_session_stays_open_and_follow_ups_are_published(world
         await _to_development(w, sup)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.READY_VERIFICATION, w.last_comment(KEY)
-        assert "start once the developer closes the Claude session" in w.last_comment(KEY)
+        assert "starts once the developer closes the Claude session" in w.last_comment(KEY)
         c1 = w.record(KEY)
         dev = _open(w, "implement-ticket")
         assert dev is not None and _alive(w, dev.name)
@@ -156,7 +156,7 @@ async def test_development_session_stays_open_and_follow_ups_are_published(world
         assert _show(w, f"feature/{KEY}:src/followup.ts") == "export const followup = 1\n"
         assert "EDIT src/followup.ts" in _show(w, f"feature/{KEY}")  # the request is in the commit
         assert "Follow-up change: candidate c2" in w.last_comment(KEY)
-        assert "they start once the developer closes the session" in w.last_comment(KEY)
+        assert "starting when the developer closes the session" in w.last_comment(KEY)
         assert w.jira.status_of(KEY) is Status.READY_VERIFICATION  # no move needed
         assert await step(sup) == [], "still open, so still not verified"
 
@@ -178,7 +178,7 @@ async def test_development_session_stays_open_and_follow_ups_are_published(world
         assert _open(w, "implement-ticket") is None
         assert w.record(KEY).candidate_number == 3
         assert _show(w, f"feature/{KEY}:src/followup.ts") == "export const followup = 2\n"
-        assert "has closed the session, so they start now" in w.last_comment(KEY)
+        assert "starting now" in w.last_comment(KEY)
         assert not Path(dev.worktree).exists()
         after = Path(dev.journal_dir) / "logs" / "claude-implement-ticket-after.jsonl"
         assert "why did you name it followup?" in after.read_text()
@@ -217,7 +217,7 @@ async def test_a_change_after_verification_sends_the_ticket_back(world: World) -
         c2 = w.record(KEY)
         assert c2.candidate_number == 2
         assert w.jira.status_of(KEY) is Status.READY_VERIFICATION
-        assert "moved from Code review back to Ready for verification" in w.last_comment(KEY)
+        assert "Moved from Code review back to Ready for verification" in w.last_comment(KEY)
         code = [g for g in c2.gates if g.kind is GateKind.CODE]
         assert code and all(g.state is GateState.SUPERSEDED for g in code), "c1's code gate no longer counts"
         # It waits for the session like any candidate; then the coordinator's own move back is
@@ -410,7 +410,10 @@ async def test_a_document_changed_in_its_open_session_is_published_as_the_next_r
             assert w.record(KEY).footprint_ref["revision"] == 2  # type: ignore[index]
         gate_comment = w.last_comment(KEY)
         assert "v002 ready" in gate_comment and "Follow-up revision replacing v001" in gate_comment
-        assert "now approves this revision" in gate_comment and "AC2 also covers descriptions" in gate_comment
+        assert (
+            "next move approves this revision" in gate_comment
+            and "AC2 also covers descriptions" in gate_comment
+        )
         rec = _open(w, doc.procedure)
         assert rec is not None and rec.revision == 2 and not rec.held
 

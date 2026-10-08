@@ -139,6 +139,24 @@ the status it moves the ticket into. Check results are not posted (only failures
 Specifications, plans, reviews and release documents are versioned on the `delivery/<KEY>`
 branch of the application repository; comments link to exact commits.
 
+Comments are deliberately terse, so what applies to every ticket lives here rather than in them:
+
+- Anyone allowed to decide can make the move (see `[approvals]`); the comment does not name them.
+- A request-changes move takes your comment with it, and PR review conversations that are still
+  unresolved are included. Without a comment Claude asks what to change.
+- **Submit implementation changes** after a failed verification fixes every R- and F-item (say
+  `only F2 and F3` to narrow it). **Submit follow-up changes** re-verifies the same candidate
+  without new code, which only helps when a flaky check or a change on the base branch caused the
+  failure.
+- The coordinator never merges or deploys. After **Approve release**, you merge the PR; the merge
+  is the release and the coordinator records and verifies it.
+- A new commit on a PR needs verifying again before its code can be approved.
+- Deviations nobody names in a change request are accepted when the code is approved.
+- The acceptance comment links the acceptance guide (how to check each criterion by hand); the
+  criteria themselves are in the ticket.
+- How a release was merged (merge, squash or rebase) and the run behind each comment are in the
+  release verification report and `coordinator logs`, not on the ticket.
+
 ### Designs and attachments
 
 Attach designs, screenshots or documents to the ticket (or paste images into the description).
@@ -199,7 +217,7 @@ decide. No comment is needed.
   and asks whether it is acceptable; it never fails verification. Approving the code accepts it,
   and the specification is rewritten to include it. Otherwise choose **Request code changes**,
   say `D1: keep to the specification`, and choose **Submit implementation changes**.
-- **Acceptance**: the ticket comment has the acceptance guide (how to check each criterion by
+- **Acceptance**: the ticket comment links the acceptance guide (how to check each criterion by
   hand) and `delivery try <KEY>`. With `[preview]` configured your coordinator also runs the
   candidate in your browser. Then **Accept delivery**, or **Request acceptance changes**.
 - **Release**: approve the proposal, then merge the PR on GitHub. The merge is the release: the

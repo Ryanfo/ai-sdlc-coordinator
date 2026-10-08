@@ -80,8 +80,8 @@ def test_comments_ask_rather_than_fail() -> None:
     review = "\n".join(comments.deviations_section(devs, Status.CODE_REVIEW))
     assert "D1** (asked for by the developer; changes AC1)" in review
     assert "D2** (not asked for: Claude went beyond the specification)" in review
-    assert "Approving the code accepts them" in review and "Request code changes" in review
+    assert "Approving the code accepts them" in review and "request code changes" in review
     assert "ACCEPT DEVIATIONS" not in review
     changes = "\n".join(comments.deviations_section(devs, Status.CHANGES_REQUESTED))
-    assert "Submit implementation" in changes and "nobody names is left as is" in changes
+    assert "Submit implementation" in changes
     assert comments.deviations_section([], Status.CODE_REVIEW) == []

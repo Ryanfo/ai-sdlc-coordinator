@@ -359,8 +359,6 @@ class StageExecutor:
                 "start",
                 comments.started(
                     rc.record.stage.value,
-                    rc.run_id,
-                    rc.cfg.identity.worker_id,
                     rc.intake.reason,
                     moved_by_hand=STATUS_NAMES[active] if rc.record.adopted else None,
                 ),

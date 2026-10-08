@@ -567,16 +567,6 @@ class ApprovalsConfig(StrictModel):
     def approvers(self) -> Accounts:
         return Accounts(self.jira_account_ids, anyone=self.anyone)
 
-    @property
-    def who(self) -> str:
-        """Who may decide, as the gate comments put it."""
-        return "anyone" if self.anyone else "authorised approvers"
-
-    @property
-    def who_answers(self) -> str:
-        """Who may answer questions and resume, as the comments put it."""
-        return "anyone" if self.anyone else "the assignee or an approver"
-
     @field_validator("jira_account_ids")
     @classmethod
     def _ids(cls, v: list[str]) -> list[str]:

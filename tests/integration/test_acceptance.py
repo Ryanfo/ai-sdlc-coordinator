@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from delivery.acceptance import AcceptanceStore, guide_text
+from delivery.acceptance import AcceptanceStore
 from delivery.cli import main
 from delivery.supervisor import Supervisor
 from delivery.try_app import TryError, try_candidate
@@ -84,9 +84,8 @@ async def test_acceptance_review_says_how_to_try_the_candidate_and_what_to_check
         _approve_code(w)
         await sup.acceptance.tick(full=True)
         text = w.last_comment(KEY)
-        assert "ready for acceptance (candidate c1)" in text
-        assert "AC1: title search" in text and "only the task called Milk" in text
-        assert "# Acceptance guide" not in text and "delivery provenance" not in text
+        assert "Ready for acceptance (candidate c1)" in text
+        assert "Acceptance guide" in text and "AC1" not in text and "only the task called Milk" not in text
         assert "choose Accept delivery" in text and "Request acceptance changes" in text
         assert "ACCEPT DELIVERY" not in text
         # No app is configured: nothing runs here and `delivery try` is not offered.
@@ -132,7 +131,7 @@ async def test_the_approved_candidate_runs_while_the_ticket_is_in_acceptance_rev
             _approve_code(w)
             await sup.acceptance.tick(full=True)
             text = w.last_comment(KEY)
-            assert "On test-laptop" in text and f"delivery try {KEY} runs candidate c1" in text
+            assert "Running on test-laptop" in text and f"delivery try {KEY}" in text
             await _until(
                 sup, lambda: (a := app()) is not None and a.preview is not None and a.preview.state == "ready"
             )
@@ -213,11 +212,3 @@ async def test_delivery_try_needs_an_app_command(tmp_path: Path) -> None:
     w = make_world(tmp_path)
     with pytest.raises(TryError, match=r"\[preview\] command"):
         await try_candidate(w.cfg, KEY, repo=w.repo, jira=w.jira)
-
-
-def test_the_guide_quoted_in_jira_drops_the_header_and_title() -> None:
-    raw = "<!-- delivery provenance (written by the coordinator) -->\n<!-- ticket: X -->\n\n" + GUIDE
-    text = guide_text(raw)
-    assert text.startswith("## Before you start") and "<!--" not in text
-    long = guide_text("# Acceptance guide\n" + "\n".join(f"step {i} " + "x" * 80 for i in range(200)))
-    assert len(long) < 8200 and long.endswith("(the full guide is linked above)")

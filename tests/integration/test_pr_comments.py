@@ -61,7 +61,6 @@ async def test_pr_review_comments_become_change_items(tmp_path: Path) -> None:
         w.github.reviews_by_pr[pr].append(
             Review(902, "ci-bot", "COMMENTED", "x", datetime.now(UTC), "Bot", body="Coverage 91%")
         )
-        assert "Unresolved PR review conversations are included" in w.last_comment(KEY)
 
         # A change request with nothing written in Jira: the PR comments say it all.
         w.move(KEY, Status.CHANGES_REQUESTED)

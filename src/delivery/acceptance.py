@@ -4,9 +4,8 @@ Acceptance is the product decision: does the change do what the brief asked for?
 the developer's tickets enters Acceptance review, the coordinator:
 
 * posts a "Ready for acceptance" comment: how to try the change locally (the app running on
-  this machine, ``delivery try <ticket>`` on anyone else's), the acceptance guide verification
-  wrote (how to check each criterion by hand) and the decision templates. Once per entry into
-  Acceptance review;
+  this machine, ``delivery try <ticket>`` on anyone else's) and a link to the acceptance guide
+  verification wrote (how to check each criterion by hand). Once per entry into Acceptance review;
 * with ``[preview]`` configured (``acceptance = true``, the default) and tmux installed, runs the
   app from the exact candidate that was code-approved, in a worktree of its own
   (``<worktree_root>/<ticket>/acceptance-c<n>/app``) and a tmux session of its own
@@ -20,7 +19,6 @@ the running app up again. Nothing here makes a decision or moves a ticket.
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -41,7 +39,6 @@ from delivery.workflow import Status
 
 log = logging.getLogger("delivery")
 FOLDER = "acceptance"
-GUIDE_LIMIT = 8000  # characters of the acceptance guide quoted in the Jira comment
 
 
 class AcceptanceState(Model):
@@ -83,20 +80,6 @@ class AcceptanceStore:
             except (OSError, ValueError) as exc:
                 log.warning("unreadable acceptance record %s: %s", p, exc)
         return out
-
-
-def guide_text(raw: str) -> str:
-    """The acceptance guide as quoted in Jira: without the provenance header and its own title."""
-    lines = [ln for ln in raw.splitlines() if not re.match(r"^\s*<!--.*-->\s*$", ln)]
-    while lines and not lines[0].strip():
-        lines.pop(0)
-    if lines and lines[0].startswith("# "):
-        lines.pop(0)
-    text = "\n".join(lines).strip()
-    if len(text) > GUIDE_LIMIT:
-        cut = text[:GUIDE_LIMIT]
-        text = cut[: cut.rfind("\n")].rstrip() + "\n\n… (the full guide is linked above)"
-    return text
 
 
 class Acceptance:
@@ -201,7 +184,7 @@ class Acceptance:
     async def _announce(self, ctx: TicketContext, st: AcceptanceState) -> None:
         key, rec = ctx.key, ctx.record
         repo_url = self.cfg.repository.url.removesuffix(".git")
-        guide, guide_url = await self._guide(rec)
+        guide_url = await self._guide_url(rec)
         journal = RunJournal(self.cfg.runtime.state_dir / "intake" / key)
         pub = Publisher(self.cfg, self.deps.jira, None, None, journal, f"acceptance-{st.entry}")
         await pub.comment(
@@ -210,12 +193,10 @@ class Acceptance:
             comments.acceptance_ready(
                 key,
                 rec.candidate_number,
-                st.candidate_sha,
                 f"{repo_url}/pull/{rec.pr_number}" if rec.pr_number else repo_url,
                 worker_id=self.cfg.identity.worker_id,
                 local_app=self.runs_app,
                 try_command=self.cfg.preview.enabled,
-                guide=guide,
                 guide_url=guide_url,
             ),
             f"c{rec.candidate_number}",
@@ -227,15 +208,14 @@ class Acceptance:
             )
         )
 
-    async def _guide(self, rec: SharedExecutionRecord) -> tuple[str, str | None]:
+    async def _guide_url(self, rec: SharedExecutionRecord) -> str | None:
         ref = rec.artefacts.get("acceptance_guide")
         if not ref or "@" not in ref:
-            return "", None
+            return None
         path, commit = ref.rsplit("@", 1)
-        data = await self.deps.repo.show_file(commit, path)
-        if data is None:
-            return "", None
-        return guide_text(data.decode(errors="replace")), blob_url(self.cfg.repository.url, commit, path)
+        if await self.deps.repo.show_file(commit, path) is None:
+            return None
+        return blob_url(self.cfg.repository.url, commit, path)
 
     async def finish(self, st: AcceptanceState, reason: str) -> None:
         """Stop the app and remove its worktree."""
@@ -254,4 +234,4 @@ class Acceptance:
             self.emit(console.line(f"{st.ticket_key}: stopped the acceptance app ({reason})"))
 
 
-__all__ = ["Acceptance", "AcceptanceState", "AcceptanceStore", "guide_text"]
+__all__ = ["Acceptance", "AcceptanceState", "AcceptanceStore"]

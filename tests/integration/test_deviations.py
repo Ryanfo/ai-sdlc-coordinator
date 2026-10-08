@@ -67,7 +67,7 @@ async def test_deviation_is_flagged_and_approving_the_code_accepts_it(tmp_path: 
         # Not a failure: the candidate is in code review and the deviation is a question.
         assert w.jira.status_of(KEY) is Status.CODE_REVIEW
         gate = w.last_comment(KEY)
-        assert "Deviations from the approved specification" in gate
+        assert "Deviations from the specification" in gate
         assert "D1 (asked for by the developer; changes AC1)" in gate
         assert "Approving the code accepts them" in gate and "ACCEPT DEVIATIONS" not in gate
         rec = w.record(KEY)
@@ -156,8 +156,8 @@ async def test_deviations_named_with_other_changes_go_back_and_the_rest_wait(tmp
         # The finding fails verification; the deviations are listed as questions alongside it.
         assert w.jira.status_of(KEY) is Status.CHANGES_REQUESTED
         failed = w.last_comment(KEY)
-        assert "Deviations from the approved specification" in failed
-        why = failed.split("Why it failed")[1].split("Deviations from")[0]
+        assert "Deviations from the specification" in failed
+        why = failed.split("Why")[1].split("Deviations from")[0]
         assert "F1" in why and "D1" not in why and "D2" not in why
         w.jira.human_comment(KEY, DEV, "D2: no Export button")
         w.jira.human_move(KEY, Status.READY_DEVELOPMENT, DEV)
@@ -180,7 +180,7 @@ async def test_with_no_approver_list_anyone_can_decide(tmp_path: Path) -> None:
         w.new_ticket(KEY)
         w.submit(KEY)
         await step(sup)
-        assert "To approve (anyone)" in w.last_comment(KEY)
+        assert "To approve: choose Approve specification" in w.last_comment(KEY)
         w.move(KEY, Status.READY_PLANNING, author=anyone)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.PLAN_REVIEW, w.last_comment(KEY)
@@ -188,7 +188,7 @@ async def test_with_no_approver_list_anyone_can_decide(tmp_path: Path) -> None:
         await step(sup)
         await step(sup)
         assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
-        assert "If acceptable: nothing extra to do" in w.last_comment(KEY)
+        assert "Approving the code accepts them" in w.last_comment(KEY)
         w.github.approve(w.record(KEY).pr_number or 0, REVIEWER)
         w.move(KEY, Status.ACCEPTANCE_REVIEW, author=anyone)
         w.move(KEY, Status.READY_RELEASE_PREPARATION, author=anyone)

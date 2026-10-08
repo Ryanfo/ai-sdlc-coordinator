@@ -94,7 +94,7 @@ async def test_a_spike_is_investigated_and_closed_when_its_findings_are_accepted
         w.move(KEY, Status.READY_DEVELOPMENT)
         assert await step(sup) == [KEY]
         assert w.jira.status_of(KEY) is Status.DONE
-        assert "Spike complete: findings v001 accepted" in w.last_comment(KEY)
+        assert "Spike complete: findings v001" in w.last_comment(KEY)
         assert _calls(w, "implement-ticket") == 0
         # Its follow-ups can still be created after it is done.
         before = set(w.jira.issues)
@@ -129,7 +129,7 @@ async def test_the_fast_track_approves_the_plan_with_the_specification(tmp_path:
     async with Supervisor(w.deps) as sup:
         await step(sup)
         gate = w.last_comment(KEY)
-        assert "Fast track: plan v001 (" in gate and "was written with it" in gate
+        assert "Includes plan v001" in gate and "approving starts development" in gate
         assert "Written with the specification." in _show(
             w, f"delivery/{KEY}:docs/delivery/{KEY}/plan/v001.md"
         )
@@ -159,7 +159,7 @@ async def test_the_fast_track_falls_back_to_plan_review(tmp_path: Path) -> None:
     w.submit("PILOT-2")
     async with Supervisor(w.deps) as sup:
         await step(sup)
-        assert "Fast track not used: no plan was written" in w.last_comment("PILOT-2")
+        assert "No fast track: no plan was written" in w.last_comment("PILOT-2")
         for key in (KEY, "PILOT-2"):
             w.move(key, Status.READY_PLANNING)
         await step(sup)

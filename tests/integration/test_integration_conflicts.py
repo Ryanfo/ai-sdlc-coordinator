@@ -50,7 +50,7 @@ async def test_conflicting_tickets_both_reach_code_review_with_the_conflict_flag
         for key, other in (("PILOT-1", "PILOT-2"), ("PILOT-2", "PILOT-1")):
             assert w.jira.status_of(key) is Status.CODE_REVIEW, w.last_comment(key)
             gate = next(c for c in w.comments(key) if "ready for code review" in c)
-            assert "Merge conflicts" in gate and "resolve them in the PR when you merge" in gate
+            assert "Merge conflicts" in gate and "resolve when merging the PR" in gate
             assert f"{other}'s candidate" in gate and "src/app.ts" in gate
     # The approved specification and plan reach Claude as two different files.
     env = json.loads(_run_file(w, "PILOT-1", "development", "envelope-implement-ticket.json")[0].read_text())
@@ -82,12 +82,9 @@ async def test_conflict_with_base_is_flagged_and_never_blocks(tmp_path: Path) ->
         assert w.jira.status_of("PILOT-1") is Status.CHANGES_REQUESTED
         failed = w.last_comment("PILOT-1")
         assert "R1: coordinator check unit (candidate) failed" in failed
-        assert (
-            "conflicts in" not in failed.split("Why it failed")[1].split("Merge conflicts")[0]
-        )  # not a reason
+        assert "conflicts in" not in failed.split("Why")[1].split("Merge conflicts")[0]  # not a reason
         assert "Merge conflicts" in failed
-        assert "Submit implementation changes" in failed and "Submit follow-up changes" in failed
-        assert "say which in a comment first" in failed
+        assert "Submit implementation changes" in failed
 
         # Choosing Submit follow-up changes by hand verifies the same code again, and says so.
         w.jira.human_move("PILOT-1", Status.READY_VERIFICATION, DEV)
@@ -111,11 +108,7 @@ async def test_conflict_with_base_is_flagged_and_never_blocks(tmp_path: Path) ->
         await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.CODE_REVIEW, w.last_comment("PILOT-1")
         gate = w.last_comment("PILOT-1")
-        assert (
-            "Merge conflicts" in gate
-            and "resolve them in the PR when you merge" in gate
-            and "src/app.ts" in gate
-        )
+        assert "Merge conflicts" in gate and "resolve when merging the PR" in gate and "src/app.ts" in gate
     envs = _run_file(w, "PILOT-1", "development", "envelope-implement-ticket.json")
     items = [set(json.loads(e.read_text())["feedback_items"]) for e in envs[1:]]
     assert items == [{"F1", "F2", "F3", "R1", "R2"}] * 2  # F3 is the comment saying "only F1"
@@ -161,13 +154,13 @@ async def test_claude_resolves_a_conflict_with_the_base_when_changes_are_request
         main = external_commit(tmp_path, w.origin, "main", "src/app.ts", "export const x = 9;\n", "other")
         await step(sup)  # verification fails on the check; the conflict with main is flagged
         assert w.jira.status_of("PILOT-1") is Status.CHANGES_REQUESTED
-        assert "Or have Claude do it" in w.last_comment("PILOT-1")
+        assert "Or request changes: Claude merges" in w.last_comment("PILOT-1")
         w.jira.human_move("PILOT-1", Status.READY_DEVELOPMENT, DEV)
         await step(sup)  # merges main, Claude resolves the conflict, then makes the changes
         rec = w.record("PILOT-1")
         assert rec.candidate_number == 2, w.last_comment("PILOT-1")
         ready = w.last_comment("PILOT-1")
-        assert "Claude resolved the conflicts in src/app.ts" in ready
+        assert "Claude resolved conflicts in src/app.ts" in ready
         assert "was not merged into this candidate" not in ready
         head = rec.candidate_sha
         assert head
@@ -202,7 +195,7 @@ async def test_conflict_help_can_be_turned_off(tmp_path: Path) -> None:
         await step(sup)
         external_commit(tmp_path, w.origin, "main", "src/app.ts", "export const x = 9;\n", "other")
         await step(sup)
-        assert "Or have Claude do it" not in w.last_comment("PILOT-1")
+        assert "Or request changes: Claude merges" not in w.last_comment("PILOT-1")
         w.jira.human_move("PILOT-1", Status.READY_DEVELOPMENT, DEV)
         await step(sup)
         assert "was not merged in" in w.last_comment("PILOT-1")

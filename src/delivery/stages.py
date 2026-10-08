@@ -736,10 +736,10 @@ class StageStrategy:
         ``d`` was published, as revision ``rev`` (see delivery.open_sessions)."""
         return d.model_copy(update={"outcome": "success", "extra": {**d.extra, "revision": rev}})
 
-    def gate_summary(self, summary: str) -> str:
-        """The summary in a gate comment: for a follow-up, what was asked for instead."""
+    def gate_note(self) -> str:
+        """The note in a gate comment: for a follow-up, what was asked for."""
         if self.follow_up is None:
-            return summary
+            return ""
         return comments.follow_up_revision(self.stage.value, self.follow_up.replaces, self.follow_up.prompts)
 
     def worker_decision(self, result: StageResult) -> Decision | None:
@@ -938,7 +938,6 @@ class StageStrategy:
                 rev,
                 url,
                 [d for d in devs if d.id in ids and d.candidate == n],
-                str(done.get("summary", "")),
             ),
             f"v{rev}",
         )
@@ -1224,7 +1223,7 @@ class RefinementStage(StageStrategy):
             )
             await self.announce(
                 "questions",
-                comments.questions(url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value),
+                comments.questions(url, result.questions, self.stage.value),
                 f"r{n}",
                 pause=True,
             )
@@ -1253,8 +1252,7 @@ class RefinementStage(StageStrategy):
                 token,
                 url,
                 rev,
-                self.gate_summary(result.summary),
-                ctx.cfg.approvals.who,
+                note=self.gate_note(),
                 plan=(
                     int(d.extra["fast_track_plan"]),
                     blob_url(ctx.cfg.repository.url, sha, plan_rel),
@@ -1506,7 +1504,7 @@ class PlanningStage(StageStrategy):
             )
             await self.announce(
                 "questions",
-                comments.questions(url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value),
+                comments.questions(url, result.questions, self.stage.value),
                 f"r{n}",
                 pause=True,
             )
@@ -1539,18 +1537,16 @@ class PlanningStage(StageStrategy):
                 token,
                 url,
                 rev,
-                self.gate_summary(result.summary),
-                ctx.cfg.approvals.who,
                 result.proposed_tickets,
+                note=self.gate_note(),
             )
             if self.spike
             else comments.plan_gate(
                 url,
                 blob_url(ctx.cfg.repository.url, sha, fp_rel),
                 rev,
-                self.gate_summary(result.summary),
-                ctx.cfg.approvals.who,
                 overlap,
+                self.gate_note(),
             ),
             f"v{rev}",
             gate_tokens=(token,),
@@ -1668,9 +1664,8 @@ class PlanningStage(StageStrategy):
                 url,
                 blob_url(ctx.cfg.repository.url, sha, fp_rel),
                 rev,
-                note,
-                ctx.cfg.approvals.who,
                 overlap,
+                note,
             ),
             f"v{rev}",
             gate_tokens=(token,),
@@ -2014,7 +2009,7 @@ class DevelopmentStage(StageStrategy):
             pr_url = ctx.record.pr_url or ctx.cfg.repository.url
             await self.announce(
                 "questions",
-                comments.questions(pr_url, result.questions, ctx.cfg.approvals.who_answers, self.stage.value),
+                comments.questions(pr_url, result.questions, self.stage.value),
                 f"r{n}",
                 pause=True,
             )
@@ -2646,7 +2641,6 @@ class VerificationStage(StageStrategy):
                 [f for f in findings if f.severity not in (Severity.BLOCKER, Severity.MAJOR)],
                 d.extra.get("unverified", []),
                 overlap,
-                ", ".join(ctx.cfg.approvals.github_logins) or "an independent reviewer",
                 base=base_branch,
                 merge_conflicts=conflicts,
                 deviations=records,
@@ -2825,9 +2819,7 @@ class ReleasePreparationStage(StageStrategy):
                 blob_url(ctx.cfg.repository.url, sha, rel),
                 rev,
                 d.extra["candidate"],
-                ctx.cfg.approvals.who,
-                ctx.cfg.release.environment,
-                note=self.gate_summary(""),
+                note=self.gate_note(),
                 merged_early=d.extra.get("merged_early"),
                 pr_number=ctx.shared.pr_number,
             ),
@@ -3158,7 +3150,6 @@ class ReleaseVerificationStage(StageStrategy):
                 str(record.get("commit")),
                 str(record.get("environment")),
                 url,
-                str(d.extra.get("provenance_summary", "")),
             ),
             release_id,
         )

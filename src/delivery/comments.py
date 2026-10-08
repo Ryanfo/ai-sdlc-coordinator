@@ -50,19 +50,12 @@ def _moves(source: Status, action: Action) -> str:
     return f"(moves into **{_into(source, action)}**)"
 
 
-def _approve(who: str, source: Status, action: Action, what: str = "To approve") -> str:
-    return (
-        f"**{what}** ({who}): choose **{DEFAULT_ACTION_NAMES[action]}** {_moves(source, action)}. "
-        "No comment needed."
-    )
+def _approve(source: Status, action: Action, what: str = "To approve") -> str:
+    return f"**{what}**: choose **{DEFAULT_ACTION_NAMES[action]}** {_moves(source, action)}."
 
 
 def _change(source: Status, action: Action, what: str = "To request changes") -> str:
-    return (
-        f"**{what}**: choose **{DEFAULT_ACTION_NAMES[action]}** {_moves(source, action)}. Say what "
-        "to change in a comment if you like; Claude reads every comment written since this was "
-        "posted, and asks you when there is none."
-    )
+    return f"**{what}**: choose **{DEFAULT_ACTION_NAMES[action]}** {_moves(source, action)}."
 
 
 def _ready_to_move(source: Status, action: Action, when: str) -> str:
@@ -79,19 +72,12 @@ def _session_line(run_id: str, worker_id: str) -> str:
 
 def started(
     stage: str,
-    run_id: str,
-    worker_id: str,
     reason: str,
     moved_by_hand: str | None = None,
 ) -> str:
-    text = (
-        f"**{STAGE_TITLES.get(stage, stage)} started.** {_session_line(run_id, worker_id)}\nInput: {reason}"
-    )
+    text = f"**{STAGE_TITLES.get(stage, stage)} started.** {reason}"
     if moved_by_hand:
-        text += (
-            f"\nMoved into {moved_by_hand} by hand. Leave tickets in their Ready status; the "
-            "coordinator moves them within a minute."
-        )
+        text += f"\nMoved into {moved_by_hand} by hand: leave tickets in Ready, the coordinator moves them."
     return text
 
 
@@ -99,8 +85,7 @@ def design_drift(stage: str, frames: list[tuple[str, str]]) -> str:
     listed = "\n".join(f"- [{name}]({url})" for name, url in frames)
     return (
         "**To adopt the new Figma design**, choose Revise scope (or request specification changes).\n"
-        f"The design changed since the specification was written. {STAGE_TITLES.get(stage, stage)} "
-        f"keeps building the approved version. Changed frames:\n{listed}"
+        f"{STAGE_TITLES.get(stage, stage)} keeps building the approved version. Changed frames:\n{listed}"
     )
 
 
@@ -110,15 +95,13 @@ def proposals_section(token: str, proposals: Sequence[ProposedTicket]) -> list[s
         return []
     lines = [
         "",
-        "**To create proposed tickets** in Backlog (optional): comment this with the IDs to create.",
+        "**To create proposed tickets** (optional): comment this with the IDs.",
         "```",
         f"{DecisionKind.CREATE_TICKETS.value} {token}",
         ", ".join(t.id for t in proposals),
         "```",
     ]
-    for t in proposals:
-        first = t.description.strip().splitlines()[0] if t.description.strip() else ""
-        lines.append(f"- **{t.id}** {t.summary}" + (f": {_clip(first, 200)}" if first else ""))
+    lines += [f"- **{t.id}** {t.summary}" for t in proposals]
     return lines
 
 
@@ -126,27 +109,24 @@ def spec_gate(
     token: str,
     url: str,
     revision: int,
-    summary: str,
-    approvers: str,
     *,
+    note: str = "",
     plan: tuple[int, str] | None = None,
     fast_track_note: str = "",
     proposals: Sequence[ProposedTicket] = (),
 ) -> str:
     lines = [
         f"## Specification v{revision:03d} ready for review",
-        _approve(approvers, Status.SPECIFICATION_REVIEW, Action.APPROVE_SPECIFICATION),
+        _approve(Status.SPECIFICATION_REVIEW, Action.APPROVE_SPECIFICATION),
         _change(Status.SPECIFICATION_REVIEW, Action.REQUEST_SPECIFICATION_CHANGES),
         f"[Specification v{revision:03d}]({url})",
     ]
+    if note:
+        lines.append(note)
     if plan:
-        lines.append(
-            f"Fast track: [plan v{plan[0]:03d}]({plan[1]}) was written with it. Approving the "
-            "specification approves the plan too, so development starts next."
-        )
+        lines.append(f"Includes [plan v{plan[0]:03d}]({plan[1]}): approving starts development.")
     elif fast_track_note:
-        lines.append(f"Fast track not used: {fast_track_note}.")
-    lines += ["", summary]
+        lines.append(f"No fast track: {fast_track_note}.")
     lines += proposals_section(token, proposals)
     return "\n".join(lines)
 
@@ -155,39 +135,32 @@ def findings_gate(
     token: str,
     url: str,
     revision: int,
-    summary: str,
-    approvers: str,
     proposals: Sequence[ProposedTicket] = (),
+    *,
+    note: str = "",
 ) -> str:
     """A spike's findings, reviewed in Plan review. Accepting them completes the spike."""
     lines = [
         f"## Findings v{revision:03d} ready for review",
-        _approve(approvers, Status.PLAN_REVIEW, Action.APPROVE_PLAN, "To accept the findings")
-        + " The spike then closes as Done.",
+        _approve(Status.PLAN_REVIEW, Action.APPROVE_PLAN, "To accept the findings")
+        + " The spike closes as Done.",
         _change(Status.PLAN_REVIEW, Action.REQUEST_PLAN_CHANGES, "To ask for more investigation"),
         f"[Findings v{revision:03d}]({url})",
-        "",
-        summary,
     ]
+    if note:
+        lines.append(note)
     lines += proposals_section(token, proposals)
     return "\n".join(lines)
 
 
 def spike_done(revision: int, url: str, token: str, proposals: Sequence[ProposedTicket], moved: bool) -> str:
-    lines = [
-        f"## Spike complete: findings v{revision:03d} accepted",
-        f"[The findings]({url}) are the result. Nothing to build or release.",
-    ]
+    lines = [f"## Spike complete: [findings v{revision:03d}]({url}) accepted"]
     if not moved:
-        lines.insert(
-            1,
-            "**Move it to Done by hand**: this Jira workflow has no **Complete spike** transition "
-            "(Ready for development to Done).",
-        )
+        lines.append("**Move it to Done by hand**: no **Complete spike** transition exists in this workflow.")
     if proposals:
         lines += [
             "",
-            "**To create the proposed follow-up tickets** (any time, even after Done): comment this.",
+            "**To create the proposed follow-up tickets** (any time): comment this.",
             "```",
             f"{DecisionKind.CREATE_TICKETS.value} {token}",
             ", ".join(t.id for t in proposals),
@@ -197,13 +170,10 @@ def spike_done(revision: int, url: str, token: str, proposals: Sequence[Proposed
 
 
 def fast_track_plan(url: str, revision: int) -> str:
-    return "\n".join(
-        [
-            f"## Plan v{revision:03d} approved with the specification",
-            f"Nothing to do: development starts by itself (moving into "
-            f"**{_into(Status.PLANNING, Action.USE_APPROVED_PLAN)}**). "
-            f"[Plan v{revision:03d}]({url}) was approved with the specification.",
-        ]
+    return (
+        f"## Plan v{revision:03d} approved with the specification\n"
+        f"Development starts next (moving into **{_into(Status.PLANNING, Action.USE_APPROVED_PLAN)}**). "
+        f"[Plan v{revision:03d}]({url})"
     )
 
 
@@ -211,33 +181,30 @@ def plan_gate(
     url: str,
     footprint_url: str,
     revision: int,
-    summary: str,
-    approvers: str,
     overlap: list[OverlapFinding],
+    note: str = "",
 ) -> str:
     lines = [
         f"## Plan v{revision:03d} ready for review",
-        _approve(approvers, Status.PLAN_REVIEW, Action.APPROVE_PLAN),
+        _approve(Status.PLAN_REVIEW, Action.APPROVE_PLAN),
         _change(Status.PLAN_REVIEW, Action.REQUEST_PLAN_CHANGES),
         f"[Plan v{revision:03d}]({url}) · [change footprint]({footprint_url})",
-        "",
-        summary,
     ]
+    if note:
+        lines.append(note)
     if overlap:
-        lines += ["", "**Overlap with other in-flight work** (advisory):"]
-        lines += [
-            f"- {o.warning_id}: {o.kind.value} with {o.other} ({', '.join(o.details[:3])})" for o in overlap
-        ]
+        lines += ["", "**Overlaps other in-flight work**:"]
+        lines += [f"- {o.warning_id}: {o.kind.value} with {o.other}" for o in overlap]
     return "\n".join(lines)
 
 
-def questions(draft_url: str, qs: list[Question], who: str, stage: str) -> str:
+def questions(draft_url: str, qs: list[Question], stage: str) -> str:
     answers = _stage_def(stage).answers_action
     title = STAGE_TITLES.get(stage, stage)
     lines = [
         "## Questions",
-        f"**To answer** ({who}): reply in a comment, in your own words (one comment or several), "
-        f"then choose **Submit {title.lower()} answers** {_moves(Status.NEEDS_CLARIFICATION, answers)}.",
+        f"**To answer**: reply in a comment, then choose **Submit {title.lower()} answers** "
+        f"{_moves(Status.NEEDS_CLARIFICATION, answers)}.",
         "",
     ]
     for q in qs:
@@ -251,10 +218,9 @@ def blocked(stage: str, reason: str, action: str, resume_stage: str) -> str:
     return "\n".join(
         [
             f"## Blocked during {STAGE_TITLES.get(stage, stage).lower()}",
-            f"**Next action**: {action}",
-            f"Then choose **Resume {STAGE_TITLES.get(resume_stage, resume_stage).lower()}** "
-            f"{_moves(Status.BLOCKED, resume)} once any previous worker has stopped.",
-            f"**Reason**: {reason}",
+            f"**Next action**: {action}, then choose **Resume "
+            f"{STAGE_TITLES.get(resume_stage, resume_stage).lower()}** {_moves(Status.BLOCKED, resume)}.",
+            f"Reason: {reason}",
         ]
     )
 
@@ -303,7 +269,7 @@ def resolved(
     ready = STATUS_NAMES[_stage_def(resume_stage).ready]
     lines = [
         f"## Blocker resolved: {title.lower()} resumes",
-        f"Nothing to do: back in **{ready}**, {title.lower()} starts again within a minute.",
+        f"Back in **{ready}**; {title.lower()} restarts by itself.",
         "",
         *_resolution_body(summary, decisions, follow_ups, developer),
     ]
@@ -314,9 +280,9 @@ def _next_steps(ticket: str, steps: list[dict[str, str]]) -> list[str]:
     """The steps a person takes now, each with what to paste or choose ready to copy."""
     lines = ["", "**What to do now**"]
     for n, st in enumerate(steps, 1):
-        kind, text, who = st["kind"], st["text"].strip(), st.get("who") or "the developer"
+        kind, text = st["kind"], st["text"].strip()
         if kind == "jira_comment":
-            head = f"**{n}. Add this comment to {ticket}** ({who})."
+            head = f"**{n}. Add this comment to {ticket}.**"
         elif kind == "jira_action":
             action = next(
                 (a for a, name in DEFAULT_ACTION_NAMES.items() if name.lower() == text.lower()), None
@@ -325,16 +291,15 @@ def _next_steps(ticket: str, steps: list[dict[str, str]]) -> list[str]:
             head = (
                 f"**{n}. Choose {text} in Jira**"
                 + (f" (moves into **{STATUS_NAMES[route.target]}**)" if route else "")
-                + f" ({who})."
+                + "."
             )
         elif kind == "command":
-            head = f"**{n}. Run this command** ({who})."
+            head = f"**{n}. Run this command.**"
         else:
-            head = f"**{n}.** {text} ({who})."
+            head = f"**{n}.** {text}"
         lines += ["", f"{head} {st.get('why', '')}".rstrip()]
         if kind in ("jira_comment", "command"):
             lines += ["```text", text, "```"]
-        lines.append(f"Checked: {st.get('verified_by', '')}")
     return lines
 
 
@@ -355,8 +320,8 @@ def unresolved(
         f"**Back in Blocked**: {reason.strip()}",
         *(_next_steps(ticket, next_steps) if next_steps else []),
         "",
-        f"When the cause is dealt with, choose **Resume {title}** {_moves(Status.BLOCKED, resume)}, or "
-        f"**Request resolution** {_moves(Status.BLOCKED, Action.REQUEST_RESOLUTION)} to try again.",
+        f"Then choose **Resume {title}** {_moves(Status.BLOCKED, resume)}, or "
+        f"**Request resolution** {_moves(Status.BLOCKED, Action.REQUEST_RESOLUTION)} to retry.",
     ]
     body = _resolution_body("", decisions, follow_ups, developer)
     return "\n".join([*lines, *(["", *body] if body else [])])
@@ -368,8 +333,7 @@ def waiting(stage: str, reason: str, action: str) -> str:
         [
             f"## Waiting before {title}",
             f"**Next action**: {action}",
-            f"Not started: {reason}. The ticket stays in {STATUS_NAMES[_stage_def(stage).ready]} and "
-            f"{title} starts by itself within a minute of that. Do not move it.",
+            f"Not started: {reason}. The ticket stays in {STATUS_NAMES[_stage_def(stage).ready]}.",
         ]
     )
 
@@ -377,17 +341,16 @@ def waiting(stage: str, reason: str, action: str) -> str:
 def claude_unavailable(stage: str, kind: str, worker_id: str) -> str:
     title = STAGE_TITLES.get(stage, stage)
     if kind == "auth":
-        why = "Claude Code is not signed in on this machine (the login is missing or expired)."
+        why = "Claude Code is not signed in on this machine."
         faster = f"run `claude auth login` in a terminal on `{worker_id}`."
     else:
-        why = "the Claude subscription usage limit has been reached. No paid API fallback is used."
+        why = "the Claude usage limit has been reached."
         faster = "nothing; it carries on once the limit resets."
     return "\n".join(
         [
             f"## {title} paused: waiting for Claude",
-            f"**To speed it up**: {faster}",
-            f"Why: {why} Nothing is needed in Jira: {title.lower()} continues automatically on "
-            f"`{worker_id}` once Claude works again, and new tickets wait too.",
+            f"**To resume**: {faster}",
+            f"Why: {why}",
         ]
     )
 
@@ -398,9 +361,8 @@ def internal_error(stage: str, run_id: str, worker_id: str, key: str) -> str:
     return "\n".join(
         [
             f"## {STAGE_TITLES.get(stage, stage)} stopped: coordinator error",
-            f"**Next action**: on `{worker_id}`, run `coordinator recover {key} --resume`. "
-            "`coordinator logs` shows the error.",
-            f"The ticket stays where it is. {_session_line(run_id, worker_id)}",
+            f"**Next action**: on `{worker_id}`, run `coordinator recover {key} --resume` "
+            "(`coordinator logs` shows the error).",
         ]
     )
 
@@ -430,7 +392,6 @@ def code_gate(
     findings: list[Finding],
     unverified: list[str],
     overlap: list[OverlapFinding],
-    reviewers: str,
     *,
     base: str = "main",
     merge_conflicts: list[dict[str, Any]] | None = None,
@@ -439,30 +400,21 @@ def code_gate(
     reproduction: dict[str, Any] | None = None,
 ) -> str:
     """The code decision only. Acceptance is its own step with its own comment (acceptance_ready)."""
-    devs = deviations or []
     lines = [
         f"## Candidate c{candidate_no} ready for code review",
-        f"**To approve the code**: an independent human ({reviewers}) approves the PR on GitHub at "
-        "the current head with required CI passing, then anyone allowed to decide chooses **Approve "
-        f"code** {_moves(Status.CODE_REVIEW, Action.APPROVE_CODE)}. No comment needed. Acceptance is "
-        "the next step and gets its own comment.",
-        _change(Status.CODE_REVIEW, Action.REQUEST_CODE_CHANGES)
-        + " Unresolved PR review conversations are included too.",
-        f"PR: {pr_url} · candidate `{candidate}` · [Independent review]({review_url}) · "
-        f"[Verification report]({verification_url})",
+        "**To approve**: approve the PR on GitHub (independent reviewer), then choose **Approve code** "
+        f"{_moves(Status.CODE_REVIEW, Action.APPROVE_CODE)}.",
+        _change(Status.CODE_REVIEW, Action.REQUEST_CODE_CHANGES),
+        f"PR: {pr_url} · `{candidate}` · [Review]({review_url}) · [Verification]({verification_url})",
     ]
     lines += _failed_checks(checks)
     lines += reproduction_lines(reproduction, base)
     lines += conflicts_section(merge_conflicts or [], base, claude_resolves=claude_resolves)
-    lines += deviations_section(devs, Status.CODE_REVIEW)
-    if findings:
-        lines += ["", "**Non-blocking findings** (in the review): " + ", ".join(f.id for f in findings)]
+    lines += deviations_section(deviations or [], Status.CODE_REVIEW)
     if unverified:
-        lines += ["", f"**Not independently verified** (check during acceptance): {', '.join(unverified)}"]
+        lines += ["", f"**Not independently verified** (check in acceptance): {', '.join(unverified)}"]
     if overlap:
-        lines += ["", "**Integration scrutiny requested** for overlapping work:"]
-        lines += [f"- {o.warning_id}: {o.other} ({', '.join(o.details[:3])})" for o in overlap]
-    lines += ["", "Any new commit on the PR needs verifying again before the code can be approved."]
+        lines += ["", "**Overlapping work**: " + "; ".join(f"{o.warning_id} {o.other}" for o in overlap)]
     return "\n".join(lines)
 
 
@@ -503,37 +455,26 @@ def deviations_section(devs: list[DeviationRecord], here: Status) -> list[str]:
     """
     if not devs:
         return []
-    lines = [
-        "",
-        "**Deviations from the approved specification** (not failures; is each acceptable?):",
-        *_deviation_lines(devs),
-    ]
+    lines = ["", "**Deviations from the specification**:", *_deviation_lines(devs)]
+    example = f"`{devs[0].id}: follow the specification`"
     if here is Status.CODE_REVIEW:
         return [
             *lines,
-            "**If acceptable**: nothing extra to do. Approving the code accepts them, and Claude "
-            "updates the specification before release preparation (no new refinement round).",
-            "**If not**: choose **Request code changes** and name each in a comment (for example "
-            f"`{devs[0].id}: follow the specification`); development changes it back.",
+            f"Approving the code accepts them. To reject one, request code changes and name it ({example}).",
         ]
     return [
         *lines,
-        "**If not acceptable**: name each in a comment (for example "
-        f"`{devs[0].id}: follow the specification`) before choosing **Submit implementation "
-        "changes**. One nobody names is left as is, and accepted when the code is approved.",
+        f"To reject one, name it in a comment ({example}) before choosing **Submit implementation changes**.",
     ]
 
 
-def spec_amended(revision: int, url: str, accepted: list[DeviationRecord], summary: str) -> str:
+def spec_amended(revision: int, url: str, accepted: list[DeviationRecord]) -> str:
     lines = [
         f"## Specification v{revision:03d}: accepted deviations included",
-        f"[Specification v{revision:03d}]({url}) now includes the deviations below and is the approved "
-        "specification. No new refinement or planning round.",
+        f"[Specification v{revision:03d}]({url}) is the approved version.",
         "",
         *_deviation_lines(accepted),
     ]
-    if summary:
-        lines += ["", f"**What changed**: {_clip(summary)}"]
     return "\n".join(lines)
 
 
@@ -546,8 +487,8 @@ def reproduction_lines(rep: dict[str, Any] | None, base: str) -> list[str]:
         text = f"**Bug reproduced** on `{base}` without the fix: the tests catch it."
     elif state == "not_reproduced":
         text = (
-            f"**Bug not reproduced**: the tests also pass on `{base}` without the fix, so they may "
-            "not catch the bug. Check the regression test."
+            f"**Bug not reproduced**: the tests also pass on `{base}` without the fix. Check the "
+            "regression test."
         )
     elif state == "no_tests":
         text = "**No regression test**: this bug fix adds or changes no test files."
@@ -563,21 +504,15 @@ def conflicts_section(
     ``claude_resolves``, by the next development run if someone asks for changes)."""
     if not conflicts:
         return []
-    lines = ["", "**Merge conflicts** (flagged, not a failure; resolve them in the PR when you merge):"]
+    lines = ["", "**Merge conflicts** (resolve when merging the PR):"]
     for c in conflicts:
         paths = ", ".join(c["paths"])
         if c["with"] == base:
-            lines.append(f"- the latest `{base}` (`{str(c['sha'])[:12]}`): {paths}")
+            lines.append(f"- latest `{base}`: {paths}")
         else:
-            lines.append(
-                f"- {c['with']}'s candidate `{str(c['sha'])[:12]}` (not merged yet): {paths}. "
-                "Whichever merges second resolves it."
-            )
+            lines.append(f"- {c['with']}'s candidate (not merged yet): {paths}")
     if claude_resolves:
-        lines.append(
-            f"Or have Claude do it: the next development run (any change request) merges the latest "
-            f"`{base}` first and resolves the conflict with it."
-        )
+        lines.append(f"Or request changes: Claude merges the latest `{base}` and resolves it.")
     return lines
 
 
@@ -600,24 +535,13 @@ def verification_failed(
     why = [f"- **R{i}**: {p}" for i, p in enumerate(problems, 1)]
     lines = [
         f"## Verification failed for candidate c{candidate_no} `{candidate[:12]}`",
-        "**To fix it** (the usual next step): choose **Submit implementation changes** "
-        f"{_moves(Status.CHANGES_REQUESTED, Action.SUBMIT_IMPLEMENTATION_CHANGES)}. Development gets "
-        "every R- and F-item and the PR's unresolved review conversations, and publishes candidate "
-        f"c{candidate_no + 1}.",
-    ]
-    if findings:
-        lines.append(
-            "To fix only some findings, say which in a comment first (for example `only F2 and F3`); "
-            "R-items are always included."
-        )
-    lines += [
-        "Other options: **Revise scope** to change what is built "
-        f"{_moves(Status.CHANGES_REQUESTED, Action.REVISE_SCOPE)}, or **Submit follow-up changes** to "
-        f"verify the same candidate again {_moves(Status.CHANGES_REQUESTED, Action.SUBMIT_FOLLOW_UP)} "
-        f"(only useful if the cause was outside the code, such as a flaky check or a change on {base}).",
-        f"PR: {pr_url} · [Independent review]({review_url}) · [Verification report]({verification_url})",
+        "**To fix it**: choose **Submit implementation changes** "
+        f"{_moves(Status.CHANGES_REQUESTED, Action.SUBMIT_IMPLEMENTATION_CHANGES)}. "
+        "To change what is built instead, choose **Revise scope** "
+        f"{_moves(Status.CHANGES_REQUESTED, Action.REVISE_SCOPE)}.",
+        f"PR: {pr_url} · [Review]({review_url}) · [Verification]({verification_url})",
         "",
-        "**Why it failed**:",
+        "**Why**:",
         *why,
     ]
     if serious:
@@ -634,34 +558,26 @@ def verification_failed(
 def acceptance_ready(
     key: str,
     candidate_no: int,
-    candidate: str,
     pr_url: str,
     *,
     worker_id: str,
     local_app: bool,
     try_command: bool,
-    guide: str,
     guide_url: str | None,
 ) -> str:
     """Posted when a ticket enters Acceptance review: the product decision, then how to try it."""
     lines = [
-        f"## Code approved: ready for acceptance (candidate c{candidate_no})",
-        f"**To accept** (product decision against the brief): choose **Accept delivery** "
-        f"{_moves(Status.ACCEPTANCE_REVIEW, Action.ACCEPT_DELIVERY)}. No comment needed.",
+        f"## Ready for acceptance (candidate c{candidate_no})",
+        "**To accept**: choose **Accept delivery** "
+        f"{_moves(Status.ACCEPTANCE_REVIEW, Action.ACCEPT_DELIVERY)}.",
         _change(Status.ACCEPTANCE_REVIEW, Action.REQUEST_ACCEPTANCE_CHANGES),
-        "**Try it**:",
+        "",
     ]
     if local_app:
-        lines.append(
-            f"- On `{worker_id}` the candidate is running and open in the browser "
-            f"(`delivery preview {key}` opens it again)."
-        )
+        lines.append(f"Running on `{worker_id}` (`delivery preview {key}` reopens it).")
     if try_command:
-        lines.append(f"- On your machine: `delivery try {key}` runs candidate c{candidate_no} and opens it.")
-    lines.append(f"- Code: {pr_url} at `{candidate[:12]}`")
-    if guide:
-        link = f" ([full guide]({guide_url}))" if guide_url else ""
-        lines += ["", f"**What to check**{link}:", "", guide.strip()]
+        lines.append(f"Try it on your machine: `delivery try {key}`")
+    lines.append(f"[PR]({pr_url})" + (f" · [Acceptance guide]({guide_url})" if guide_url else ""))
     return "\n".join(lines)
 
 
@@ -669,43 +585,30 @@ def release_gate(
     url: str,
     revision: int,
     candidate: str,
-    approvers: str,
-    environment: str,
     note: str = "",
     merged_early: str | None = None,
     pr_number: int | None = None,
 ) -> str:
     if merged_early:
-        after = (
-            f" **PR #{pr_number} was already merged (`{merged_early[:12]}`) before this approval.** "
-            "The merged code is the accepted candidate, so approving makes that merge the release: "
-            f"the coordinator records it in `{environment}` (moving into "
-            f"**{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**) and verifies. "
-            "If the release should not stand, request changes instead."
-        )
+        after = f" PR #{pr_number} is already merged (`{merged_early[:12]}`): approving makes it the release."
     else:
-        after = (
-            f" Then a human merges the PR: that is the release, which the coordinator records in "
-            f"`{environment}` (moving into **{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**) "
-            "and verifies. It never merges or deploys."
-        )
+        after = " Then merge the PR."
     return "\n".join(
         [
             f"## Release proposal v{revision:03d} ready",
-            _approve(approvers, Status.RELEASE_REVIEW, Action.APPROVE_RELEASE) + after,
+            _approve(Status.RELEASE_REVIEW, Action.APPROVE_RELEASE) + after,
             _change(Status.RELEASE_REVIEW, Action.REQUEST_RELEASE_CHANGES),
-            f"[Release proposal]({url}) · accepted candidate `{candidate}`",
+            f"[Release proposal]({url}) · candidate `{candidate}`",
             *(["", note] if note else []),
         ]
     )
 
 
-def done(release_commit: str, environment: str, url: str, provenance: str) -> str:
+def done(release_commit: str, environment: str, url: str) -> str:
     return "\n".join(
         [
             "## Release verified: Done",
-            f"Released commit `{release_commit}` in `{environment}`. [Release verification]({url}).",
-            f"Provenance: {provenance}",
+            f"Released commit `{release_commit}` in `{environment}`. [Release verification]({url})",
         ]
     )
 
@@ -720,27 +623,19 @@ def candidate_ready(
     session_open: bool = False,
     resolved: dict[str, Any] | None = None,
 ) -> str:
-    starts = (
-        "once the developer closes the Claude session, which stays open for further changes"
-        if session_open
-        else "by themselves"
-    )
+    starts = "once the developer closes the Claude session" if session_open else "next"
     lines = [
-        f"## Implementation candidate c{candidate_no} ready for verification",
-        f"Nothing to do: moving into **{_into(Status.DEVELOPING, Action.COMPLETE_DEVELOPMENT)}**, "
-        f"where independent review and verification start {starts}.",
-        f"PR: {pr_url} · commit `{sha}`",
+        f"## Candidate c{candidate_no} ready for verification",
+        f"Verification starts {starts}. PR: {pr_url} · commit `{sha}`",
     ]
     if resolved:
         lines.append(
-            f"The latest `{base}` (`{str(resolved['sha'])[:12]}`) was merged in first; Claude resolved "
-            f"the conflicts in {', '.join(resolved['paths'])}."
+            f"Latest `{base}` merged in; Claude resolved conflicts in {', '.join(resolved['paths'])}."
         )
     if merge_conflicts:
         lines.append(
-            f"The latest `{base}` conflicts in "
-            f"{', '.join(p for c in merge_conflicts for p in c['paths'])} and was not merged in. "
-            "Resolve it when merging the pull request."
+            f"`{base}` conflicts in {', '.join(p for c in merge_conflicts for p in c['paths'])} and was not "
+            "merged in: resolve when merging the PR."
         )
     return "\n".join(lines)
 
@@ -756,21 +651,16 @@ def follow_up(
     ended: bool = False,
 ) -> str:
     """A candidate pushed from the open development session (``ended``: as it closed)."""
-    starts = (
-        "the developer has closed the session, so they start now"
-        if ended
-        else "they start once the developer closes the session"
-    )
+    starts = "starting now" if ended else "starting when the developer closes the session"
     lines = [
         f"## Follow-up change: candidate c{candidate_no}",
-        f"Commit `{sha}`: {url}. Asked of Claude in the open session:",
+        f"Commit `{sha}`: {url}. Asked in the open session:",
         *[f"- {r}" for r in requests],
-        "Earlier code and acceptance approvals do not cover it.",
         (
-            f"The ticket moved from {was_in} back to Ready for verification; review and verification "
-            f"run again ({starts})."
+            f"Moved from {was_in} back to Ready for verification ({starts}); earlier approvals do not "
+            "cover it."
             if moved
-            else f"Review and verification run on the latest candidate ({starts})."
+            else f"Review and verification run on it ({starts}); earlier approvals do not cover it."
         ),
     ]
     return "\n".join(lines)
@@ -783,8 +673,7 @@ def follow_up_revision(stage: str, replaces: str, requests: list[str]) -> str:
     old = f"v{int(m.group('rev')):03d}" if m else replaces
     return "\n".join(
         [
-            f"**Follow-up revision** replacing {old}: moving the ticket on now approves this "
-            f"revision, not {old}. Changed in the open {STAGE_TITLES.get(stage, stage).lower()} session:",
+            f"**Follow-up revision** replacing {old}: the next move approves this revision. Changed:",
             *[f"- {r}" for r in requests],
         ]
     )
@@ -796,15 +685,9 @@ def overlap_warning(f: OverlapFinding, assignees: dict[str, str | None], here: s
         f"## Overlap warning: {f.warning_id}",
         f"{here} and {other} ({assignees.get(other) or 'unassigned'}) overlap: **{f.kind.value}**.",
         *[f"- {d}" for d in f.details[:10]],
-        "Work continues on both; verification tests each candidate with the other's, and merge "
-        "conflicts are flagged to resolve when merging.",
     ]
     if f.severity is OverlapSeverity.HIGH:
-        lines.append(
-            "Higher risk (shared interface, schema or migration, or a dependency): agree which merges "
-            "first. To rethink one ticket choose **Revise scope**; to tell its next Claude session about "
-            "the other, comment starting with `FOR CLAUDE`."
-        )
+        lines.append("Higher risk: agree which merges first, or choose **Revise scope** on one.")
     return "\n".join(lines)
 
 
@@ -813,7 +696,7 @@ def handover(stage: str, state: str, artefacts: dict[str, str], next_action: str
     if stage in STAGE_TITLES and state.startswith("blocked"):
         resume = _stage_def(stage).resume_action
         lines.append(
-            f"Once reassigned, the new owner chooses **Resume {STAGE_TITLES[stage].lower()}** "
+            f"The new owner chooses **Resume {STAGE_TITLES[stage].lower()}** "
             f"{_moves(Status.BLOCKED, resume)}."
         )
     lines += ["", f"State: {state}", *[f"- {k}: {v}" for k, v in sorted(artefacts.items())]]
