@@ -40,8 +40,6 @@ author's reasoning; judge only the artefacts and the code.
      Set `requested: true` and quote the request in `request` when the commit messages,
      notes or comments show the developer asked for it; otherwise `requested: false` (Claude
      went beyond the specification on its own, which the human should know).
-     Write `spec_change`: the specification wording that would describe the code as it is
-     (the new or replaced acceptance criteria).
    - A defect is broken, missing or incomplete behaviour, or a change that breaks another
      requirement, weakens tests or is unsafe. A deviation never excuses those: record them
      as `findings` as well.

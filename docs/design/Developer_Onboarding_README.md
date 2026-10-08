@@ -1,5 +1,7 @@
 # Developer onboarding for the local Jira driven AI SDLC
 
+> **Superseded in part (8 Oct 2026):** release preparation, release review and release verification no longer exist. The release is the human merge of the PR: Accept delivery moves the ticket to Ready for release, and the coordinator checks the merge and moves it to Done. References below to those stages, their statuses, the release proposal, `RECORD RELEASE` and `amend-spec` are historical. See `docs/jira-workflow-setup.md` and `docs/user-guide.md`.
+
 README blueprint for Claude Code to implement and verify | Version 1.0 | 1 October 2026
 
 **This is the intended onboarding guide, not a claim that the coordinator package already exists.** Claude Code must turn this into the delivery repository's root README, replace source locations with real ones, implement the specified commands and verify the instructions from a clean developer setup before removing this notice.

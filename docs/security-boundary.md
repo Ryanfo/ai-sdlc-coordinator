@@ -64,7 +64,7 @@ tmux -L delivery new-session -d -s <ticket>-<procedure> -c <worktree> --
 | A person can type to Claude, and use Claude Code's mode switch | They are the developer the coordinator works for. `--restricted` still refuses bypassPermissions, the sandbox still applies to every shell command, and the deny rules are unchanged |
 | Claude Code saves the transcript under `~/.claude/projects` | It is mirrored into the run's logs as it is written, and that copy of the transcript is deleted when the session ends |
 | Sessions can stay open after hand-off and their changes are pushed | The coordinator pushes, never Claude (no credentials, push denied). Only from the feature worktree, fast-forward only, never protected paths, only while the ticket is in a review status or Ready for verification with no run working on it. Each push is a new candidate that supersedes code, acceptance and release approvals and goes back through verification |
-| Specification, plan and release proposal sessions stay open and their edits are published | The coordinator publishes, never Claude: the edited document is copied from the output directory (the only place the session can write) and published through the stage's own publication to the delivery branch, as a new revision whose gate supersedes the one under review. Only while the ticket is in that review status with the session's own revision under review |
+| Specification and plan sessions stay open and their edits are published | The coordinator publishes, never Claude: the edited document is copied from the output directory (the only place the session can write) and published through the stage's own publication to the delivery branch, as a new revision whose gate supersedes the one under review. Only while the ticket is in that review status with the session's own revision under review |
 
 On 2 Oct 2026 (Claude Code 2.1.287, macOS) `--claude-probe` ran the same probe through an
 interactive session in tmux, with the folder-trust question answered by the coordinator: every
@@ -110,7 +110,7 @@ cache under `node_modules`, binds a local port and connects to it.
 | `AskUserQuestion` is denied under `dontAsk` even when an allow rule names it (Claude Code 2.1.289) | The resolver (`resolve-blocker`, which needs to ask the developer) runs in permission mode `default`: whatever its allow rules do not cover asks the developer instead of being denied. A resolution only starts when the developer asked for it and runs in a window on their machine. Deny rules, `--restricted`, the `--tools` set and the OS sandbox are the same as the implementer's |
 | Commands prefixed with `VAR=value` need approval | `PORT`/`E2E_PORT` are exported into the worker environment; procedures say not to prefix |
 | Inline interpreter code (`python3 -c …`) needs approval | Not needed by procedures; the probe uses an `npm run` script, matching real usage |
-| A failed verification run in a too-strict sandbox refused to claim success | Working as designed: the worker reported a blocker; the coordinator moved the ticket to Blocked. (There is no release verification stage any more: the merge is checked by the coordinator itself) |
+| A failed verification run in a too-strict sandbox refused to claim success | Working as designed: the worker reported a blocker; the coordinator moved the ticket to Blocked. (The merge is checked by the coordinator itself) |
 
 ## Known limitations (stated, not hidden)
 

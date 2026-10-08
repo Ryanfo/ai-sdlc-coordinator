@@ -6,7 +6,6 @@ from delivery.workflow import (
     ACTIVE_STATUSES,
     BOARD_COLUMNS,
     LIFECYCLE_STAGES,
-    PROPOSAL_STATUSES,
     READY_STATUSES,
     RESOLVED_ACTIONS,
     ROUTES,
@@ -19,9 +18,7 @@ from delivery.workflow import (
     Status,
     coordinator_route,
     human_route,
-    required_statuses,
     resume_route,
-    routes_for,
 )
 
 # Every human route from the handoff §6 table: (from, to, requirement)
@@ -33,14 +30,10 @@ HUMAN_TABLE = [
     (Status.PLAN_REVIEW, Status.READY_PLANNING, Requirement.PLAN_CHANGES),
     (Status.CODE_REVIEW, Status.ACCEPTANCE_REVIEW, Requirement.CODE_APPROVAL),
     (Status.CODE_REVIEW, Status.CHANGES_REQUESTED, Requirement.CODE_CHANGES),
-    (Status.ACCEPTANCE_REVIEW, Status.READY_RELEASE_PREPARATION, Requirement.ACCEPTANCE),
+    (Status.ACCEPTANCE_REVIEW, Status.READY_RELEASE, Requirement.ACCEPTANCE),
     (Status.ACCEPTANCE_REVIEW, Status.CHANGES_REQUESTED, Requirement.ACCEPTANCE_CHANGES),
     (Status.CHANGES_REQUESTED, Status.READY_DEVELOPMENT, Requirement.IMPLEMENTATION_CHANGES),
     (Status.CHANGES_REQUESTED, Status.READY_REFINEMENT, Requirement.SCOPE_REVISION),
-    (Status.RELEASE_REVIEW, Status.READY_RELEASE, Requirement.RELEASE_APPROVAL),
-    (Status.RELEASE_REVIEW, Status.READY_RELEASE_PREPARATION, Requirement.RELEASE_CHANGES),
-    # Without a release proposal, accepting the delivery goes straight to Ready for release.
-    (Status.ACCEPTANCE_REVIEW, Status.READY_RELEASE, Requirement.ACCEPTANCE),
 ]
 
 
@@ -68,7 +61,7 @@ def test_every_stage_has_start_complete_question_block_routes() -> None:
         (Status.REFINING, Action.COMPLETE_PLANNING),  # wrong stage
         (Status.BACKLOG, Action.START_REFINEMENT),  # must be in ready status
         (Status.NEEDS_CLARIFICATION, Action.SUBMIT_REFINEMENT_ANSWERS),
-        (Status.RELEASE_REVIEW, Action.CANCEL),
+        (Status.READY_RELEASE, Action.ACCEPT_DELIVERY),
     ],
 )
 def test_coordinator_cannot_take_human_or_wrong_routes(src: Status, action: Action) -> None:
@@ -85,19 +78,6 @@ def test_coordinator_completes_a_merged_release() -> None:
         for r in ROUTES
         if r.source is Status.READY_RELEASE and r.actor is Actor.HUMAN and r.target is not Status.CANCELLED
     ]
-
-
-def test_the_release_proposal_is_optional() -> None:
-    with_proposal = routes_for(True)
-    without = routes_for(False)
-    assert {r.target for r in with_proposal if r.action is Action.ACCEPT_DELIVERY} == {
-        Status.READY_RELEASE_PREPARATION
-    }
-    assert {r.target for r in without if r.action is Action.ACCEPT_DELIVERY} == {Status.READY_RELEASE}
-    # Nothing in a Jira project without a proposal touches the three release preparation statuses.
-    assert not [r for r in without if PROPOSAL_STATUSES & {r.source, r.target}]
-    assert required_statuses(True) >= PROPOSAL_STATUSES
-    assert not PROPOSAL_STATUSES & required_statuses(False)
 
 
 def test_no_global_arbitrary_transition() -> None:
@@ -125,8 +105,8 @@ def test_board_maps_every_status_exactly_once() -> None:
 
 
 def test_ready_and_active_sets() -> None:
-    assert len(READY_STATUSES) == 6  # five stages and resolution
-    assert len(ACTIVE_STATUSES) == 6
+    assert len(READY_STATUSES) == 5  # four stages and resolution
+    assert len(ACTIVE_STATUSES) == 5
     assert Status.READY_RELEASE not in READY_STATUSES  # human release gate, not a machine queue
 
 

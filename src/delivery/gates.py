@@ -28,17 +28,14 @@ from delivery.ports import CheckRun, CommitStatus, JiraComment, PullRequest, Rev
 GATE_REVISION_PREFIX = {
     GateKind.SPEC: "v",
     GateKind.PLAN: "v",
-    GateKind.RELEASE: "v",
     GateKind.CODE: "c",
     GateKind.ACCEPT: "c",
-    GateKind.RECORD: "v",
 }
 
 
 def gate_token(ticket_key: str, kind: GateKind, revision: int) -> str:
     """The gate's name: internal (records, supersession, publication IDs); nobody types it."""
-    token_kind = "RELEASE" if kind is GateKind.RECORD else kind.value
-    return f"{ticket_key}-{token_kind}-{GATE_REVISION_PREFIX[kind]}{revision}"
+    return f"{ticket_key}-{kind.value}-{GATE_REVISION_PREFIX[kind]}{revision}"
 
 
 class GateOutcome(StrEnum):
@@ -276,18 +273,9 @@ _DOWNSTREAM: dict[GateKind, set[GateKind]] = {
         GateKind.PLAN,
         GateKind.CODE,
         GateKind.ACCEPT,
-        GateKind.RELEASE,
-        GateKind.RECORD,
     },
-    GateKind.PLAN: {
-        GateKind.PLAN,
-        GateKind.CODE,
-        GateKind.ACCEPT,
-        GateKind.RELEASE,
-        GateKind.RECORD,
-    },
-    GateKind.CODE: {GateKind.CODE, GateKind.ACCEPT, GateKind.RELEASE, GateKind.RECORD},
-    GateKind.RELEASE: {GateKind.RELEASE, GateKind.RECORD},
+    GateKind.PLAN: {GateKind.PLAN, GateKind.CODE, GateKind.ACCEPT},
+    GateKind.CODE: {GateKind.CODE, GateKind.ACCEPT},
 }
 
 

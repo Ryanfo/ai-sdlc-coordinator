@@ -16,15 +16,14 @@ class Stage(StrEnum):
     PLANNING = "planning"
     DEVELOPMENT = "development"
     VERIFICATION = "verification"
-    RELEASE_PREPARATION = "release_preparation"
     # Not part of the lifecycle: a developer-attended session that clears a blocker, after which
     # the ticket goes back to the stage that blocked (see STAGES and RESOLVED_ACTIONS).
     RESOLUTION = "resolution"
 
     @classmethod
     def _missing_(cls, value: object) -> Stage | None:
-        # Records written before release verification was removed.
-        return cls.RELEASE_PREPARATION if value == "release_verification" else None
+        # Records written while the release stages existed (the release is now the PR merge).
+        return cls.VERIFICATION if value in ("release_preparation", "release_verification") else None
 
 
 class Status(StrEnum):
@@ -46,9 +45,6 @@ class Status(StrEnum):
     BLOCKED = "blocked"
     READY_RESOLUTION = "ready_resolution"
     RESOLVING = "resolving"
-    READY_RELEASE_PREPARATION = "ready_release_preparation"
-    PREPARING_RELEASE = "preparing_release"
-    RELEASE_REVIEW = "release_review"
     READY_RELEASE = "ready_release"
     DONE = "done"
     CANCELLED = "cancelled"
@@ -80,9 +76,6 @@ STATUS_NAMES: dict[Status, str] = {
     Status.BLOCKED: "Blocked",
     Status.READY_RESOLUTION: "Ready for resolution",
     Status.RESOLVING: "Resolving",
-    Status.READY_RELEASE_PREPARATION: "Ready for release preparation",
-    Status.PREPARING_RELEASE: "Preparing release",
-    Status.RELEASE_REVIEW: "Release review",
     Status.READY_RELEASE: "Ready for release",
     Status.DONE: "Done",
     Status.CANCELLED: "Cancelled",
@@ -95,7 +88,6 @@ _TODO = {
     Status.READY_DEVELOPMENT,
     Status.READY_VERIFICATION,
     Status.READY_RESOLUTION,
-    Status.READY_RELEASE_PREPARATION,
     Status.READY_RELEASE,
 }
 _DONE = {Status.DONE, Status.CANCELLED}
@@ -114,7 +106,6 @@ HUMAN_REVIEW_STATUSES = frozenset(
         Status.PLAN_REVIEW,
         Status.CODE_REVIEW,
         Status.ACCEPTANCE_REVIEW,
-        Status.RELEASE_REVIEW,
         Status.CHANGES_REQUESTED,
     }
 )
@@ -142,10 +133,6 @@ class Action(StrEnum):
     SUBMIT_IMPLEMENTATION_CHANGES = "submit_implementation_changes"
     SUBMIT_FOLLOW_UP = "submit_follow_up"
     REVISE_SCOPE = "revise_scope"
-    START_RELEASE_PREPARATION = "start_release_preparation"
-    COMPLETE_RELEASE_PREPARATION = "complete_release_preparation"
-    APPROVE_RELEASE = "approve_release"
-    REQUEST_RELEASE_CHANGES = "request_release_changes"
     RECORD_RELEASE = "record_release"
     ASK_QUESTIONS = "ask_questions"
     BLOCK_STAGE = "block_stage"
@@ -153,19 +140,16 @@ class Action(StrEnum):
     SUBMIT_PLANNING_ANSWERS = "submit_planning_answers"
     SUBMIT_DEVELOPMENT_ANSWERS = "submit_development_answers"
     SUBMIT_VERIFICATION_ANSWERS = "submit_verification_answers"
-    SUBMIT_RELEASE_PREPARATION_ANSWERS = "submit_release_preparation_answers"
     RESUME_REFINEMENT = "resume_refinement"
     RESUME_PLANNING = "resume_planning"
     RESUME_DEVELOPMENT = "resume_development"
     RESUME_VERIFICATION = "resume_verification"
-    RESUME_RELEASE_PREPARATION = "resume_release_preparation"
     REQUEST_RESOLUTION = "request_resolution"
     START_RESOLUTION = "start_resolution"
     RESOLVED_REFINEMENT = "resolved_refinement"
     RESOLVED_PLANNING = "resolved_planning"
     RESOLVED_DEVELOPMENT = "resolved_development"
     RESOLVED_VERIFICATION = "resolved_verification"
-    RESOLVED_RELEASE_PREPARATION = "resolved_release_preparation"
     CANCEL = "cancel"
     # Optional routes (OPTIONAL_ROUTES): each needs one more transition in Jira.
     USE_APPROVED_PLAN = "use_approved_plan"
@@ -195,10 +179,6 @@ DEFAULT_ACTION_NAMES: dict[Action, str] = {
     Action.SUBMIT_IMPLEMENTATION_CHANGES: "Submit implementation changes",
     Action.SUBMIT_FOLLOW_UP: "Submit follow-up changes",
     Action.REVISE_SCOPE: "Revise scope",
-    Action.START_RELEASE_PREPARATION: "Start release preparation",
-    Action.COMPLETE_RELEASE_PREPARATION: "Complete release preparation",
-    Action.APPROVE_RELEASE: "Approve release",
-    Action.REQUEST_RELEASE_CHANGES: "Request release changes",
     Action.RECORD_RELEASE: "Record release",
     Action.ASK_QUESTIONS: "Ask questions",
     Action.BLOCK_STAGE: "Block stage",
@@ -206,19 +186,16 @@ DEFAULT_ACTION_NAMES: dict[Action, str] = {
     Action.SUBMIT_PLANNING_ANSWERS: "Submit planning answers",
     Action.SUBMIT_DEVELOPMENT_ANSWERS: "Submit development answers",
     Action.SUBMIT_VERIFICATION_ANSWERS: "Submit verification answers",
-    Action.SUBMIT_RELEASE_PREPARATION_ANSWERS: "Submit release preparation answers",
     Action.RESUME_REFINEMENT: "Resume refinement",
     Action.RESUME_PLANNING: "Resume planning",
     Action.RESUME_DEVELOPMENT: "Resume development",
     Action.RESUME_VERIFICATION: "Resume verification",
-    Action.RESUME_RELEASE_PREPARATION: "Resume release preparation",
     Action.REQUEST_RESOLUTION: "Request resolution",
     Action.START_RESOLUTION: "Start resolution",
     Action.RESOLVED_REFINEMENT: "Resolved: resume refinement",
     Action.RESOLVED_PLANNING: "Resolved: resume planning",
     Action.RESOLVED_DEVELOPMENT: "Resolved: resume development",
     Action.RESOLVED_VERIFICATION: "Resolved: resume verification",
-    Action.RESOLVED_RELEASE_PREPARATION: "Resolved: resume release preparation",
     Action.CANCEL: "Cancel",
     Action.USE_APPROVED_PLAN: "Use approved plan",
     Action.COMPLETE_SPIKE: "Complete spike",
@@ -245,8 +222,6 @@ class Requirement(StrEnum):
     ACCEPTANCE_CHANGES = "acceptance_changes"
     IMPLEMENTATION_CHANGES = "implementation_changes"
     SCOPE_REVISION = "scope_revision"
-    RELEASE_APPROVAL = "release_approval"
-    RELEASE_CHANGES = "release_changes"
     CLARIFICATION_ANSWERS = "clarification_answers"
     BLOCKER_RESOLVED = "blocker_resolved"
     CANCEL_REASON = "cancel_reason"
@@ -264,7 +239,6 @@ CHANGE_REQUIREMENTS = frozenset(
         Requirement.PLAN_CHANGES,
         Requirement.IMPLEMENTATION_CHANGES,
         Requirement.SCOPE_REVISION,
-        Requirement.RELEASE_CHANGES,
     }
 )
 
@@ -332,18 +306,6 @@ LIFECYCLE_STAGES: dict[Stage, StageDef] = {
         ("review-ticket", "verify-ticket"),
         "VERIFY",
     ),
-    Stage.RELEASE_PREPARATION: StageDef(
-        Stage.RELEASE_PREPARATION,
-        Status.READY_RELEASE_PREPARATION,
-        Status.PREPARING_RELEASE,
-        Status.RELEASE_REVIEW,
-        Action.START_RELEASE_PREPARATION,
-        Action.COMPLETE_RELEASE_PREPARATION,
-        Action.SUBMIT_RELEASE_PREPARATION_ANSWERS,
-        Action.RESUME_RELEASE_PREPARATION,
-        ("prepare-release",),
-        "RELPREP",
-    ),
 }
 
 # Resolution reuses the ready/active shape so intake, the executor and the console treat it like a
@@ -370,7 +332,6 @@ RESOLVED_ACTIONS: dict[Stage, Action] = {
     Stage.PLANNING: Action.RESOLVED_PLANNING,
     Stage.DEVELOPMENT: Action.RESOLVED_DEVELOPMENT,
     Stage.VERIFICATION: Action.RESOLVED_VERIFICATION,
-    Stage.RELEASE_PREPARATION: Action.RESOLVED_RELEASE_PREPARATION,
 }
 
 READY_STATUSES = frozenset(d.ready for d in STAGES.values())
@@ -432,7 +393,7 @@ _HUMAN_MAIN: tuple[Route, ...] = (
     _human(
         Status.ACCEPTANCE_REVIEW,
         Action.ACCEPT_DELIVERY,
-        Status.READY_RELEASE_PREPARATION,
+        Status.READY_RELEASE,
         Requirement.ACCEPTANCE,
     ),
     _human(
@@ -452,18 +413,6 @@ _HUMAN_MAIN: tuple[Route, ...] = (
         Action.REVISE_SCOPE,
         Status.READY_REFINEMENT,
         Requirement.SCOPE_REVISION,
-    ),
-    _human(
-        Status.RELEASE_REVIEW,
-        Action.APPROVE_RELEASE,
-        Status.READY_RELEASE,
-        Requirement.RELEASE_APPROVAL,
-    ),
-    _human(
-        Status.RELEASE_REVIEW,
-        Action.REQUEST_RELEASE_CHANGES,
-        Status.READY_RELEASE_PREPARATION,
-        Requirement.RELEASE_CHANGES,
     ),
 )
 
@@ -530,22 +479,6 @@ RECORD_RELEASE_ROUTE = Route(
     Requirement.NONE,
 )
 
-# A release proposal is optional (``[release] proposal``). Without one, accepting the delivery
-# goes straight to Ready for release: the PR merge is the release and the ticket has no release
-# preparation, release review or the statuses that go with them. Which of the two Accept delivery
-# transitions a Jira project has is the Jira project's choice of target status; the coordinator
-# reads the move it finds.
-PROPOSAL_STATUSES = frozenset(
-    {Status.READY_RELEASE_PREPARATION, Status.PREPARING_RELEASE, Status.RELEASE_REVIEW}
-)
-DIRECT_RELEASE_ROUTE = Route(
-    Status.ACCEPTANCE_REVIEW,
-    Action.ACCEPT_DELIVERY,
-    Status.READY_RELEASE,
-    Actor.HUMAN,
-    Requirement.ACCEPTANCE,
-)
-
 # Optional routes for kinds of work, each needing one more transition in Jira (added only by
 # teams that use it; without it the coordinator takes the full route instead):
 # * a fast-track ticket's plan is written and approved with its specification, so planning
@@ -564,7 +497,7 @@ SPIKE_ROUTE = Route(
 # Resolution (optional, like the two above): a developer moves a Blocked ticket to Ready for
 # resolution; the coordinator opens a Claude session that clears the blocker with them and
 # returns the ticket to the stage that blocked, or to Blocked when it could not. Each resolved
-# route carries its stage so Jira can hide the other four by the resume stage field.
+# route carries its stage so Jira can hide the other three by the resume stage field.
 RESOLUTION_ROUTES: tuple[Route, ...] = (
     Route(
         Status.BLOCKED,
@@ -601,29 +534,9 @@ ROUTES: tuple[Route, ...] = (
     + _HUMAN_CANCEL
     + _coordinator_routes()
     + FOLLOW_UP_ROUTES
-    + (RECORD_RELEASE_ROUTE, DIRECT_RELEASE_ROUTE)
+    + (RECORD_RELEASE_ROUTE,)
     + OPTIONAL_ROUTES
 )
-
-
-def routes_for(proposal: bool) -> tuple[Route, ...]:
-    """The routes a Jira project needs: with a release proposal the release preparation statuses
-    and their routes, without one the direct route from Acceptance review to Ready for release."""
-    if proposal:
-        return tuple(r for r in ROUTES if r is not DIRECT_RELEASE_ROUTE)
-    return tuple(
-        r
-        for r in ROUTES
-        if r.source not in PROPOSAL_STATUSES
-        and r.target not in PROPOSAL_STATUSES
-        and not (r.action is Action.ACCEPT_DELIVERY and r.target is Status.READY_RELEASE_PREPARATION)
-    )
-
-
-def required_statuses(proposal: bool) -> frozenset[Status]:
-    """Statuses a Jira project must have (resolution is optional either way)."""
-    wanted = set(Status) - OPTIONAL_STATUSES
-    return frozenset(wanted if proposal else wanted - PROPOSAL_STATUSES)
 
 
 class IllegalTransition(Exception):
@@ -684,7 +597,6 @@ BOARD_COLUMNS: tuple[tuple[str, tuple[Status, ...]], ...] = (
             Status.PLAN_REVIEW,
             Status.CODE_REVIEW,
             Status.ACCEPTANCE_REVIEW,
-            Status.RELEASE_REVIEW,
             Status.CHANGES_REQUESTED,
         ),
     ),

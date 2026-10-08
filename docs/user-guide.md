@@ -136,7 +136,7 @@ choose **Submit for refinement**. It stays yours while assigned to you, whoever 
 
 Jira holds decisions only. Every comment that waits for you starts with the action to choose and
 the status it moves the ticket into. Check results are not posted (only failures are named).
-Specifications, plans, reviews and release documents are versioned on the `delivery/<KEY>`
+Specifications, plans and reviews are versioned on the `delivery/<KEY>`
 branch of the application repository; comments link to exact commits.
 
 Comments are deliberately terse, so what applies to every ticket lives here rather than in them:
@@ -148,14 +148,14 @@ Comments are deliberately terse, so what applies to every ticket lives here rath
   `only F2 and F3` to narrow it). **Submit follow-up changes** re-verifies the same candidate
   without new code, which only helps when a flaky check or a change on the base branch caused the
   failure.
-- The coordinator never merges or deploys. After **Approve release**, you merge the PR; the merge
-  is the release and the coordinator records and verifies it.
+- The coordinator never merges or deploys. After **Accept delivery**, you merge the PR; the merge
+  is the release and the coordinator moves the ticket to Done.
 - A new commit on a PR needs verifying again before its code can be approved.
 - Deviations nobody names in a change request are accepted when the code is approved.
 - The acceptance comment links the acceptance guide (how to check each criterion by hand); the
   criteria themselves are in the ticket.
-- How a release was merged (merge, squash or rebase) and the run behind each comment are in the
-  release verification report and `coordinator logs`, not on the ticket.
+- How a release was merged (merge, squash or rebase) is said in the Done comment; the run behind
+  each other comment is in `coordinator logs`, not on the ticket.
 
 ### Designs and attachments
 
@@ -184,7 +184,7 @@ You decide by moving the ticket; comments are what you want to say, in your own 
 
 - **Questions**: reply in a comment, then choose **Submit refinement answers**. A comment alone
   never restarts work.
-- **Changes**: choose **Request specification changes** (or plan, code, acceptance, release) and
+- **Changes**: choose **Request specification changes** (or plan, code, acceptance) and
   say what to change in a comment, before or after the move. Everything written since the
   revision was posted reaches Claude. See [human-templates.md](human-templates.md).
 
@@ -226,11 +226,6 @@ decide. No comment is needed.
   comment if the merge differs (it never blocks: the merge has happened; `delivery revert` takes
   it back out). Nothing to record by hand. Deviations accepted with the code are named in that
   comment; the specification is not rewritten for them.
-- **Release proposal (optional)**: with `proposal = true` under `[release]`, **Accept delivery**
-  leads to release preparation instead: Claude writes release notes, smoke steps and rollback
-  steps, you approve them (**Approve release**) and then merge. The specification is rewritten
-  to include accepted deviations first. Needs the three release preparation statuses in Jira
-  (docs/jira-workflow-setup.md).
 
 ## Several tickets at once
 
@@ -326,7 +321,7 @@ Closing the window does not end the session. This needs three **Submit follow-up
 transitions in Jira, from Code review, Acceptance review and Changes requested to Ready for
 verification.
 
-Specification, plan and release-proposal sessions work the same way: each reply that changes the
+Specification and plan sessions work the same way: each reply that changes the
 document is published as the next revision for review, and the next approve move approves it. No
 extra Jira transitions are needed.
 
@@ -445,7 +440,7 @@ coordinator never merges.
 | Location | Content |
 |---|---|
 | Jira | Brief, questions, decisions, status history, run summaries |
-| `delivery/<KEY>` branch | Specification, plan (or spike findings), footprint, reviews, verification, acceptance guide, release documents |
+| `delivery/<KEY>` branch | Specification, plan (or spike findings), footprint, reviews, verification, acceptance guide |
 | `delivery/guidance` branch | `docs/delivery/guidance.md`, read by every Claude session |
 | `feature/<KEY>` branch and PR | Implementation and tests |
 | `runtime.state_dir` | Your local journal, logs, run inputs and locks (private; never in Git). The coordinator's own log is `<state_dir>/supervisor/<id>/coordinator.log` |

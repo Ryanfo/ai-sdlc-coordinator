@@ -208,7 +208,7 @@ def note_text(comment: JiraComment, stage: str) -> str | None:
     """The guidance in a ``FOR CLAUDE [stage]`` comment for this stage, or None.
 
     The first line is ``FOR CLAUDE`` (every stage) or ``FOR CLAUDE development`` (one stage;
-    ``release`` covers release preparation and verification); the note follows on that line
+    ``verification`` also covers review); the note follows on that line
     after a colon or on the next lines.
     """
     if is_coordinator_comment(comment):
@@ -220,7 +220,7 @@ def note_text(comment: JiraComment, stage: str) -> str | None:
     if not m:
         return None
     scope = (m.group("stage") or "").lower().replace(" ", "_")
-    if scope and scope != stage and not (scope == "release" and stage.startswith("release")):
+    if scope and scope != stage:
         return None
     text = "\n".join(t for t in (m.group("text").strip(), rest.strip()) if t)
     return text or None

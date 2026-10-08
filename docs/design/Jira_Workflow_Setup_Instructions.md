@@ -1,5 +1,7 @@
 # Jira workflow setup instructions for the local AI SDLC
 
+> **Superseded in part (8 Oct 2026):** release preparation, release review and release verification no longer exist. The release is the human merge of the PR: Accept delivery moves the ticket to Ready for release, and the coordinator checks the merge and moves it to Done. References below to those stages, their statuses, the release proposal, `RECORD RELEASE` and `amend-spec` are historical. See `docs/jira-workflow-setup.md` and `docs/user-guide.md`.
+
 Version 1.0 | 1 October 2026 | Audience Jira administrator and delivery lead
 
 Configure this once per Jira project before developers connect their local coordinators. These instructions define the required operating workflow. They do not imply that a workflow has already been created in your Jira site. The coordinator build handoff contains the corresponding implementation contract.

@@ -25,7 +25,6 @@ DECISIONS: dict[Status, str] = {
     Status.PLAN_REVIEW: "approve or change the plan",
     Status.CODE_REVIEW: "review the PR on GitHub, then approve or request code changes",
     Status.ACCEPTANCE_REVIEW: "try it, then accept or request changes",
-    Status.RELEASE_REVIEW: "approve or change the release proposal",
     Status.CHANGES_REQUESTED: "choose Submit implementation changes or Revise scope",
 }
 GROUPS = (

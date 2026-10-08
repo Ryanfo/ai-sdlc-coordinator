@@ -35,7 +35,7 @@ from pydantic import (
     model_validator,
 )
 
-from delivery.workflow import DEFAULT_ACTION_NAMES, Action, Status, required_statuses
+from delivery.workflow import DEFAULT_ACTION_NAMES, OPTIONAL_STATUSES, Action, Status
 
 ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 CHECK_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
@@ -581,15 +581,11 @@ class ReleaseConfig(StrictModel):
     environment: str = Field(default="local-pilot", pattern=r"^[A-Za-z0-9._-]{1,64}$")
     human_merge_required: Literal[True] = True
     human_deployment_required: Literal[True] = True
-    # Write a release proposal (release notes, smoke and rollback steps) for approval before the
-    # PR is merged. Off: accepting the delivery goes straight to Ready for release and the
-    # merge moves the ticket to Done. On needs the three release preparation statuses in Jira.
-    proposal: bool = False
 
     @model_validator(mode="before")
     @classmethod
     def _legacy(cls, data: Any) -> Any:
-        # Release verification (and its smoke commands) no longer exists.
+        # Release verification (and its smoke commands) no longer exists: the merge is the release.
         if isinstance(data, dict):
             data = {k: v for k, v in data.items() if k != "smoke_commands"}
         return data
@@ -634,7 +630,17 @@ class ChecksConfig(StrictModel):
 
 
 StatusMapping = dict[Status, str]
-_REMOVED_STATUSES = frozenset({"ready_release_verification", "verifying_release"})
+# Release preparation and verification no longer exist: the PR merge is the release. A config
+# written while they did still loads.
+_REMOVED_STATUSES = frozenset(
+    {
+        "ready_release_verification",
+        "verifying_release",
+        "ready_release_preparation",
+        "preparing_release",
+        "release_review",
+    }
+)
 _REMOVED_ACTIONS = frozenset(
     {
         "start_release_verification",
@@ -642,6 +648,13 @@ _REMOVED_ACTIONS = frozenset(
         "submit_release_verification_answers",
         "resume_release_verification",
         "resolved_release_verification",
+        "start_release_preparation",
+        "complete_release_preparation",
+        "submit_release_preparation_answers",
+        "resume_release_preparation",
+        "resolved_release_preparation",
+        "approve_release",
+        "request_release_changes",
     }
 )
 
@@ -660,7 +673,6 @@ class WorkflowConfig(StrictModel):
     @field_validator("statuses", mode="before")
     @classmethod
     def _legacy_statuses(cls, v: Any) -> Any:
-        # The release verification statuses were removed; a config that still maps them loads.
         if isinstance(v, dict):
             return {k: sid for k, sid in v.items() if k not in _REMOVED_STATUSES}
         return v
@@ -683,9 +695,8 @@ class WorkflowConfig(StrictModel):
     def action_name(self, action: Action) -> str:
         return self.actions.get(action, DEFAULT_ACTION_NAMES[action])
 
-    def missing_statuses(self, proposal: bool = False) -> list[Status]:
-        need = required_statuses(proposal)
-        return [s for s in Status if s in need and s not in self.statuses]
+    def missing_statuses(self) -> list[Status]:
+        return [s for s in Status if s not in self.statuses and s not in OPTIONAL_STATUSES]
 
 
 class OverlapConfig(StrictModel):

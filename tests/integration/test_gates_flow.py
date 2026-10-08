@@ -8,7 +8,6 @@ from conftest import APPROVER, DEV
 from delivery.models import GateState
 from delivery.supervisor import Supervisor
 from delivery.workflow import Status
-from gitutil import external_commit
 from harness import REVIEWER, World, make_world, step
 
 BUGGY = "export const search = (q: string) => q; // bug\n"
@@ -49,7 +48,7 @@ async def test_failing_candidate_cannot_progress_and_fixed_candidate_supersedes(
     assert "R1" in env.read_text() or "F" in env.read_text()
 
 
-async def test_code_gate_requires_independent_github_review_on_current_head(tmp_path: Path) -> None:
+async def test_code_gate_requires_independent_github_review(tmp_path: Path) -> None:
     w = make_world(tmp_path)
     w.new_ticket("PILOT-1")
     w.submit("PILOT-1")
@@ -62,35 +61,15 @@ async def test_code_gate_requires_independent_github_review_on_current_head(tmp_
         assert pr
         w.github.approve(pr, "dev-bot")  # the PR author approving their own PR does not count
         w.move("PILOT-1", Status.ACCEPTANCE_REVIEW)
-        w.move("PILOT-1", Status.READY_RELEASE_PREPARATION)
-        await step(sup)
-        assert w.jira.status_of("PILOT-1") is Status.BLOCKED
-        assert "independent human GitHub approval" in w.last_comment("PILOT-1")
-        # Fix: an independent reviewer approves; an approver resumes; the decision is re-validated.
+        w.move("PILOT-1", Status.READY_RELEASE)
+        w.github.merge(pr)
+        report = await sup.poll_once()
+        # Not Done: nothing blocks it, but the approval does not stand until someone independent reviews.
+        assert w.jira.status_of("PILOT-1") is Status.READY_RELEASE
+        assert "independent human GitHub approval" in report.waiting[0]["reason"]
         w.github.approve(pr, REVIEWER)
-        w.jira.human_move("PILOT-1", Status.READY_RELEASE_PREPARATION, APPROVER)
         await step(sup)
-        assert w.jira.status_of("PILOT-1") is Status.RELEASE_REVIEW, w.last_comment("PILOT-1")
-
-
-async def test_new_commit_after_code_approval_invalidates_candidate(tmp_path: Path) -> None:
-    w = make_world(tmp_path)
-    w.new_ticket("PILOT-1")
-    w.submit("PILOT-1")
-    async with Supervisor(w.deps) as sup:
-        await _approve_to_development(w, sup, "PILOT-1")
-        await step(sup)
-        await step(sup)
-        rec = w.record("PILOT-1")
-        assert rec.pr_number
-        w.github.approve(rec.pr_number, REVIEWER)
-        w.move("PILOT-1", Status.ACCEPTANCE_REVIEW)
-        # Someone pushes a "small" change after approval.
-        external_commit(tmp_path, w.origin, "feature/PILOT-1", "src/late.ts", "x\n", "late")
-        w.move("PILOT-1", Status.READY_RELEASE_PREPARATION)
-        await step(sup)
-        assert w.jira.status_of("PILOT-1") is Status.BLOCKED
-        assert "not the verified candidate" in w.last_comment("PILOT-1")
+        assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
 
 
 async def test_unauthorised_approval_blocks_then_approver_resume_redecides(tmp_path: Path) -> None:

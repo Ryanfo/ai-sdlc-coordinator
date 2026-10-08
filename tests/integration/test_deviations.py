@@ -1,8 +1,8 @@
 """Deviations from the approved specification are questions for a human, never failures.
 
-Approving the code accepts them, and Claude rewrites the specification before release
-preparation (no new refinement or planning round); one named in a change request goes back to
-development, which changes the code back to the specification.
+Approving the code accepts them as built (the Done comment names them; the specification is not
+rewritten); one named in a change request goes back to development, which changes the code back
+to the specification.
 """
 
 from __future__ import annotations
@@ -11,10 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from conftest import APPROVER, DEV
-from delivery.intake import Intake, load_context
-from delivery.models import GateState
-from delivery.runtime import RunContext
+from conftest import DEV
 from delivery.supervisor import Supervisor
 from delivery.workflow import Status
 from harness import REVIEWER, World, make_world, step
@@ -26,13 +23,11 @@ GREEN = {
     "criterion_id": "AC1",
     "requested": True,
     "request": "make the search button green",
-    "spec_change": "AC1: the search button is green.",
 }
 EXPORT = {
     "id": "D2",
     "description": "An Export button downloads the results as CSV; the specification does not ask for it.",
     "requested": False,
-    "spec_change": "AC2: an Export button downloads the results as CSV.",
 }
 DEVIATES = [{"criterion_id": "AC1", "description": "green, see D1", "status": "deviates"}]
 # The second development run (the requested changes) edits something new.
@@ -81,42 +76,20 @@ async def test_deviation_is_flagged_and_approving_the_code_accepts_it(tmp_path: 
             Path(review_env["output"]["artifact_dir"]).parents[1] / "inputs" / "candidate-commits.txt"
         ).exists()
 
-        # Approving the code and accepting the delivery accept it: release preparation first has
-        # the specification rewritten; only the specification changes.
+        # Approving the code and accepting the delivery accept it as built; the merge is the release
+        # and the Done comment names the deviation. Nothing is rewritten.
         plan_token = w.token(KEY, "PLAN")
         w.github.approve(rec.pr_number or 0, REVIEWER)
         w.move(KEY, Status.ACCEPTANCE_REVIEW)
-        w.move(KEY, Status.READY_RELEASE_PREPARATION)
-        assert await step(sup) == [KEY]
-        assert w.jira.status_of(KEY) is Status.RELEASE_REVIEW, w.last_comment(KEY)
+        w.move(KEY, Status.READY_RELEASE)
+        w.github.merge(rec.pr_number or 0)
+        await step(sup)
+        assert w.jira.status_of(KEY) is Status.DONE, w.last_comment(KEY)
+        assert "Deviations accepted with the code: D1." in w.last_comment(KEY)
         assert len(_calls(w, "review-ticket")) == 1 and len(_calls(w, "verify-ticket")) == 1
-        amend = _envelope(_calls(w, "amend-spec")[0])
-        assert "make the search button green" in amend["feedback_items"]["D1"]
-        assert amend["approved_artefacts"][0]["revision"] == 1
         rec = w.record(KEY)
-        spec = next(g for g in rec.gates if g.token == f"{KEY}-SPEC-v2")
-        assert spec.state is GateState.APPROVED
-        assert spec.evidence and spec.evidence.transition_author == APPROVER
-        assert w.token(KEY, "PLAN") == plan_token  # the plan still stands
-        assert [(d.id, d.state, d.spec_revision) for d in rec.deviations] == [("D1", "accepted", 2)]
-        assert any("Specification v002: accepted deviations included" in c for c in w.comments(KEY))
-        names = await w.repo.ls_tree(f"origin/delivery/{KEY}", f"docs/delivery/{KEY}/specification/")
-        assert f"docs/delivery/{KEY}/specification/v002.md" in names
-        release = _envelope(_calls(w, "prepare-release")[0])
-        spec_input = next(a for a in release["approved_artefacts"] if a["kind"] == "specification")
-        assert spec_input["revision"] == 2
-
-        # Publishing the same run again (as after a crash) changes nothing.
-        before, gates = len(w.comments(KEY)), w.record(KEY).gates
-        entry = w.deps.store.latest_run(KEY)
-        assert entry and entry.record
-        ctx = await load_context(w.jira, w.cfg, KEY)
-        intake = Intake.restore(entry.record.outputs["intake"], ctx)
-        rc = RunContext(w.deps, ctx, intake, entry.record, entry.journal, ctx.record)
-        again = await sup.executor.resume_publication(rc)
-        assert again.state.value == "awaiting_human", again.reason
-        assert len(w.comments(KEY)) == before and w.record(KEY).gates == gates
-        assert w.jira.status_of(KEY) is Status.RELEASE_REVIEW
+        assert w.token(KEY, "SPEC") == f"{KEY}-SPEC-v1" and w.token(KEY, "PLAN") == plan_token
+        assert [(d.id, d.state) for d in rec.deviations] == [("D1", "open")]
 
 
 async def test_rejected_deviation_goes_back_to_development(tmp_path: Path) -> None:
@@ -138,7 +111,6 @@ async def test_rejected_deviation_goes_back_to_development(tmp_path: Path) -> No
         assert set(env["feedback_items"]) == {"D2"}  # D1 was not named, so it is left alone
         assert "drop the Export button" in env["feedback_items"]["D2"]
         assert "follows the approved specification" in env["feedback_items"]["D2"]
-        assert not _calls(w, "amend-spec")
         assert w.record(KEY).candidate_number == 2
 
 
@@ -166,7 +138,6 @@ async def test_deviations_named_with_other_changes_go_back_and_the_rest_wait(tmp
         implement = _envelope(_calls(w, "implement-ticket")[-1])
         assert set(implement["feedback_items"]) == {"F1", "D2"}  # D1 is not named: left as built
         # Nothing is accepted before the code is approved: the specification is unchanged.
-        assert not _calls(w, "amend-spec")
         spec_input = next(a for a in implement["approved_artefacts"] if a["kind"] == "specification")
         assert spec_input["revision"] == 1
 
@@ -191,7 +162,7 @@ async def test_with_no_approver_list_anyone_can_decide(tmp_path: Path) -> None:
         assert "Approving the code accepts them" in w.last_comment(KEY)
         w.github.approve(w.record(KEY).pr_number or 0, REVIEWER)
         w.move(KEY, Status.ACCEPTANCE_REVIEW, author=anyone)
-        w.move(KEY, Status.READY_RELEASE_PREPARATION, author=anyone)
+        w.move(KEY, Status.READY_RELEASE, author=anyone)
+        w.github.merge(w.record(KEY).pr_number or 0)
         await step(sup)
-        assert w.jira.status_of(KEY) is Status.RELEASE_REVIEW, w.last_comment(KEY)
-        assert w.token(KEY, "SPEC") == f"{KEY}-SPEC-v2"
+        assert w.jira.status_of(KEY) is Status.DONE, w.last_comment(KEY)

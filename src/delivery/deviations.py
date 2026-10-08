@@ -6,8 +6,7 @@ review and verification report those as deviations (D1, D2...), separately from 
 a deviation never fails verification. For each one a human decides, by moving the ticket:
 
 - acceptable: Approve code and Accept delivery accept the candidate as it is, deviations
-  included. Release preparation first has Claude rewrite the specification to include them and
-  publishes that revision as approved: no new refinement or planning round.
+  included. The specification is not rewritten; the Done comment names them.
 - not acceptable: request changes and name the D-item in a comment (``D2: follow the
   specification``); development changes the code back to the specification.
 
@@ -53,18 +52,3 @@ def change_back(record: DeviationRecord, note: str) -> str:
         "Change the code so it follows the approved specification here."
     )
     return f"{text} Note: {note}" if note else text
-
-
-def describe(d: Deviation | None, record: DeviationRecord) -> str:
-    """An accepted deviation as input for the specification rewrite."""
-    if d is None:
-        where = f" Criterion: {record.criterion_id}." if record.criterion_id else ""
-        return f"{record.summary}{where}"
-    parts = [d.description]
-    if d.criterion_id:
-        parts.append(f"Criterion: {d.criterion_id}.")
-    if d.requested:
-        parts.append(f"Asked for by the developer: {d.request or 'yes'}.")
-    if d.spec_change:
-        parts.append(f"Proposed specification wording: {d.spec_change}")
-    return " ".join(parts)

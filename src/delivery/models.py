@@ -60,7 +60,6 @@ class ArtifactKind(StrEnum):
     ARCHITECTURE = "architecture"
     REVIEW = "review"
     VERIFICATION = "verification"
-    RELEASE = "release"
     CODE = "code"
     TEST = "test"
     DOC = "doc"
@@ -98,7 +97,7 @@ class Finding(Model):
 class Deviation(Model):
     """Working behaviour that differs from the approved specification (added, changed or,
     when the developer asked for it, dropped). Not a defect: a human decides whether it is
-    acceptable. Accepted, the specification is rewritten to include it; not accepted,
+    acceptable. Accepted (approving the code), it stays as built; not accepted,
     development changes the code to follow the specification."""
 
     id: str = Field(pattern=r"^D\d{1,3}$")
@@ -107,8 +106,6 @@ class Deviation(Model):
     # The developer asked for it (in the open Claude session, a note or a change request).
     requested: bool = False
     request: str = Field(default="", max_length=1000)
-    # Wording the specification would need to describe the code as it is.
-    spec_change: str = Field(default="", max_length=4000)
     path: str | None = Field(default=None, max_length=400)
 
 
@@ -162,12 +159,6 @@ class ProposedTicket(Model):
     # A brief: the problem, scope and exclusions, numbered acceptance criteria.
     description: str = Field(min_length=1, max_length=8000)
     issue_type: str = Field(default="", max_length=60)
-
-
-class ReleaseProposal(Model):
-    candidate_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
-    smoke_steps: list[str] = Field(default_factory=list, max_length=50)
-    rollback_steps: list[str] = Field(default_factory=list, max_length=50)
 
 
 class ResolutionDecision(Model):
@@ -235,7 +226,6 @@ class StageResult(Model):
     evidence: list[Evidence] = Field(default_factory=list, max_length=200)
     worker_checks: list[WorkerCheck] = Field(default_factory=list, max_length=50)
     footprint: FootprintProposal | None = None
-    release: ReleaseProposal | None = None
     proposed_tickets: list[ProposedTicket] = Field(default_factory=list, max_length=20)
     blocker_reason: str = Field(default="", max_length=2000)
     # resolve-blocker only: what was done and who decided what.
@@ -576,6 +566,7 @@ class GateKind(StrEnum):
     PLAN = "PLAN"
     CODE = "CODE"
     ACCEPT = "ACCEPT"
+    # No longer created (the release is the PR merge); kept so earlier records still load.
     RELEASE = "RELEASE"
     RECORD = "RECORD"
 
@@ -667,7 +658,8 @@ class DeviationRecord(Model):
     # When the comment announcing it was posted (Jira's clock): decisions must come later.
     announced_at: datetime | None = None
     state: Literal["open", "accepted"] = "open"
-    # The specification revision that took it in, once accepted.
+    # No longer written (accepting the code accepts them as built, with no specification rewrite);
+    # kept so earlier records still load.
     spec_revision: int | None = None
 
 
@@ -691,7 +683,7 @@ class SharedExecutionRecord(Model):
     plan_revision: int = 0
     candidate_number: int = 0
     candidate_sha: str | None = None
-    release_revision: int = 0
+    release_revision: int = 0  # no longer written (there is no release proposal); kept for earlier records
     clarification_rounds: dict[str, int] = Field(default_factory=dict)
     gates: list[GateRecord] = Field(default_factory=list)
     pause: PauseInfo | None = None
@@ -706,6 +698,7 @@ class SharedExecutionRecord(Model):
     pending_feedback: list[dict[str, Any]] = Field(default_factory=list)
     # Deviations from the approved specification found by the latest verification.
     deviations: list[DeviationRecord] = Field(default_factory=list)
+    # The merge that released it, and what it contained (written when the ticket moves to Done).
     release: dict[str, Any] = Field(default_factory=dict)
     history: list[dict[str, Any]] = Field(default_factory=list)
 

@@ -8,7 +8,6 @@
         "architecture",
         "review",
         "verification",
-        "release",
         "code",
         "test",
         "doc"
@@ -38,7 +37,7 @@
     },
     "Deviation": {
       "additionalProperties": false,
-      "description": "Working behaviour that differs from the approved specification (added, changed or,\nwhen the developer asked for it, dropped). Not a defect: a human decides whether it is\nacceptable. Accepted, the specification is rewritten to include it; not accepted,\ndevelopment changes the code to follow the specification.",
+      "description": "Working behaviour that differs from the approved specification (added, changed or,\nwhen the developer asked for it, dropped). Not a defect: a human decides whether it is\nacceptable. Accepted (approving the code), it stays as built; not accepted,\ndevelopment changes the code to follow the specification.",
       "properties": {
         "id": {
           "pattern": "^D\\d{1,3}$",
@@ -73,12 +72,6 @@
           "default": "",
           "maxLength": 1000,
           "title": "Request",
-          "type": "string"
-        },
-        "spec_change": {
-          "default": "",
-          "maxLength": 4000,
-          "title": "Spec Change",
           "type": "string"
         },
         "path": {
@@ -427,37 +420,6 @@
       "title": "Question",
       "type": "object"
     },
-    "ReleaseProposal": {
-      "additionalProperties": false,
-      "properties": {
-        "candidate_sha": {
-          "pattern": "^[0-9a-f]{40}$",
-          "title": "Candidate Sha",
-          "type": "string"
-        },
-        "smoke_steps": {
-          "items": {
-            "type": "string"
-          },
-          "maxItems": 50,
-          "title": "Smoke Steps",
-          "type": "array"
-        },
-        "rollback_steps": {
-          "items": {
-            "type": "string"
-          },
-          "maxItems": 50,
-          "title": "Rollback Steps",
-          "type": "array"
-        }
-      },
-      "required": [
-        "candidate_sha"
-      ],
-      "title": "ReleaseProposal",
-      "type": "object"
-    },
     "ResolutionDecision": {
       "additionalProperties": false,
       "description": "A choice made while resolving a blocker, and who made it.",
@@ -559,7 +521,6 @@
         "planning",
         "development",
         "verification",
-        "release_preparation",
         "resolution"
       ],
       "title": "Stage",
@@ -701,17 +662,6 @@
       "anyOf": [
         {
           "$ref": "#/$defs/FootprintProposal"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
-    "release": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ReleaseProposal"
         },
         {
           "type": "null"

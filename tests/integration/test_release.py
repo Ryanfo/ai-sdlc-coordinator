@@ -2,16 +2,13 @@
 
 The coordinator reads the merge from GitHub, checks it contains the accepted candidate (a merge
 that does not is flagged on the ticket, never blocked: it has happened) and moves the ticket to
-Done. With ``[release] proposal`` a release proposal is approved first; without it (the default)
-accepting the delivery goes straight to Ready for release.
+Done. Accepting the delivery goes straight to Ready for release; there is no release stage.
 """
 
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-
-import pytest
 
 from delivery.supervisor import Supervisor
 from delivery.workflow import Status
@@ -37,28 +34,18 @@ async def _accepted(w: World, sup: Supervisor, key: str, *, approve_review: bool
 
 
 async def _to_ready_release(w: World, sup: Supervisor, key: str) -> int:
-    """Accepted, and (with a release proposal) the proposal approved: waiting for the merge."""
+    """Accepted: waiting for the merge."""
     pr = await _accepted(w, sup, key)
-    if w.cfg.release.proposal:
-        w.move(key, Status.READY_RELEASE_PREPARATION)
-        await step(sup)
-        assert w.jira.status_of(key) is Status.RELEASE_REVIEW, w.last_comment(key)
     w.move(key, Status.READY_RELEASE)
     return pr
 
 
-def _world(tmp_path: Path, proposal: bool, **kw: object) -> World:
-    extra = dict(kw.pop("extra", {}))  # type: ignore[call-overload]
-    extra["release"] = {"proposal": proposal}
-    return make_world(tmp_path, extra=extra, **kw)  # type: ignore[arg-type]
+def _world(tmp_path: Path) -> World:
+    return make_world(tmp_path)
 
 
-both = pytest.mark.parametrize("proposal", [False, True], ids=["no-proposal", "proposal"])
-
-
-@both
-async def test_squash_merge_provenance_reaches_done(tmp_path: Path, proposal: bool) -> None:
-    w = _world(tmp_path, proposal)
+async def test_squash_merge_provenance_reaches_done(tmp_path: Path) -> None:
+    w = _world(tmp_path)
     async with Supervisor(w.deps) as sup:
         pr = await _to_ready_release(w, sup, "PILOT-1")
         merged = w.github.merge(pr, how="squash")
@@ -69,9 +56,8 @@ async def test_squash_merge_provenance_reaches_done(tmp_path: Path, proposal: bo
     assert f"PR #{pr} merged" in w.last_comment("PILOT-1")
 
 
-@both
-async def test_unapproved_candidate_merged_is_flagged_not_blocked(tmp_path: Path, proposal: bool) -> None:
-    w = _world(tmp_path, proposal)
+async def test_unapproved_candidate_merged_is_flagged_not_blocked(tmp_path: Path) -> None:
+    w = _world(tmp_path)
     async with Supervisor(w.deps) as sup:
         pr = await _to_ready_release(w, sup, "PILOT-1")
         external_commit(tmp_path, w.origin, "feature/PILOT-1", "src/sneaky.ts", "x\n", "sneaky")
@@ -85,7 +71,7 @@ async def test_unapproved_candidate_merged_is_flagged_not_blocked(tmp_path: Path
 async def test_conflict_resolved_when_merging_is_accepted_and_flagged(tmp_path: Path) -> None:
     # main moved on and conflicts; the human resolves it in the PR (merging main into the
     # branch, as GitHub's Resolve conflicts does) and then merges.
-    w = _world(tmp_path, False)
+    w = _world(tmp_path)
     async with Supervisor(w.deps) as sup:
         pr = await _to_ready_release(w, sup, "PILOT-1")
         external_commit(tmp_path, w.origin, "main", "src/pilot-1.ts", "export const main = 1;\n", "m")
@@ -101,10 +87,9 @@ async def test_conflict_resolved_when_merging_is_accepted_and_flagged(tmp_path: 
     assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
 
 
-@both
-async def test_merge_is_read_from_github_and_completes_the_ticket(tmp_path: Path, proposal: bool) -> None:
+async def test_merge_is_read_from_github_and_completes_the_ticket(tmp_path: Path) -> None:
     # Nobody types the release into Jira: the human merge is the release.
-    w = _world(tmp_path, proposal)
+    w = _world(tmp_path)
     async with Supervisor(w.deps) as sup:
         pr = await _to_ready_release(w, sup, "PILOT-1")
         before = len(w.comments("PILOT-1"))
@@ -121,12 +106,9 @@ async def test_merge_is_read_from_github_and_completes_the_ticket(tmp_path: Path
     assert not any("RECORD RELEASE" in c for c in w.comments("PILOT-1"))
 
 
-@both
-async def test_a_release_that_cannot_be_completed_in_jira_is_retried_next_poll(
-    tmp_path: Path, proposal: bool
-) -> None:
+async def test_a_release_that_cannot_be_completed_in_jira_is_retried_next_poll(tmp_path: Path) -> None:
     # For example a Jira condition on the transition to Done.
-    w = _world(tmp_path, proposal)
+    w = _world(tmp_path)
     async with Supervisor(w.deps) as sup:
         pr = await _to_ready_release(w, sup, "PILOT-1")
         w.github.merge(pr)
@@ -141,23 +123,8 @@ async def test_a_release_that_cannot_be_completed_in_jira_is_retried_next_poll(
     assert sum(c.startswith("Released: Done") for c in w.comments("PILOT-1")) == 1
 
 
-async def test_pr_merged_before_release_approval_is_flagged_not_blocked(tmp_path: Path) -> None:
-    w = _world(tmp_path, True)
-    async with Supervisor(w.deps) as sup:
-        pr = await _accepted(w, sup, "PILOT-1")
-        merged = w.github.merge(pr)
-        w.move("PILOT-1", Status.READY_RELEASE_PREPARATION)
-        await step(sup)
-        assert w.jira.status_of("PILOT-1") is not Status.BLOCKED, w.last_comment("PILOT-1")
-        assert f"PR #{pr} is already merged" in w.last_comment("PILOT-1")
-        assert merged[:12] in w.last_comment("PILOT-1")
-        w.move("PILOT-1", Status.READY_RELEASE)
-        await step(sup)
-    assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
-
-
 async def test_pr_merged_before_acceptance_completes_on_accepting(tmp_path: Path) -> None:
-    w = _world(tmp_path, False)
+    w = _world(tmp_path)
     async with Supervisor(w.deps) as sup:
         pr = await _accepted(w, sup, "PILOT-1")
         w.github.merge(pr)
@@ -166,25 +133,21 @@ async def test_pr_merged_before_acceptance_completes_on_accepting(tmp_path: Path
     assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
 
 
-# --------------------------------------------------------------------------- no release proposal
-
-
-async def test_without_a_proposal_accepting_goes_straight_to_ready_for_release(tmp_path: Path) -> None:
-    w = _world(tmp_path, False)
+async def test_accepting_goes_straight_to_ready_for_release(tmp_path: Path) -> None:
+    w = _world(tmp_path)
     async with Supervisor(w.deps) as sup:
         await _accepted(w, sup, "PILOT-1")
         await sup.acceptance.tick(full=True)  # posts how to try it and what accepting does
         assert "Accept delivery (moves into Ready for release)" in w.last_comment("PILOT-1")
         w.move("PILOT-1", Status.READY_RELEASE)
         await step(sup)
-        # No release preparation: Claude wrote no release proposal and nothing waits for approval.
+        # Nothing runs and nothing waits for approval: only the merge is awaited.
         assert w.jira.status_of("PILOT-1") is Status.READY_RELEASE
-        assert not [i for i in w.invocations() if "prepare-release" in " ".join(i["argv"])]
-        assert not [g for g in w.record("PILOT-1").gates if g.kind.value == "RELEASE"]
+        assert [i["procedure"] for i in w.invocations()].count("verify-ticket") == 1
 
 
 async def test_an_acceptance_by_someone_who_may_not_decide_is_reported_and_waits(tmp_path: Path) -> None:
-    w = _world(tmp_path, False)
+    w = _world(tmp_path)
     async with Supervisor(w.deps) as sup:
         pr = await _accepted(w, sup, "PILOT-1")
         w.move("PILOT-1", Status.READY_RELEASE, author="stranger")
@@ -196,7 +159,7 @@ async def test_an_acceptance_by_someone_who_may_not_decide_is_reported_and_waits
 
 
 async def test_code_approved_without_an_independent_review_waits_for_it(tmp_path: Path) -> None:
-    w = _world(tmp_path, False)
+    w = _world(tmp_path)
     async with Supervisor(w.deps) as sup:
         pr = await _accepted(w, sup, "PILOT-1", approve_review=False)
         w.move("PILOT-1", Status.READY_RELEASE)

@@ -134,18 +134,10 @@ def latest_outcome(cfg: Config, entry: RunEntry) -> list[str]:
             asked = "asked for" if d.get("requested") else "not asked for"
             body += _wrap(f"{d['id']} ({asked}): {d['description']}")
         body += _wrap(
-            "Not a failure: accept (ACCEPT DEVIATIONS) or change back (a D-item in the change request)."
+            "Not a failure: Approve code accepts them as built, or change one back "
+            "(a D-item in the change request)."
         )
         out += _section("Deviations from the specification", body)
-    amendment = rec.outputs.get("amendment")
-    if amendment:
-        out += _section(
-            "Specification",
-            _wrap(
-                f"v{int(amendment['revision']):03d} rewritten to include the accepted deviations "
-                f"{', '.join(amendment.get('accepted', []))}"
-            ),
-        )
     out += _section("Next", _wrap(rec.next_action) if rec.next_action else [])
     logs = sorted((run_dir / "logs").glob("claude-*.txt")) if (run_dir / "logs").is_dir() else []
     files = [

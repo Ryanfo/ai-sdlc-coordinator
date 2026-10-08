@@ -21,8 +21,8 @@ there is no token to copy. Rules:
 | Situation | Choose | Comment (optional unless noted) |
 |---|---|---|
 | Answer questions | Submit <stage> answers | Your answers, in your own words (`Q2: ...` to name a question) |
-| Approve specification / plan / release proposal | Approve specification / Approve plan / Approve release | none |
-| Change specification / plan / release proposal | Request specification / plan / release changes | What to change |
+| Approve specification / plan | Approve specification / Approve plan | none |
+| Change specification / plan | Request specification / plan changes | What to change |
 | Approve code (after an independent GitHub review with CI passing) | Approve code | none; approving also accepts any deviations listed |
 | Request code changes | Request code changes, then Submit implementation changes | What to change; `D1: follow the specification` changes a deviation back. Unresolved PR review conversations are included too |
 | Accept delivery | Accept delivery | none |
@@ -38,10 +38,8 @@ there is no token to copy. Rules:
 
 Something changed during development that works but is not what the approved specification
 says. The review lists them as `D1`, `D2`… and they never fail verification. Approving the code
-(and accepting the delivery) accepts them. With a release proposal (`[release] proposal`),
-release preparation first has Claude rewrite the specification to include them and publishes it
-as the approved revision, with no new refinement or planning round; without one, the ticket's
-Done comment names them and the specification is left as it was. To have one changed back instead, request code changes and name it in a
+(and accepting the delivery) accepts them as built: the specification is not rewritten, and the
+ticket's Done comment names them. To have one changed back instead, request code changes and name it in a
 comment with what to do (`D2: keep the specification's wording`). A deviation nobody names is
 left as it is.
 

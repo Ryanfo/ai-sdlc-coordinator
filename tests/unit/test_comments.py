@@ -27,20 +27,12 @@ def test_review_gates_lead_with_the_move() -> None:
     assert "Approve plan** (moves into **Ready for development**)" in first_lines(plan)
     assert "Request plan changes** (moves into **Ready for planning**)" in plan
 
-    release = comments.release_gate("u", 1, "sha")
-    assert "**To approve**: choose **Approve release**" in first_lines(release)
-    assert "Then merge the PR" in first_lines(release)
-    assert "RECORD RELEASE" not in release  # read from GitHub, never typed in
-    assert "Request release changes** (moves into **Ready for release preparation**)" in release
-    assert "never merges" not in release and "No comment needed" not in release
-
 
 def test_gates_carry_no_names_or_summaries() -> None:
     for text in (
         comments.spec_gate("t", "u", 1),
         comments.plan_gate("u", "f", 1, []),
         comments.code_gate(1, "pr", "sha", "r", "v", [CHECK], [], [], []),
-        comments.release_gate("u", 1, "sha"),
     ):
         assert "approvers" not in text and "authorised" not in text and "anyone" not in text
 
@@ -61,8 +53,6 @@ def test_acceptance_comment_links_the_guide_instead_of_quoting_it() -> None:
     assert "**To accept**" in first_lines(text)
     assert "Accept delivery** (moves into **Ready for release**)" in first_lines(text)
     assert "ticket moves to Done when the merge is seen" in first_lines(text)
-    with_proposal = comments.acceptance_ready("K-1", 1, "pr", guide_url=None, proposal=True, **kw)
-    assert "Accept delivery** (moves into **Ready for release preparation**)" in first_lines(with_proposal)
     assert "```" not in text and "[Acceptance guide](https://x/guide)" in text
     assert text.index("Request acceptance changes") < text.index("delivery try K-1")
     assert "AC1" not in text

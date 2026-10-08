@@ -166,12 +166,12 @@ EXPECT = {
     "tokens": {"SPEC": "PILOT-1-SPEC-v2"},
     "round_token": None,
     "blocked_actions": {
-        "resume release preparation": "release_preparation",
+        "resume verification": "verification",
         "resume development": "development",
         "request resolution": None,
         "cancel": None,
     },
-    "resume_stage": "release_preparation",
+    "resume_stage": "verification",
 }
 
 
@@ -195,7 +195,7 @@ def _tickets(ref: str = "PILOT-1-SPEC-v2") -> str:
 
 
 def test_a_correct_request_comment_and_resume_action_are_accepted() -> None:
-    steps = [_step("jira_comment", _tickets()), _step("jira_action", "Resume release preparation")]
+    steps = [_step("jira_comment", _tickets()), _step("jira_action", "Resume verification")]
     assert check_next_steps(_blocked(*steps), EXPECT) is None
     # Wrapped in a code fence as people paste it from the ticket: still the same comment.
     assert check_next_steps(_blocked(_step("jira_comment", f"```\n{_tickets()}\n```")), EXPECT) is None
@@ -208,7 +208,7 @@ def test_the_quoted_sentence_from_the_first_session_is_refused() -> None:
 
 
 def test_decisions_are_actions_and_plain_comments_are_any_wording() -> None:
-    for old in ("APPROVE RELEASE PILOT-1-RELEASE-v1", "ANSWERS PILOT-1-RELPREP-R1\nQ1: yes"):
+    for old in ("APPROVE RELEASE PILOT-1-RELEASE-v1", "ANSWERS PILOT-1-VERIFY-R1\nQ1: yes"):
         problem = check_next_steps(_blocked(_step("jira_comment", old)), EXPECT) or ""
         assert "decisions are Jira moves" in problem and "jira_action" in problem
     assert check_next_steps(_blocked(_step("jira_comment", "Use the staging database.")), EXPECT) is None
@@ -224,7 +224,7 @@ def test_an_action_must_exist_on_a_blocked_ticket_for_the_stage_that_paused() ->
         check_next_steps(_blocked(_step("jira_action", "Approve release")), EXPECT) or ""
     )
     problem = check_next_steps(_blocked(_step("jira_action", "Resume development")), EXPECT)
-    assert problem and "paused in release_preparation" in problem
+    assert problem and "paused in verification" in problem
     assert check_next_steps(_blocked(_step("jira_action", "Cancel")), EXPECT) is None
 
 
@@ -279,7 +279,7 @@ def test_the_briefing_shows_which_request_comments_the_coordinator_reads() -> No
         ticket_state_lines(
             gates=gates,
             comments=comments,
-            resume_stage="release_preparation",
+            resume_stage="verification",
             blocked_actions=EXPECT["blocked_actions"],  # type: ignore[arg-type]
         )
     )
@@ -289,4 +289,4 @@ def test_the_briefing_shows_which_request_comments_the_coordinator_reads() -> No
     assert "NOT RECOGNISED" in next(ln for ln in text.splitlines() if "#2 " in ln)
     assert "CURRENT, the newest for its token" in next(ln for ln in text.splitlines() if "#3 " in ln)
     assert "looks fine" not in text
-    assert "Resume release preparation" not in text  # actions are listed by their lower-case keys
+    assert "Resume verification" not in text  # actions are listed by their lower-case keys

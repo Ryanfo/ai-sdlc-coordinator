@@ -13,7 +13,6 @@ import fnmatch
 import json
 import re
 import shutil
-from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar, Literal
 
@@ -38,7 +37,6 @@ from delivery.models import (
     ArtifactKind,
     Brief,
     CheckResult,
-    DecisionEvidence,
     Deviation,
     Finding,
     Footprint,
@@ -64,7 +62,6 @@ from delivery.models import (
 )
 from delivery.open_sessions import (
     FollowUp,
-    FollowUpRefused,
     OpenRecord,
     SessionRegistry,
     document_digest,
@@ -189,13 +186,12 @@ CHANGES_BY_PROCEDURE = {
     "plan-ticket": "plan",
     "investigate-ticket": "findings",
     "implement-ticket": "code",
-    "prepare-release": "release proposal",
 }
 
 
 # Procedures whose interactive session closes once it has handed over its result: the stage
 # carries on with another procedure (a development session must not be mistaken for it).
-CLOSED_AT_HAND_OFF = frozenset({"amend-spec", "resolve-conflicts", "resolve-blocker"})
+CLOSED_AT_HAND_OFF = frozenset({"resolve-conflicts", "resolve-blocker"})
 
 
 def change_ids(items: dict[str, str]) -> list[str]:
@@ -297,9 +293,6 @@ class StageStrategy:
         # Set when publishing a document edited in this stage's open session: the ticket stays
         # in its review status and the new revision supersedes the one under review.
         self.follow_up: FollowUp | None = None
-        # The specification rewritten in this run to include accepted deviations, until
-        # publication makes it the approved revision (see amend_specification).
-        self.amended_spec: ArtefactPointer | None = None
 
     # ------------------------------------------------------------------ workspace
     async def delivery_worktree(self) -> Path:
@@ -762,186 +755,9 @@ class StageStrategy:
             )
         return None
 
-    # ------------------------------------------------------------------ accepted deviations
     async def spec_input(self) -> ArtefactPointer | None:
-        """The specification this run works to: rewritten in this run, or the approved one."""
-        return self.amended_spec or await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION)
-
-    async def deviation_details(self) -> dict[str, Deviation]:
-        """Full text of the latest verification's deviations (deviations.json next to its review)."""
-        ref = self.ctx.shared.artefacts.get("deviations")
-        if not ref or "@" not in ref:
-            return {}
-        path, commit = ref.rsplit("@", 1)
-        data = await self.deps.repo.show_file(commit, path)
-        if data is None:
-            return {}
-        try:
-            return {d.id: d for d in (Deviation.model_validate(x) for x in json.loads(data))}
-        except (ValueError, TypeError):
-            return {}
-
-    async def amend_specification(self) -> Decision | None:
-        """Rewrite the approved specification to include the deviations accepted with the code
-        (``intake.accepted_deviations``), without a new refinement round. The rewrite becomes
-        ``self.amended_spec`` for the rest of this run and is published, already approved, by
-        ``publish_amendment``. Returns a decision only when the rewrite could not be made."""
-        ctx = self.ctx
-        ids = list(ctx.intake.accepted_deviations)
-        if not ids:
-            return None
-        out = ctx.output_dir("amend-spec")
-        done = ctx.record.outputs.get("amendment")
-        if not done:
-            spec = await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION)
-            if spec is None:
-                return Decision(
-                    outcome="blocked",
-                    reason="the approved specification could not be read to include the accepted deviations",
-                    action="Check the delivery branch and resume.",
-                    blocker_kind="missing_input",
-                )
-            details = await self.deviation_details()
-            records = {d.id: d for d in ctx.shared.deviations}
-            items = {d: deviations.describe(details.get(d), records[d]) for d in ids if d in records}
-            revs = await self.revisions("specification")
-            rev = max([*revs, ctx.shared.spec_revision, 0]) + 1
-            candidate = ctx.shared.candidate_sha or f"origin/{ctx.cfg.repository.base_branch}"
-            wt = await self.detached_worktree("amend", candidate)
-            review = None
-            ref = ctx.shared.artefacts.get("review")
-            if ref and "@" in ref:
-                path, commit = ref.rsplit("@", 1)
-                got = await self.copy_input(commit, path, "deviations-review.md")
-                review = str(got) if got else None
-            env = self.envelope(
-                "amend-spec",
-                out,
-                required=[ArtifactKind.SPECIFICATION],
-                next_revision=rev,
-                approved=[spec],
-                review_report=review,
-                source=self.source_refs(candidate_sha=ctx.shared.candidate_sha),
-                feedback=items,
-            )
-            result = await self.run_procedure("amend-spec", wt, env)
-            if (d := self.worker_decision(result)) is not None:
-                return d.model_copy(
-                    update={
-                        "reason": f"the specification could not be rewritten to include {', '.join(ids)}: "
-                        + d.reason,
-                        "action": "Resolve what Claude reported (or change the deviations back with a "
-                        "change request), then resume.",
-                    }
-                )
-            require_artifact(result, out, ArtifactKind.SPECIFICATION, "specification.md")
-            done = {
-                "revision": rev,
-                "accepted": ids,
-                "summary": result.summary,
-                "amends": spec.revision,
-                "at": utcnow().isoformat(),
-            }
-            ctx.record.outputs["amendment"] = done
-            ctx.save("specification_amended", revision=rev, deviations=ids)
-        rev = int(done["revision"])
-        dest = ctx.inputs_dir / "approved" / f"specification-v{rev:03d}.md"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(out / "specification.md", dest)
-        self.amended_spec = ArtefactPointer(kind=ArtifactKind.SPECIFICATION, path=str(dest), revision=rev)
-        return None
-
-    async def publish_amendment(self) -> None:
-        """Publish this run's rewritten specification as the approved revision. Approval comes
-        from the human move that started this run (Accept delivery, after Approve code); the plan
-        and the candidate's gates still stand (only the specification changed, to match the
-        code). Repeating it after a crash changes nothing."""
-        ctx = self.ctx
-        done = ctx.record.outputs.get("amendment")
-        if not done:
-            return
-        rev = int(done["revision"])
-        ids = list(done["accepted"])
-        token = gate_token(ctx.key, GateKind.SPEC, rev)
-        spec_rel = f"{ctx.doc_root}/specification/v{rev:03d}.md"
-        entry = ctx.intake.entry
-        header = provenance_header(
-            ctx,
-            "specification",
-            f"v{rev:03d}",
-            {
-                "status": "approved (deviations accepted with the code)",
-                "deviations": ",".join(ids),
-                "accepted_by_transition": entry.history_id if entry else "-",
-                "amends": f"v{int(done.get('amends', rev - 1)):03d}",
-            },
-        )
-        text = (ctx.output_dir("amend-spec") / "specification.md").read_text()
-        sha = await self.publish_files(
-            {spec_rel: header + text},
-            "spec-amended",
-            f"v{rev}",
-            f"{ctx.key}: specification v{rev:03d} (accepted deviations {', '.join(ids)})",
-        )
-        at = datetime.fromisoformat(done["at"]) if done.get("at") else utcnow()
-        gate = GateRecord(
-            token=token,
-            kind=GateKind.SPEC,
-            ticket_key=ctx.key,
-            revision=rev,
-            artefact_path=spec_rel,
-            artefact_commit=sha,
-            candidate_sha=ctx.shared.candidate_sha,
-            published_at=at,
-            approvers=ctx.cfg.approvals.jira_account_ids,
-            state=GateState.APPROVED,
-            decided_at=at,
-            evidence=DecisionEvidence(
-                history_id=entry.history_id,
-                transition_author=entry.author_account_id,
-                transition_at=entry.created,
-            )
-            if entry
-            else None,
-        )
-        # Published again after a crash: the gate is replaced where it is, so nothing changes.
-        gates = [
-            gate
-            if g.token == token
-            else g.model_copy(update={"state": GateState.SUPERSEDED, "superseded_by": token})
-            if g.kind is GateKind.SPEC and g.state is not GateState.SUPERSEDED
-            else g
-            for g in ctx.shared.gates
-        ]
-        if not any(g.token == token for g in gates):
-            gates.append(gate)
-        n = ctx.shared.candidate_number
-        devs = [
-            d.model_copy(update={"state": "accepted", "spec_revision": rev})
-            if d.id in ids and d.candidate == n and d.state == "open"
-            else d
-            for d in ctx.shared.deviations
-        ]
-        url = blob_url(ctx.cfg.repository.url, sha, spec_rel)
-        ctx.shared = ctx.shared.model_copy(
-            update={
-                "gates": gates,
-                "spec_revision": rev,
-                "artefacts": {**ctx.shared.artefacts, "specification": f"{spec_rel}@{sha}"},
-                "deviations": devs,
-                "updated_at": utcnow(),
-            }
-        )
-        await self.announce(
-            "spec-amended",
-            comments.spec_amended(
-                rev,
-                url,
-                [d for d in devs if d.id in ids and d.candidate == n],
-            ),
-            f"v{rev}",
-        )
-        await ctx.publisher().save_record(ctx.key, ctx.shared, "spec-amended")
+        """The approved specification this run works to."""
+        return await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION)
 
     # ------------------------------------------------------------------ publication helpers
     async def publish_files(self, files: dict[str, str], op_type: str, revision: str, message: str) -> str:
@@ -2646,7 +2462,6 @@ class VerificationStage(StageStrategy):
                 deviations=records,
                 claude_resolves=ctx.cfg.flow.resolve_conflicts,
                 reproduction=d.extra.get("reproduction"),
-                proposal=ctx.cfg.release.proposal,
             ),
             f"c{n}",
             gate_tokens=(code_token, accept_token),
@@ -2663,182 +2478,6 @@ class VerificationStage(StageStrategy):
             for d in sh.deviations
         ]
         self.ctx.shared = sh.model_copy(update={"deviations": devs})
-
-
-# --------------------------------------------------------------------------- release preparation
-
-
-class ReleasePreparationStage(StageStrategy):
-    stage = Stage.RELEASE_PREPARATION
-
-    async def work(self) -> Decision:
-        ctx = self.ctx
-        candidate = ctx.shared.candidate_sha
-        assert candidate
-        await self.deps.repo.fetch()
-        pr = await self.deps.github.get_pr(ctx.shared.pr_number) if ctx.shared.pr_number else None
-        if pr is None or pr.head_sha != candidate:
-            return Decision(
-                outcome="blocked",
-                reason="the PR head no longer matches the accepted candidate",
-                action="New commits need a new candidate: request code changes.",
-                blocker_kind="candidate_changed",
-            )
-        early_merge: str | None = None
-        if pr.merged:
-            # The head still equals the accepted candidate, so what was merged is exactly what
-            # was verified. Flag the early merge and carry on; release approval still gates Done.
-            if not pr.merge_commit_sha:
-                return Decision(
-                    outcome="blocked",
-                    reason="the PR was merged before release approval, and GitHub reports no merge commit",
-                    action="Investigate the bypassed gate; the merged code cannot be identified.",
-                    blocker_kind="gate_bypassed",
-                )
-            early_merge = pr.merge_commit_sha
-        from delivery.coordination import Coordinator
-
-        coord = Coordinator(self.deps)
-        fp = await coord.own_footprint(ctx.shared)
-        if fp is not None:
-            await coord.publish_warnings(
-                ctx,
-                await coord.check(
-                    fp.model_copy(
-                        update={"actual_paths": (ctx.shared.footprint_ref or {}).get("actual_paths", [])}
-                    ),
-                    ctx.shared,
-                    checkpoint="pre-release",
-                    use_actual=True,
-                ),
-            )
-        if (d := await self.amend_specification()) is not None:
-            return d
-        wt = await self.detached_worktree("release", candidate)
-        approved = [
-            a
-            for a in (
-                await self.spec_input(),
-                await self.approved_input(GateKind.PLAN, ArtifactKind.PLAN),
-            )
-            if a
-        ]
-        for label in ("review", "verification"):
-            ref = ctx.shared.artefacts.get(label)
-            if ref and "@" in ref:
-                path, commit = ref.rsplit("@", 1)
-                dest = await self.copy_input(commit, path, f"approved/{label}.md")
-                if dest:
-                    approved.append(
-                        ArtefactPointer(kind=ArtifactKind(label), path=str(dest), revision=0, commit=commit)
-                    )
-        revs = await self.revisions("releases")
-        nxt = max([*revs, ctx.shared.release_revision, 0]) + 1
-        out = ctx.output_dir("prepare-release")
-        env = self.envelope(
-            "prepare-release",
-            out,
-            required=[ArtifactKind.RELEASE],
-            next_revision=nxt,
-            approved=approved,
-            source=self.source_refs(candidate_sha=candidate),
-        )
-        result = await self.run_procedure("prepare-release", wt, env)
-        if (d := self.worker_decision(result)) is not None:
-            return d
-        require_artifact(result, out, ArtifactKind.RELEASE, "release.md")
-        if result.release is None or result.release.candidate_sha != candidate:
-            raise WorkerFailure(
-                "prepare-release", None, "release proposal does not name the accepted candidate"
-            )
-        if result.outcome is Outcome.NEEDS_CLARIFICATION:
-            return Decision(
-                outcome="blocked",
-                reason="release preparation needs answers: "
-                + "; ".join(q.question for q in result.questions),
-                action="Answer in a comment, then resume release preparation.",
-                blocker_kind="release_questions",
-                result=result.model_dump(mode="json"),
-            )
-        return Decision(
-            outcome="success",
-            reason=result.summary,
-            result=result.model_dump(mode="json"),
-            extra={"revision": nxt, "candidate": candidate, "merged_early": early_merge},
-        )
-
-    async def publish(self, d: Decision) -> None:
-        ctx = self.ctx
-        pub = ctx.publisher()
-        await self.publish_amendment()
-        if d.outcome == "blocked":
-            await self.publish_block(d, Status.PREPARING_RELEASE)
-            return
-        rev = int(d.extra["revision"])
-        rel = f"{ctx.doc_root}/releases/v{rev:03d}.md"
-        extra = {"candidate_sha": d.extra["candidate"]}
-        if self.follow_up:
-            extra["follow_up_of"] = self.follow_up.replaces
-        header = provenance_header(ctx, "release", f"v{rev:03d}", extra)
-        files = {rel: header + (ctx.output_dir("prepare-release") / "release.md").read_text()}
-        if self.follow_up is None:
-            files[f"{ctx.doc_root}/executions/{ctx.run_id}.json"] = self.execution_summary(
-                d, {"artefact": rel}
-            )
-        sha = await self.publish_files(files, "release", f"v{rev}", f"{ctx.key}: release proposal v{rev:03d}")
-        token = gate_token(ctx.key, GateKind.RELEASE, rev)
-        # Published again after a crash: the gate recorded the first time stands.
-        gates = ctx.shared.gates
-        if not any(g.token == token for g in gates):
-            gate = GateRecord(
-                token=token,
-                kind=GateKind.RELEASE,
-                ticket_key=ctx.key,
-                revision=rev,
-                artefact_path=rel,
-                artefact_commit=sha,
-                candidate_sha=d.extra["candidate"],
-                pr_number=ctx.shared.pr_number,
-                published_at=utcnow(),
-                approvers=ctx.cfg.approvals.jira_account_ids,
-            )
-            gates = supersede_for_new_revision(gates, GateKind.RELEASE, token) + [gate]
-        ctx.shared = ctx.shared.model_copy(
-            update={
-                "release_revision": rev,
-                "gates": gates,
-                "artefacts": {**ctx.shared.artefacts, "release": f"{rel}@{sha}"},
-                "current_run_id": ctx.run_id,
-                "current_stage": self.stage,
-                "current_state": RunState.AWAITING_HUMAN,
-                "updated_at": utcnow(),
-            }
-        )
-        await self.announce(
-            "release-gate",
-            comments.release_gate(
-                blob_url(ctx.cfg.repository.url, sha, rel),
-                rev,
-                d.extra["candidate"],
-                note=self.gate_note(),
-                merged_early=d.extra.get("merged_early"),
-                pr_number=ctx.shared.pr_number,
-            ),
-            f"v{rev}",
-            gate_tokens=(token,),
-        )
-        await pub.save_record(ctx.key, ctx.shared, "release-gate")
-        if self.follow_up:
-            return
-        SessionRegistry(ctx.cfg.runtime.state_dir).published(ctx.run_id, revision=rev)
-        await pub.transition(ctx.key, Status.PREPARING_RELEASE, Action.COMPLETE_RELEASE_PREPARATION)
-
-    async def follow_up_decision(self, d: Decision, rev: int) -> Decision:
-        if self.ctx.shared.candidate_sha != d.extra.get("candidate"):
-            raise FollowUpRefused(
-                "the accepted candidate has changed since this release proposal was written"
-            )
-        return await super().follow_up_decision(d, rev)
 
 
 class ResolutionStage(StageStrategy):
@@ -3171,7 +2810,6 @@ STRATEGIES: dict[Stage, type[StageStrategy]] = {
     Stage.PLANNING: PlanningStage,
     Stage.DEVELOPMENT: DevelopmentStage,
     Stage.VERIFICATION: VerificationStage,
-    Stage.RELEASE_PREPARATION: ReleasePreparationStage,
     Stage.RESOLUTION: ResolutionStage,
 }
 
