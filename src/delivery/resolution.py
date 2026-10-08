@@ -17,10 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from delivery.feedback import (
-    DecisionKind,
     is_coordinator_comment,
     parse_decision,
-    token_kind,
 )
 from delivery.models import GateRecord, ResolutionDecision
 from delivery.ports import JiraComment
@@ -231,9 +229,8 @@ _OLD_DECISION = re.compile(
     r"^\s*`*\s*(APPROVE|CHANGE|ACCEPT|REVISE|SUBMIT)\s+(SPEC|PLAN|CODE|DELIVERY|ACCEPTANCE|RELEASE|"
     r"SCOPE|CHANGES|DEVIATIONS)\b|^\s*`*\s*ANSWERS\b"
 )
-_REQUEST_WORDS = re.compile(r"\b(RECORD|CREATE)\b")
-_REQUEST_LINE = re.compile(r"\b(RECORD RELEASE|CREATE TICKETS)\b")
-_SHA = re.compile(r"[0-9a-f]{40}")
+_REQUEST_WORDS = re.compile(r"\bCREATE\b")
+_REQUEST_LINE = re.compile(r"\bCREATE TICKETS\b")
 
 
 def current_tokens(gates: list[GateRecord]) -> dict[str, str]:
@@ -253,8 +250,8 @@ def ticket_state_lines(
     blocked_actions: dict[str, str | None],
 ) -> list[str]:
     """How the coordinator reads this ticket: its gates, and which of the request comments already
-    on it (RECORD RELEASE, CREATE TICKETS) it uses, ignores or does not recognise. The causes of
-    most blockers that need a person (a wrong release record, a rejected move) are visible here
+    on it (CREATE TICKETS) it uses, ignores or does not recognise. The causes of most blockers
+    that need a person (a rejected move, a request comment that is not read) are visible here
     and nowhere else."""
     tokens = current_tokens(gates)
     lines = [
@@ -290,15 +287,8 @@ def ticket_state_lines(
                 seen += 1
             continue
         seen += 1
-        what = f"{d.kind.value} {d.token}" + "".join(f" {k}={v}" for k, v in d.fields.items())
-        which = token_kind(d.kind)
-        current = tokens.get(which) if d.kind is DecisionKind.RECORD_RELEASE else d.token
-        if current != d.token:
-            lines.append(
-                f"- {when}: {what}: IGNORED, {d.token} is not the current {which} token "
-                f"({current or 'none'})."
-            )
-        elif newest.get(d.token + d.kind.value) != c.id:
+        what = f"{d.kind.value} {d.token}"
+        if newest.get(d.token + d.kind.value) != c.id:
             lines.append(f"- {when}: {what}: superseded by a later comment for the same token.")
         else:
             lines.append(f"- {when}: {what}: CURRENT, the newest for its token.")
@@ -353,30 +343,19 @@ def _check_step(step: dict[str, Any], expect: dict[str, Any]) -> str | None:
                 "decisions are Jira moves, not comments: approving, asking for changes, answering and "
                 "resuming need no comment. Make this a jira_action step (the action to choose); a "
                 "comment is only for what a person wants to say in their own words, or a request line "
-                "(RECORD RELEASE, CREATE TICKETS)"
+                "(CREATE TICKETS)"
             )
         d = parse_decision(text)
         if d is None and _REQUEST_LINE.search(text):
             return (
                 "this comment would not be recognised by the coordinator: a request comment's first "
-                "line is the request line such as `RECORD RELEASE <token>` and nothing may come before "
+                "line is the request line such as `CREATE TICKETS <token>` and nothing may come before "
                 "it (no quotes, no prose). Copy the format from human-templates.md"
             )
         if d is None:
             return None  # what a person says in their own words: any wording is read as it is
         if d.problems:
             return "this comment has problems: " + "; ".join(d.problems)
-        if d.kind is DecisionKind.RECORD_RELEASE:
-            current = (expect.get("tokens") or {}).get("RELEASE")
-            if not current:
-                return "the ticket has no current RELEASE token, so the coordinator would ignore this comment"
-            if d.token != current:
-                return f"{d.token} is not the current RELEASE token; the coordinator reads only {current}"
-            commit, env = d.fields.get("commit", ""), d.fields.get("environment", "")
-            if not _SHA.fullmatch(commit):
-                return "RECORD RELEASE needs `commit:` with the full 40-character SHA"
-            if env != expect.get("release_environment"):
-                return f"RECORD RELEASE needs `environment: {expect.get('release_environment')}`"
         return None
     if kind == "jira_action":
         actions: dict[str, str | None] = expect.get("blocked_actions") or {}

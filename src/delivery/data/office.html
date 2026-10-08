@@ -268,7 +268,7 @@ const CAST = {
     skin: SKIN.fair, hair: '#e8d27a', style: 'bun', shirt: '#ebdfc4', collar: '#ffffff', pants: '#6a5a7a', skirt: true },
   kevin: { tag: 'Runs the checks', name: 'Kevin', seat: [23, 10], role: 'Accounting. Runs the checks: tests, lint and CI. And his chili.', wide: true,
     skin: SKIN.light, hair: '#5a4632', style: 'receding', shirt: '#a3bcd8', tie: '#3a4a6a', collar: '#ffffff', pants: '#4a4f5a' },
-  creed: { tag: 'Release check', name: 'Creed', seat: [26, 10], role: 'Quality Assurance. Release verification. Nobody is sure what he does.',
+  creed: { tag: 'Quality Assurance', name: 'Creed', seat: [26, 10], role: 'Quality Assurance. Nobody is sure what he does.',
     skin: SKIN.light, hair: '#d9d9d9', style: 'messy', shirt: '#e8e2d2', cardigan: '#7d7f68', pants: '#5a5a4a' },
   toby: { tag: 'Blocked and failed', name: 'Toby', seat: [27, 2], role: 'HR, in the annex. Blocked and failed tickets end up on his desk. Michael hates that.',
     skin: SKIN.light, hair: '#7a6a5a', style: 'thin', shirt: '#8b9aa8', collar: '#ffffff', pants: '#4a4a4a' },
@@ -276,10 +276,10 @@ const CAST = {
     skin: SKIN.brown, hair: '#151515', style: 'buzz', beard: '#151515', shirt: '#3d5a80', vest: '#d4e02a', pants: '#2f3a4a' },
 };
 const STAGE_WORKER = { refinement: 'jim', planning: 'dwight', verification: 'oscar',
-  release_preparation: 'darryl', release_verification: 'creed', resolution: 'toby' };
+  release_preparation: 'darryl', resolution: 'toby' };
 const DEV_POOL = ['ryan', 'andy', 'stanley', 'phyllis'];
 const STAGE_NAME = { refinement: 'refinement', planning: 'planning', development: 'development',
-  verification: 'verification', release_preparation: 'release prep', release_verification: 'release check',
+  verification: 'verification', release_preparation: 'release prep',
   resolution: 'resolution' };
 
 // Desks: two tiles in front of (below) each seat; the person sits behind it, facing you.
@@ -532,7 +532,6 @@ const DISPATCH = {
   development: (k, w) => `${w}, code ${k}. Go go go!`,
   verification: (k) => `Oscar, verify ${k}. You're the smart one.`,
   release_preparation: (k) => `Darryl! Get ${k} ready to ship.`,
-  release_verification: (k) => `Creed... check ${k} shipped okay?`,
   resolution: (k) => `Toby. ${k} is stuck. Sit down with the developer and sort it out.`,
 };
 const ACK = { jim: ['On it.', 'Sure thing.'], dwight: ['The plan will be flawless.', 'Finally, a worthy task.'],
@@ -541,7 +540,7 @@ const ACK = { jim: ['On it.', 'Sure thing.'], dwight: ['The plan will be flawles
   toby: ['Sure. I have a form for this.'] };
 const DONE_LINE = { refinement: "Spec's on the table.", planning: 'Plan is on the table. Read it.',
   development: 'Code is ready for review.', verification: 'Verified. Your call.',
-  release_preparation: 'Release is ready to go.', release_verification: 'All checked.',
+  release_preparation: 'Release is ready to go.',
   resolution: 'Sorted. Back to work.' };
 const BANTER = {
   michael: ["That's what she said!", 'Who wants a Dundie?', 'Conference room, five minutes!', "World's best boss. It's on the mug."],
@@ -1189,9 +1188,9 @@ function startReplay(only) {
 const DEMO_TITLES = ['Add a "Starred only" filter', 'Search tasks by title', 'Rename the page heading',
   'Dark mode for the task list', 'Export tasks as CSV', 'Due dates on tasks', 'Keyboard shortcuts', 'Undo delete'];
 const IN_PROGRESS = { refinement: 'refining', planning: 'planning', development: 'developing', verification: 'verifying',
-  release_preparation: 'preparing_release', release_verification: 'verifying_release' };
+  release_preparation: 'preparing_release' };
 const REVIEW = { refinement: 'specification_review', planning: 'plan_review', development: 'ready_verification',
-  verification: 'code_review', release_preparation: 'release_review', release_verification: 'done' };
+  verification: 'code_review', release_preparation: 'release_review' };
 function startDemo() {
   resetScene();
   logEl.innerHTML = '';
@@ -1202,7 +1201,7 @@ function startDemo() {
   emit({ kind: 'boss_in' });
   const run = async (key) => {
     active++;
-    const stages = ['refinement', 'planning', 'development', 'verification', 'release_preparation', 'release_verification'];
+    const stages = ['refinement', 'planning', 'development', 'verification', 'release_preparation'];
     for (let s = 0; s < stages.length; s++) {
       const stage = stages[s];
       await waitUntil(() => gen !== sceneGen || backlog() <= 2, 'demo pacing');
@@ -1210,7 +1209,7 @@ function startDemo() {
       await sleep(1200); emit({ kind: 'jira', ticket: key, stage, to: IN_PROGRESS[stage] });
       emit({ kind: 'start', ticket: key, stage });
       await sleep(rand(5000, 9000));
-      if (stage === 'verification' || stage === 'release_verification') { emit({ kind: 'checks', ticket: key, stage }); await sleep(3000); }
+      if (stage === 'verification') { emit({ kind: 'checks', ticket: key, stage }); await sleep(3000); }
       if (Math.random() < 0.1 && s > 1) {
         emit({ kind: Math.random() < 0.5 ? 'failed' : 'blocked', ticket: key, stage });
         await sleep(rand(9000, 14000)); s--; continue;
@@ -1219,7 +1218,7 @@ function startDemo() {
       emit({ kind: 'comment', ticket: key, stage });
       if (stage === 'development') { emit({ kind: 'push', ticket: key, stage }); await sleep(800); emit({ kind: 'pr', ticket: key, stage, number: ++pr }); }
       await sleep(1000);
-      if (stage === 'release_verification') { emit({ kind: 'done', ticket: key, stage }); break; }
+      if (stage === 'release_preparation') { emit({ kind: 'done', ticket: key, stage }); break; }
       emit({ kind: 'await', ticket: key, stage });
       emit({ kind: 'jira', ticket: key, stage, to: REVIEW[stage] });
       await sleep(rand(6000, 12000)); // you, reviewing

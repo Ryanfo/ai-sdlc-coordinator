@@ -26,7 +26,7 @@ from pydantic import ValidationError
 
 from delivery import deviations
 from delivery.config import Config
-from delivery.feedback import DecisionKind, decisions, items, said
+from delivery.feedback import items, said
 from delivery.gates import (
     GateEval,
     GateOutcome,
@@ -138,7 +138,6 @@ class Intake:
     resume_stage: Stage | None = None
     blocker_kind: str = ""
     gate_token: str | None = None
-    release_record: dict[str, Any] | None = None
     # Deviations from the specification an approver accepted: the run has Claude rewrite the
     # specification to include them before its own work (delivery.deviations).
     accepted_deviations: list[str] = field(default_factory=list)
@@ -158,7 +157,6 @@ class Intake:
             "resume_stage": self.resume_stage.value if self.resume_stage else None,
             "blocker_kind": self.blocker_kind,
             "gate_token": self.gate_token,
-            "release_record": self.release_record,
             "accepted_deviations": self.accepted_deviations,
         }
 
@@ -182,7 +180,6 @@ class Intake:
             Stage(data["resume_stage"]) if data.get("resume_stage") else None,
             data.get("blocker_kind", ""),
             data.get("gate_token"),
-            data.get("release_record"),
             list(data.get("accepted_deviations") or []),
         )
 
@@ -204,9 +201,23 @@ class Intake:
             "feedback": self.feedback_token,
             "items": sorted(self.feedback_items.items()),
             "decided_gates": sorted(decided, key=str),
-            "release": self.release_record,
             "accepted_deviations": self.accepted_deviations,
         }
+
+
+@dataclass
+class ReleaseIntake:
+    """A ticket in Ready for release: can it be completed? Once its PR is merged and the decisions
+    that led here (code approved, delivery accepted, the release proposal approved when there is
+    one) stand, ``record`` carries them and ``merge_commit`` is the release."""
+
+    ready: bool
+    reason: str
+    next_action: str = ""
+    record: SharedExecutionRecord | None = None
+    pr_number: int | None = None
+    merge_commit: str = ""
+    merged_by: str | None = None
 
 
 class CodeEvidence(Protocol):
@@ -345,20 +356,16 @@ class IntakeEvaluator:
             Stage.DEVELOPMENT,
             Stage.VERIFICATION,
             Stage.RELEASE_PREPARATION,
-            Stage.RELEASE_VERIFICATION,
         ):
             need.append(GateKind.SPEC)
         if stage in (
             Stage.DEVELOPMENT,
             Stage.VERIFICATION,
             Stage.RELEASE_PREPARATION,
-            Stage.RELEASE_VERIFICATION,
         ):
             need.append(GateKind.PLAN)
-        if stage in (Stage.RELEASE_PREPARATION, Stage.RELEASE_VERIFICATION):
+        if stage is Stage.RELEASE_PREPARATION:
             need += [GateKind.CODE, GateKind.ACCEPT]
-        if stage is Stage.RELEASE_VERIFICATION:
-            need.append(GateKind.RELEASE)
         missing = [k.value for k in need if approved_gate(rec.gates, k) is None]
         if missing:
             return f"no current approved {', '.join(missing)} decision"
@@ -543,11 +550,6 @@ class IntakeEvaluator:
                 Status.ACCEPTANCE_REVIEW,
                 Status.READY_RELEASE_PREPARATION,
                 self._req_acceptance,
-            ),
-            (Stage.RELEASE_VERIFICATION, GateKind.RELEASE): (
-                Status.READY_RELEASE,
-                Status.READY_RELEASE_VERIFICATION,
-                self._req_release_record,
             ),
         }.get((stage, gate.kind))
         if follow:
@@ -899,11 +901,16 @@ class IntakeEvaluator:
             record=rec,
         )
 
-    async def _code_evidence(self, rec: SharedExecutionRecord) -> tuple[bool, str]:
+    async def _code_evidence(self, rec: SharedExecutionRecord, *, merged: bool = False) -> tuple[bool, str]:
+        """Independent review and passing CI on the verified candidate's head. ``merged``: the PR
+        is already merged, so a head that is no longer the candidate is not a reason to wait; what
+        was merged is reported when the release is checked (delivery.release)."""
         if self.github is None or rec.pr_number is None or not rec.candidate_sha:
             return False, "no pull request or candidate recorded"
         pr = await self.github.get_pr(rec.pr_number)
         if pr.head_sha != rec.candidate_sha:
+            if merged:
+                return True, "the merged head differs from the candidate"
             return False, (
                 f"PR head {pr.head_sha[:12]} is not the verified candidate "
                 f"{rec.candidate_sha[:12]}; a changed candidate needs fresh verification"
@@ -930,7 +937,9 @@ class IntakeEvaluator:
             return False, "CI for the current head is not passing: " + "; ".join(ci.problems[:5])
         return True, rv.reason
 
-    async def _req_acceptance(self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange) -> Intake:
+    async def _req_acceptance(
+        self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange, *, merged: bool = False
+    ) -> Intake:
         rec = ctx.record
         code = current_gate(rec.gates, GateKind.CODE)
         accept = current_gate(rec.gates, GateKind.ACCEPT)
@@ -969,7 +978,7 @@ class IntakeEvaluator:
                     entry=e,
                     gate_token=code.token,
                 )
-            ok, why = await self._code_evidence(rec)
+            ok, why = await self._code_evidence(rec, merged=merged)
             if not ok:
                 return self._block(
                     stage,
@@ -986,7 +995,7 @@ class IntakeEvaluator:
             accept,
             e,
             Status.ACCEPTANCE_REVIEW,
-            Status.READY_RELEASE_PREPARATION,
+            self.by_id.get(e.to_id, Status.READY_RELEASE_PREPARATION),
             Status.CHANGES_REQUESTED,
         )
         if ev2.outcome is not GateOutcome.APPROVED:
@@ -1007,148 +1016,98 @@ class IntakeEvaluator:
             selected=list(ev2.comments),
         )
 
-    async def _req_release_record(
-        self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange
-    ) -> Intake:
-        rec = ctx.record
-        rel = current_gate(rec.gates, GateKind.RELEASE)
-        if rel is None:
-            return self._block(
-                stage, "no release gate recorded", "Return through release preparation.", entry=e
-            )
-        if rel.state is not GateState.APPROVED:
-            rel_entry = ctx.latest_change(
-                self.ids[Status.RELEASE_REVIEW], self.ids[Status.READY_RELEASE], rel.published_at
-            )
-            if rel_entry is None:
-                return self._block(
-                    stage,
-                    "no Approve release transition after the release gate",
-                    "Return through Release review.",
-                    entry=e,
-                )
-            ev = self._gate_eval(
-                ctx,
-                rel,
-                rel_entry,
-                Status.RELEASE_REVIEW,
-                Status.READY_RELEASE,
-                Status.READY_RELEASE_PREPARATION,
-            )
-            if ev.outcome is not GateOutcome.APPROVED:
-                return self._block(
-                    stage,
-                    f"release approval invalid: {ev.reason}",
-                    ev.next_action or "Resolve the release decision.",
-                    kind="invalid_decision",
-                    entry=e,
-                    gate_token=rel.token,
-                )
-            rec = _with_gate(rec, _decided(rel, ev, GateState.APPROVED))
-        if e.author_account_id not in self.humans:
-            return self._block(
-                stage,
-                "Record release performed by an unauthorised account",
-                "The release owner must record the release.",
-                entry=e,
-            )
-        found = decisions(
-            ctx.comments,
-            token=rel.token,
-            kinds={DecisionKind.RECORD_RELEASE},
-            since=rel.published_at,
-        )
-        found = [cd for cd in found if cd.comment.author_account_id in self.humans]
-        if not found:
-            # Nothing recorded by hand: the release is the PR's merge, read from GitHub.
-            return await self._merged_release(stage, e, rec)
-        cd = found[-1]
-        if cd.comment.edited:
-            return self._block(
-                stage, "release record comment was edited", "Add a fresh record comment.", entry=e
-            )
-        commit = cd.decision.fields.get("commit", "")
-        env = cd.decision.fields.get("environment", "")
-        if not re.fullmatch(r"[0-9a-f]{40}", commit) or not env:
-            return self._wait(
-                stage,
-                "release record needs a full 40-character commit SHA and environment",
-                "Comment RECORD RELEASE with `commit: <sha>` and `environment: <name>`.",
-                e,
-            )
-        if env != self.cfg.release.environment:
-            return self._block(
-                stage,
-                f"recorded environment {env!r} is not {self.cfg.release.environment!r}",
-                "Record the release in the configured environment.",
-                entry=e,
-            )
-        pr = cd.decision.fields.get("merged-pr") or cd.decision.fields.get("pr")
-        record = {
-            "commit": commit,
-            "environment": env,
-            "merged_pr": pr,
-            "comment_id": cd.comment.id,
-            "recorded_by": cd.comment.author_account_id,
-        }
-        return Intake(
-            IntakeKind.READY,
-            stage,
-            reason=f"release {commit[:12]} in {env}",
-            record=rec,
-            selected=[cd.comment],
-            release_record=record,
-        )
+    # ------------------------------------------------------------------ release
+    async def merged_release(self, ctx: TicketContext) -> ReleaseIntake:
+        """A ticket in Ready for release is complete once its PR is merged.
 
-    async def merged_release(self, ctx: TicketContext) -> Intake:
-        """A ticket in Ready for release: READY, with the release, once its PR is merged.
-
-        The supervisor then records the release (Record release). Release verification's intake
-        validates the release approval exactly as it does for a release recorded by hand.
+        The human merge is the release; the coordinator only reads it from GitHub. The decisions
+        behind the move into Ready for release are validated only now, because with no release
+        proposal nothing else would: Accept delivery leads here directly. A problem with a
+        decision is reported and re-checked on every poll (fix it in Jira or GitHub and the next
+        poll goes on); it never blocks the ticket.
         """
-        entry = ctx.latest_entry(self.ids[Status.READY_RELEASE])
-        return await self._merged_release(Stage.RELEASE_VERIFICATION, entry, ctx.record)
-
-    async def _merged_release(
-        self, stage: Stage, e: StatusChange | None, rec: SharedExecutionRecord
-    ) -> Intake:
-        """The release read from GitHub: the merge commit of the ticket's PR. In the local pilot
-        profile the human merge is the release, so there is nothing else to wait for."""
+        rec = ctx.record
         if self.github is None or rec.pr_number is None:
-            rel = current_gate(rec.gates, GateKind.RELEASE)
-            return self._wait(
-                stage,
+            return ReleaseIntake(
+                False,
                 "no pull request is recorded, so the release cannot be read from GitHub",
-                f"Comment `RECORD RELEASE {rel.token if rel else '<release token>'}` with "
-                f"`commit: <sha>` and `environment: {self.cfg.release.environment}`, then choose "
-                "Record release.",
-                e,
+                "Cancel the ticket if it was moved here by hand.",
             )
         pr = await self.github.get_pr(rec.pr_number)
         if not pr.merged or not pr.merge_commit_sha:
-            return self._wait(
-                stage,
+            return ReleaseIntake(
+                False,
                 f"PR #{pr.number} is not merged yet",
-                f"Merge PR #{pr.number} on GitHub; the coordinator records the release when it "
-                "sees the merge.",
-                e,
+                f"Merge PR #{pr.number} on GitHub; the coordinator moves the ticket to Done when it sees "
+                "the merge.",
             )
-        env = self.cfg.release.environment
-        record = {
-            "commit": pr.merge_commit_sha,
-            "environment": env,
-            "merged_pr": str(pr.number),
-            "merged_by": pr.merged_by,
-            "merged_at": pr.merged_at.isoformat() if pr.merged_at else None,
-            "source": "github",
-        }
-        by = f" by {pr.merged_by}" if pr.merged_by else ""
-        return Intake(
-            IntakeKind.READY,
-            stage,
-            reason=f"release {pr.merge_commit_sha[:12]} in {env}: PR #{pr.number} merged{by} "
-            "(read from GitHub)",
-            entry=e,
+        entry = ctx.latest_entry(self.ids[Status.READY_RELEASE])
+        src = self.by_id.get(entry.from_id) if entry else None
+        if entry is None or src is None:
+            return ReleaseIntake(
+                False,
+                "the ticket is in Ready for release without a recorded transition",
+                "Move it through the workflow actions.",
+            )
+        ctx = replace(ctx, record=self.catch_up_gates(ctx))
+        rec = ctx.record
+        if src is Status.ACCEPTANCE_REVIEW:
+            accepted = await self._req_acceptance(ctx, Stage.RELEASE_PREPARATION, src, entry, merged=True)
+            if accepted.kind is not IntakeKind.READY:
+                return ReleaseIntake(False, accepted.reason, accepted.next_action)
+            assert accepted.record is not None
+            rec = accepted.record
+        elif src is Status.RELEASE_REVIEW:
+            rel = current_gate(rec.gates, GateKind.RELEASE)
+            if rel is None:
+                return ReleaseIntake(False, "no release gate is recorded", "Return through Release review.")
+            if rel.state is not GateState.APPROVED:
+                change = ctx.latest_change(
+                    self.ids[Status.RELEASE_REVIEW], self.ids[Status.READY_RELEASE], rel.published_at
+                )
+                if change is None:
+                    return ReleaseIntake(
+                        False,
+                        "no Approve release transition after the release proposal",
+                        "Return through Release review.",
+                    )
+                ev = self._gate_eval(
+                    ctx,
+                    rel,
+                    change,
+                    Status.RELEASE_REVIEW,
+                    Status.READY_RELEASE,
+                    Status.READY_RELEASE_PREPARATION,
+                )
+                if ev.outcome is not GateOutcome.APPROVED:
+                    return ReleaseIntake(
+                        False,
+                        f"release approval invalid: {ev.reason}",
+                        ev.next_action or "Resolve the release decision.",
+                    )
+                rec = _with_gate(rec, _decided(rel, ev, GateState.APPROVED))
+        else:
+            return ReleaseIntake(
+                False,
+                f"moved to Ready for release from {STATUS_NAMES[src]}, not by Accept delivery or "
+                "Approve release",
+                "Cancel the ticket, or return it through acceptance.",
+            )
+        need = [GateKind.SPEC, GateKind.PLAN, GateKind.CODE, GateKind.ACCEPT]
+        if src is Status.RELEASE_REVIEW:
+            need.append(GateKind.RELEASE)
+        missing = [k.value for k in need if approved_gate(rec.gates, k) is None]
+        if missing:
+            return ReleaseIntake(
+                False,
+                f"no current approved {', '.join(missing)} decision",
+                "Return the ticket through the review gates.",
+            )
+        return ReleaseIntake(
+            True,
+            f"PR #{pr.number} merged as {pr.merge_commit_sha[:12]}",
             record=rec,
-            release_record=record,
+            pr_number=pr.number,
+            merge_commit=pr.merge_commit_sha,
+            merged_by=pr.merged_by,
         )

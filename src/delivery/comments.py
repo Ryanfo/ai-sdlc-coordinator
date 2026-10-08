@@ -33,7 +33,6 @@ STAGE_TITLES = {
     "development": "Development",
     "verification": "Verification",
     "release_preparation": "Release preparation",
-    "release_verification": "Release verification",
     "resolution": "Resolution",
 }
 
@@ -437,6 +436,7 @@ def code_gate(
     deviations: list[DeviationRecord] | None = None,
     claude_resolves: bool = False,
     reproduction: dict[str, Any] | None = None,
+    proposal: bool = False,
 ) -> str:
     """The code decision only. Acceptance is its own step with its own comment (acceptance_ready)."""
     devs = deviations or []
@@ -454,7 +454,7 @@ def code_gate(
     lines += _failed_checks(checks)
     lines += reproduction_lines(reproduction, base)
     lines += conflicts_section(merge_conflicts or [], base, claude_resolves=claude_resolves)
-    lines += deviations_section(devs, Status.CODE_REVIEW)
+    lines += deviations_section(devs, Status.CODE_REVIEW, proposal=proposal)
     if findings:
         lines += ["", "**Non-blocking findings** (in the review): " + ", ".join(f.id for f in findings)]
     if unverified:
@@ -495,11 +495,12 @@ def _deviation_lines(devs: list[DeviationRecord]) -> list[str]:
     return out
 
 
-def deviations_section(devs: list[DeviationRecord], here: Status) -> list[str]:
+def deviations_section(devs: list[DeviationRecord], here: Status, *, proposal: bool = False) -> list[str]:
     """Working differences from the approved specification: a question, never a failure.
 
-    Approving the code accepts them (the specification is rewritten before release preparation,
-    no new refinement round); one named in a change request goes back to development.
+    Approving the code accepts them (with a release proposal the specification is rewritten before
+    release preparation, with no new refinement round); one named in a change request goes back to
+    development.
     """
     if not devs:
         return []
@@ -509,10 +510,15 @@ def deviations_section(devs: list[DeviationRecord], here: Status) -> list[str]:
         *_deviation_lines(devs),
     ]
     if here is Status.CODE_REVIEW:
+        accepted = (
+            "Approving the code accepts them, and Claude updates the specification before release "
+            "preparation (no new refinement round)."
+            if proposal
+            else "Approving the code accepts them as built; the specification is not rewritten."
+        )
         return [
             *lines,
-            "**If acceptable**: nothing extra to do. Approving the code accepts them, and Claude "
-            "updates the specification before release preparation (no new refinement round).",
+            f"**If acceptable**: nothing extra to do. {accepted}",
             "**If not**: choose **Request code changes** and name each in a comment (for example "
             f"`{devs[0].id}: follow the specification`); development changes it back.",
         ]
@@ -642,12 +648,19 @@ def acceptance_ready(
     try_command: bool,
     guide: str,
     guide_url: str | None,
+    proposal: bool = False,
 ) -> str:
     """Posted when a ticket enters Acceptance review: the product decision, then how to try it."""
+    into = STATUS_NAMES[Status.READY_RELEASE_PREPARATION if proposal else Status.READY_RELEASE]
+    then = (
+        "Claude then writes a release proposal for approval."
+        if proposal
+        else "Then merge the PR on GitHub: the coordinator moves the ticket to Done when it sees the merge."
+    )
     lines = [
         f"## Code approved: ready for acceptance (candidate c{candidate_no})",
         f"**To accept** (product decision against the brief): choose **Accept delivery** "
-        f"{_moves(Status.ACCEPTANCE_REVIEW, Action.ACCEPT_DELIVERY)}. No comment needed.",
+        f"(moves into **{into}**). No comment needed. {then}",
         _change(Status.ACCEPTANCE_REVIEW, Action.REQUEST_ACCEPTANCE_CHANGES),
         "**Try it**:",
     ]
@@ -679,15 +692,14 @@ def release_gate(
         after = (
             f" **PR #{pr_number} was already merged (`{merged_early[:12]}`) before this approval.** "
             "The merged code is the accepted candidate, so approving makes that merge the release: "
-            f"the coordinator records it in `{environment}` (moving into "
-            f"**{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**) and verifies. "
-            "If the release should not stand, request changes instead."
+            f"the coordinator moves the ticket to **{STATUS_NAMES[Status.DONE]}** (released in "
+            f"`{environment}`). If the release should not stand, request changes instead."
         )
     else:
         after = (
-            f" Then a human merges the PR: that is the release, which the coordinator records in "
-            f"`{environment}` (moving into **{_into(Status.READY_RELEASE, Action.RECORD_RELEASE)}**) "
-            "and verifies. It never merges or deploys."
+            f" Then a human merges the PR: that is the release in `{environment}`, and the coordinator "
+            f"moves the ticket to **{STATUS_NAMES[Status.DONE]}** when it sees the merge. It never "
+            "merges or deploys."
         )
     return "\n".join(
         [
@@ -700,14 +712,28 @@ def release_gate(
     )
 
 
-def done(release_commit: str, environment: str, url: str, provenance: str) -> str:
-    return "\n".join(
-        [
-            "## Release verified: Done",
-            f"Released commit `{release_commit}` in `{environment}`. [Release verification]({url}).",
-            f"Provenance: {provenance}",
-        ]
-    )
+def done(
+    release_commit: str,
+    environment: str,
+    pr_number: int | None,
+    merged_by: str | None,
+    provenance: str,
+    *,
+    flagged: bool = False,
+    deviations: list[str] | None = None,
+) -> str:
+    by = f" by {merged_by}" if merged_by else ""
+    lines = [
+        "## Released: Done",
+        f"PR #{pr_number} was merged{by} as `{release_commit}` in `{environment}`.",
+        f"{'**Look at this**: ' if flagged else 'Provenance: '}{provenance}",
+    ]
+    if deviations:
+        lines.append(
+            f"Deviations from the specification accepted with the code: {', '.join(deviations)}. "
+            "The specification was not rewritten to include them (that needs a release proposal)."
+        )
+    return "\n".join(lines)
 
 
 def candidate_ready(

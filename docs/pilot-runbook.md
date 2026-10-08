@@ -57,9 +57,10 @@ Open question: Should search include the description text as well as the title?
    below, not this ticket.
 7. The independent reviewer approves the PR on GitHub; the approver chooses Approve code, then
    Accept delivery. Confirm the Jira thread has no human decision comments.
-8. Approve the release proposal. A human merges the PR. Within a poll the coordinator reads the
-   merge commit from GitHub and chooses Record release itself (no `RECORD RELEASE` comment).
-9. Confirm release verification passes and the ticket is Done.
+8. Accept delivery (with `[release] proposal = true`, approve the release proposal too). A human
+   merges the PR. Within a poll the coordinator reads the merge commit from GitHub and moves
+   the ticket to Done itself.
+9. Confirm the Done comment says the merge contains the accepted candidate.
 
 ## 3. Concurrency
 

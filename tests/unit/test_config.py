@@ -7,7 +7,7 @@ import pytest
 
 from conftest import ConfigFactory, base_sections, render_config
 from delivery.config import Config, ConfigError, load_config, template_text
-from delivery.workflow import OPTIONAL_STATUSES, Action, Status
+from delivery.workflow import OPTIONAL_STATUSES, PROPOSAL_STATUSES, Action, Status
 
 
 def test_loads_and_resolves_relative_paths_against_config_file(
@@ -90,7 +90,11 @@ def test_template_is_valid_toml_and_loads(tmp_path: Path) -> None:
     p = tmp_path / "t.toml"
     p.write_text(text)
     cfg = load_config(p)
-    assert cfg.workflow.missing_statuses() == [s for s in Status if s not in OPTIONAL_STATUSES]
+    # Without a release proposal (the default) Jira needs none of the release preparation statuses.
+    assert cfg.workflow.missing_statuses() == [
+        s for s in Status if s not in OPTIONAL_STATUSES | PROPOSAL_STATUSES
+    ]
+    assert cfg.workflow.missing_statuses(proposal=True) == [s for s in Status if s not in OPTIONAL_STATUSES]
     assert "max_parallel" not in text
     assert "ATATT" not in text
 
@@ -122,3 +126,26 @@ def test_model_settings_are_validated(
 ) -> None:
     with pytest.raises(ConfigError):
         make_config(overrides=overrides)
+
+
+def test_a_config_from_before_release_verification_was_removed_still_loads(
+    make_config: ConfigFactory,
+) -> None:
+    cfg = make_config(
+        overrides={
+            "release": {"smoke_commands": {"smoke": ["npm", "run", "smoke"]}},
+            "workflow.statuses": {"ready_release_verification": "19998", "verifying_release": "19999"},
+            "workflow.actions": {"start_release_verification": "Start the check"},
+        }
+    )
+    assert not cfg.release.proposal
+    assert "verifying_release" not in {s.value for s in cfg.workflow.statuses}
+
+
+def test_a_release_proposal_needs_the_release_preparation_statuses(make_config: ConfigFactory) -> None:
+    cfg = make_config(overrides={"release": {"proposal": True}})
+    assert cfg.release.proposal
+    kept = {s: i for s, i in cfg.workflow.statuses.items() if s not in PROPOSAL_STATUSES}
+    cfg = cfg.model_copy(update={"workflow": cfg.workflow.model_copy(update={"statuses": kept})})
+    assert set(cfg.workflow.missing_statuses(cfg.release.proposal)) == set(PROPOSAL_STATUSES)
+    assert not cfg.workflow.missing_statuses(proposal=False)

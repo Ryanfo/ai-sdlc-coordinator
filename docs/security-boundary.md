@@ -110,7 +110,7 @@ cache under `node_modules`, binds a local port and connects to it.
 | `AskUserQuestion` is denied under `dontAsk` even when an allow rule names it (Claude Code 2.1.289) | The resolver (`resolve-blocker`, which needs to ask the developer) runs in permission mode `default`: whatever its allow rules do not cover asks the developer instead of being denied. A resolution only starts when the developer asked for it and runs in a window on their machine. Deny rules, `--restricted`, the `--tools` set and the OS sandbox are the same as the implementer's |
 | Commands prefixed with `VAR=value` need approval | `PORT`/`E2E_PORT` are exported into the worker environment; procedures say not to prefix |
 | Inline interpreter code (`python3 -c …`) needs approval | Not needed by procedures; the probe uses an `npm run` script, matching real usage |
-| A failed release verification run in a too-strict sandbox refused to claim success | Working as designed: the worker reported a blocker; the coordinator moved the ticket to Blocked (`release_verification`) |
+| A failed verification run in a too-strict sandbox refused to claim success | Working as designed: the worker reported a blocker; the coordinator moved the ticket to Blocked. (There is no release verification stage any more: the merge is checked by the coordinator itself) |
 
 ## Known limitations (stated, not hidden)
 

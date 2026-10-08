@@ -30,7 +30,7 @@ def test_review_gates_lead_with_the_move() -> None:
 
     release = comments.release_gate("u", 1, "sha", "approvers", "prod")
     assert "**To approve** (approvers): choose **Approve release**" in first_lines(release)
-    assert "moving into **Ready for release verification**" in first_lines(release)
+    assert "moves the ticket to **Done**" in first_lines(release)
     assert "RECORD RELEASE" not in release  # read from GitHub, never typed in
     assert "Request release changes** (moves into **Ready for release preparation**)" in release
 
@@ -50,7 +50,10 @@ def test_acceptance_comment_is_only_the_acceptance_decision() -> None:
     kw = dict(worker_id="w", local_app=True, try_command=True, guide="Check the button.", guide_url=None)
     text = comments.acceptance_ready("K-1", 1, "a" * 40, "pr", **kw)
     assert "**To accept**" in first_lines(text)
-    assert "Accept delivery** (moves into **Ready for release preparation**)" in first_lines(text)
+    assert "Accept delivery** (moves into **Ready for release**)" in first_lines(text)
+    assert "moves the ticket to Done when it sees the merge" in first_lines(text)
+    with_proposal = comments.acceptance_ready("K-1", 1, "a" * 40, "pr", proposal=True, **kw)
+    assert "Accept delivery** (moves into **Ready for release preparation**)" in first_lines(with_proposal)
     assert "No comment needed" in first_lines(text) and "```" not in text
     assert text.index("Request acceptance changes") < text.index("**Try it**")
 
@@ -95,7 +98,10 @@ def test_candidate_and_done_say_nothing_is_needed() -> None:
     assert "start by themselves" in cand
     held = comments.candidate_ready(1, "sha", "pr", session_open=True)
     assert "start once the developer closes the Claude session" in first_lines(held)
-    assert "Released commit `sha` in `prod`" in comments.done("sha", "prod", "u", "merge commit")
+    done = comments.done("sha", "prod", 7, "ana", "merge commit; contains the accepted candidate")
+    assert "PR #7 was merged by ana as `sha` in `prod`" in done and "Provenance:" in done
+    flagged = comments.done("sha", "prod", 7, None, "unapproved changes", flagged=True, deviations=["D1"])
+    assert "**Look at this**" in flagged and "D1" in flagged
 
 
 def test_comments_stay_short() -> None:

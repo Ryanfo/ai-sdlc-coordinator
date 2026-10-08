@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 
 from delivery.feedback import (
     MARKER_PREFIX,
-    DecisionKind,
     claude_notes,
     items,
     parse_decision,
@@ -67,11 +66,8 @@ def evaluate(gate: GateRecord, comments: list[JiraComment], entry: StatusChange)
 
 
 def test_request_lines_parse_and_old_decision_lines_are_plain_text() -> None:
-    r = parse_decision(
-        f"RECORD RELEASE PILOT-1-RELEASE-v1\ncommit: {HEAD}\nenvironment: local-pilot\nmerged-pr: 7"
-    )
-    assert r is not None and r.kind is DecisionKind.RECORD_RELEASE
-    assert r.fields == {"commit": HEAD, "environment": "local-pilot", "merged-pr": "7"}
+    # The release is read from the PR merge on GitHub: there is no comment to record one by hand.
+    assert parse_decision(f"RECORD RELEASE PILOT-1-RELEASE-v1\ncommit: {HEAD}") is None
     c = parse_decision("CREATE TICKETS PILOT-1-SPEC-v2\nS1, S3\nS2: call it Download")
     assert c is not None and c.items == {"S1": "", "S3": "", "S2": "call it Download"}
     assert parse_decision("CREATE TICKETS PILOT-1-CODE-c1").problems  # type: ignore[union-attr]

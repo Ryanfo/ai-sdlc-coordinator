@@ -30,7 +30,7 @@ class Role(StrEnum):
     AUTHOR = "author"  # refine, plan, prepare-release, amend-spec: write documents to the output dir
     IMPLEMENTER = "implementer"  # implement: edit the feature worktree, run tests
     REVIEWER = "reviewer"  # review: read-only code access, report to output dir
-    VERIFIER = "verifier"  # verify, verify-release: run commands in a disposable worktree
+    VERIFIER = "verifier"  # verify: run commands in a disposable worktree
     RESOLVER = "resolver"  # resolve-blocker: the implementer, plus asking the developer questions
 
 
@@ -41,7 +41,6 @@ PROCEDURE_ROLES: dict[str, Role] = {
     "implement-ticket": Role.IMPLEMENTER,
     "review-ticket": Role.REVIEWER,
     "verify-ticket": Role.VERIFIER,
-    "verify-release": Role.VERIFIER,
     "amend-spec": Role.AUTHOR,
     "resolve-conflicts": Role.IMPLEMENTER,
     "investigate-ticket": Role.VERIFIER,

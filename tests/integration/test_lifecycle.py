@@ -67,19 +67,13 @@ async def test_full_lifecycle_with_clarification_change_request_and_release(tmp_
         assert await step(sup) == ["PILOT-1"]
         assert w.jira.status_of("PILOT-1") is Status.RELEASE_REVIEW
 
-        # Release approval, human merge and release record, then verification -> Done.
-        rel = w.token("PILOT-1", "RELEASE")
+        # Release approval, then the human merge is the release: the next poll moves it to Done.
         w.move("PILOT-1", Status.READY_RELEASE)
-        merged = w.github.merge(rec.pr_number)
-        w.decide(
-            "PILOT-1",
-            Status.READY_RELEASE_VERIFICATION,
-            f"RECORD RELEASE {rel}\ncommit: {merged}\nenvironment: local-pilot\nmerged-pr: {rec.pr_number}",
-        )
-        assert await step(sup) == ["PILOT-1"]
+        w.github.merge(rec.pr_number)
+        await step(sup)
         assert w.jira.status_of("PILOT-1") is Status.DONE, w.last_comment("PILOT-1")
         assert w.jira.issues["PILOT-1"].resolution == "Done"
-        assert "Release verified" in w.last_comment("PILOT-1")
+        assert "Released: Done" in w.last_comment("PILOT-1")
 
     # Artefacts are versioned and append-only on the delivery branch.
     names = await w.repo.ls_tree("origin/delivery/PILOT-1", "docs/delivery/PILOT-1/")
