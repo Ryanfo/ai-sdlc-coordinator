@@ -534,9 +534,7 @@ class StageExecutor:
     async def _publish(self, rc: RunContext, strategy: StageStrategy, d: Decision) -> None:
         await strategy.publish(d)
         terminal = {
-            "success": RunState.COMPLETED
-            if rc.record.stage in (Stage.RELEASE_VERIFICATION, Stage.RESOLUTION)
-            else RunState.AWAITING_HUMAN,
+            "success": RunState.COMPLETED if rc.record.stage is Stage.RESOLUTION else RunState.AWAITING_HUMAN,
             "clarification": RunState.AWAITING_HUMAN,
             "verification_failed": RunState.AWAITING_HUMAN,
             "blocked": RunState.BLOCKED,
@@ -710,8 +708,7 @@ def _next_action(outcome: str, stage: Stage, *, session_open: bool = False) -> s
             Stage.VERIFICATION: "Independent GitHub review, then Approve code in Jira "
             "(moves into Acceptance review).",
             Stage.RELEASE_PREPARATION: "Review the release proposal; approving moves it into "
-            "Ready for release. Then merge the PR: release verification starts once the merge is seen.",
-            Stage.RELEASE_VERIFICATION: "Done.",
+            "Ready for release. Then merge the PR: the ticket moves to Done once the merge is seen.",
         }[stage],
         "clarification": f"Answer the questions in Jira, then Submit answers (moves into {ready}).",
         "verification_failed": "Submit implementation changes to fix (moves into Ready for development), "

@@ -1,4 +1,4 @@
-# How people decide, and the two request comments
+# How people decide, and the request comment
 
 **A decision is a Jira move.** Approving, asking for changes, answering questions and resuming
 all happen by choosing the action in Jira (or dragging the card): no comment is needed, and
@@ -33,15 +33,15 @@ there is no token to copy. Rules:
 | Tell Claude something for its next session | Resume, Submit … as usual | `FOR CLAUDE` or `FOR CLAUDE development` + your note |
 | Tell every Claude session on every ticket | nothing | `FOR CLAUDE project` + your note |
 | Create tickets Claude proposed | nothing | **Required**: `CREATE TICKETS <token>` + the IDs (below) |
-| Record a release by hand (optional) | Record release | **Required**: `RECORD RELEASE <token>` + `commit:`, `environment:` (below) |
 
 ## Deviations from the specification
 
 Something changed during development that works but is not what the approved specification
 says. The review lists them as `D1`, `D2`… and they never fail verification. Approving the code
-(and accepting the delivery) accepts them: release preparation first has Claude rewrite the
-specification to include them and publishes it as the approved revision, with no new refinement
-or planning round. To have one changed back instead, request code changes and name it in a
+(and accepting the delivery) accepts them. With a release proposal (`[release] proposal`),
+release preparation first has Claude rewrite the specification to include them and publishes it
+as the approved revision, with no new refinement or planning round; without one, the ticket's
+Done comment names them and the specification is left as it was. To have one changed back instead, request code changes and name it in a
 comment with what to do (`D2: keep the specification's wording`). A deviation nobody names is
 left as it is.
 
@@ -74,12 +74,12 @@ reviews, from since the candidate was published reach development as `G1`, `G2`�
 anything written in Jira. Resolve a conversation on GitHub to leave it out. When the PR comments
 say it all, just choose Request code changes.
 
-## The two request comments
+## The request comment
 
-These are not decisions, so they keep a fixed first line with the token of the revision they
-are about. The coordinator shows the token where it offers them: the review comment that
-proposes tickets, and the note that asks for a release record when no PR is recorded
-(`delivery inspect <KEY>` lists every gate's token too).
+This is not a decision, so it keeps a fixed first line with the token of the revision it is
+about. The coordinator shows the token in the review comment that proposes tickets
+(`delivery inspect <KEY>` lists every gate's token too). There is no comment for releasing: the
+merge of the PR is the release, which the coordinator reads from GitHub.
 
 Proposed tickets. A specification may propose slices of a ticket too big for one delivery, and
 a spike's findings may propose follow-up work, as `S1`, `S2`… in their review comment. Nothing
@@ -91,19 +91,6 @@ Backlog, unassigned and linked to this ticket; this ticket carries on as it is.
 CREATE TICKETS PILOT-123-SPEC-v2
 S1
 S3: call it Export to CSV
-```
-
-Release record. Not needed for an ordinary release: once the PR is merged, the coordinator reads
-the merge commit from GitHub and chooses Record release itself. If this comment is on the ticket
-when the release is recorded, its commit is verified instead of the merge commit. The **newest**
-comment with the release's current token is the one used, so a wrong record is corrected by a
-new comment with the same token and the right commit.
-
-```text
-RECORD RELEASE PILOT-123-RELEASE-v1
-commit: <released commit SHA on the base branch>
-environment: local-pilot
-merged-pr: <PR number>
 ```
 
 ## What is never accepted

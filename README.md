@@ -53,8 +53,9 @@ writes a specification and waits. From here every step is you moving the ticket:
 2. Claude builds it on a `feature/<KEY>` branch and opens a PR; it is independently reviewed
    and verified.
 3. A second person approves the PR on GitHub, then you choose **Approve code**.
-4. **Accept** the delivery, approve the release proposal and **merge the PR**. The coordinator
-   sees the merge and moves the ticket to Done.
+4. **Accept** the delivery and **merge the PR**. The coordinator sees the merge and moves the
+   ticket to Done. (Optionally Claude first writes a release proposal for you to approve:
+   `[release] proposal = true`.)
 
 To ask for changes or answer questions, move the ticket to the matching action and say what you
 want in a comment. Each comment on the ticket starts with the action to choose.

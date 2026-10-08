@@ -220,9 +220,17 @@ decide. No comment is needed.
 - **Acceptance**: the ticket comment links the acceptance guide (how to check each criterion by
   hand) and `delivery try <KEY>`. With `[preview]` configured your coordinator also runs the
   candidate in your browser. Then **Accept delivery**, or **Request acceptance changes**.
-- **Release**: approve the proposal, then merge the PR on GitHub. The merge is the release: the
-  coordinator reads the merge commit, verifies it contains the approved candidate (merge, squash
-  or rebase) and moves the ticket to Done. Nothing to record by hand.
+- **Release**: after **Accept delivery** the ticket waits in Ready for release. Merge the PR on
+  GitHub: the merge is the release. The coordinator reads the merge commit, checks it contains
+  the accepted candidate (merge, squash or rebase) and moves the ticket to Done, saying in its
+  comment if the merge differs (it never blocks: the merge has happened; `delivery revert` takes
+  it back out). Nothing to record by hand. Deviations accepted with the code are named in that
+  comment; the specification is not rewritten for them.
+- **Release proposal (optional)**: with `proposal = true` under `[release]`, **Accept delivery**
+  leads to release preparation instead: Claude writes release notes, smoke steps and rollback
+  steps, you approve them (**Approve release**) and then merge. The specification is rewritten
+  to include accepted deviations first. Needs the three release preparation statuses in Jira
+  (docs/jira-workflow-setup.md).
 
 ## Several tickets at once
 

@@ -20,6 +20,7 @@ User-facing summary of the change.
 ## Rollback
 1. ...
 
-## Recording the release
+## Releasing
 A human merges the PR; that merge is the release. The coordinator reads the merge commit from
-GitHub, records it and runs release verification on it. Nothing is recorded by hand.
+GitHub, checks it contains the accepted candidate and moves the ticket to Done. Nothing is
+recorded by hand.

@@ -59,7 +59,10 @@ def test_acceptance_comment_links_the_guide_instead_of_quoting_it() -> None:
     kw = dict(worker_id="w", local_app=True, try_command=True)
     text = comments.acceptance_ready("K-1", 1, "pr", guide_url="https://x/guide", **kw)
     assert "**To accept**" in first_lines(text)
-    assert "Accept delivery** (moves into **Ready for release preparation**)" in first_lines(text)
+    assert "Accept delivery** (moves into **Ready for release**)" in first_lines(text)
+    assert "ticket moves to Done when the merge is seen" in first_lines(text)
+    with_proposal = comments.acceptance_ready("K-1", 1, "pr", guide_url=None, proposal=True, **kw)
+    assert "Accept delivery** (moves into **Ready for release preparation**)" in first_lines(with_proposal)
     assert "```" not in text and "[Acceptance guide](https://x/guide)" in text
     assert text.index("Request acceptance changes") < text.index("delivery try K-1")
     assert "AC1" not in text
@@ -102,8 +105,10 @@ def test_candidate_and_done_stay_minimal() -> None:
     assert "Verification starts next" in first_lines(cand)
     held = comments.candidate_ready(1, "sha", "pr", session_open=True)
     assert "once the developer closes the Claude session" in first_lines(held)
-    done = comments.done("sha", "prod", "u")
-    assert "Released commit `sha` in `prod`" in done
+    done = comments.done("sha", "prod", 7, "ana", "merge commit; contains the accepted candidate")
+    assert "PR #7 merged by ana as `sha` in `prod`" in done and "Provenance" not in done
+    flagged = comments.done("sha", "prod", 7, None, "unapproved changes", flagged=True, deviations=["D1"])
+    assert "**Look at this**" in flagged and "D1" in flagged
 
 
 def test_comments_stay_short() -> None:

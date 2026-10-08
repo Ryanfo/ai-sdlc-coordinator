@@ -1270,7 +1270,7 @@ class Wizard:
         assert jira
         io.say("\nJira workflow")
         cfg = self.config()
-        if self.project and not cfg.workflow.missing_statuses():
+        if self.project and not cfg.workflow.missing_statuses(cfg.release.proposal):
             io.say(f"  Mapped in the team's project file ({len(cfg.workflow.statuses)} statuses).")
             return
         try:

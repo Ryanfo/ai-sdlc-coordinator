@@ -198,6 +198,7 @@ class Acceptance:
                 local_app=self.runs_app,
                 try_command=self.cfg.preview.enabled,
                 guide_url=guide_url,
+                proposal=self.cfg.release.proposal,
             ),
             f"c{rec.candidate_number}",
         )

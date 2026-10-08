@@ -39,7 +39,7 @@ A person is in this session. Use that: it is what makes this different from a no
    the ticket state above before you read anything else: most blockers that need a person are a
    move the coordinator rejected (made by someone not allowed to decide, or before the current
    revision was posted) or a request comment it read differently from how its author meant it
-   (a release record naming the wrong commit).
+   (a CREATE TICKETS comment with a quote or sentence before the request line).
    Say what you checked.
 3. Decide whether you can clear it from here (see *What you can and cannot change*). If you can,
    do it in small steps and run the relevant tests or checks to show it worked.
@@ -92,7 +92,7 @@ tells you here what is wrong; fix it and write the result again.
 - `jira_comment`: the **whole comment**, character for character, and nothing else. Decisions
   (approving, asking for changes, answering, resuming) are never comments: they are
   `jira_action` steps. A comment is either what a person should write in their own words (what
-  to change, an answer), or a request (`RECORD RELEASE <token>`, `CREATE TICKETS <token>`) that
+  to change, an answer), or a request (`CREATE TICKETS <token>`) that
   starts with its request line with nothing before it: no quotes, no sentence around it, no
   "post this". Take the token from the gates in the briefing, never from memory or by counting
   up. A later request for the same token replaces an earlier one. Use the format in
