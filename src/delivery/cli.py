@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -997,19 +998,25 @@ def cmd_try(args: argparse.Namespace) -> int:
     """Run a ticket's candidate on this machine and open it in the browser (Ctrl-C stops it)."""
     from delivery.try_app import TryError, try_candidate
 
+    if not args.ticket and not args.ref:
+        print("give a ticket key, or --ref <branch or commit> to run that on its own", file=sys.stderr)
+        return EXIT_CONFIG
+    # Without a ticket the ref is run on its own: no Jira, and the ref names the run.
+    label = args.ticket or re.sub(r"[^A-Za-z0-9._-]+", "-", args.ref).strip("-.") or "ref"
     cfg = _load(args)
     repo = build_repo(cfg)
 
     async def go() -> int:
         jira: Any = None
-        try:
-            from delivery.jira import JiraClient
+        if args.ticket:
+            try:
+                from delivery.jira import JiraClient
 
-            jira = JiraClient(cfg)
-        except Exception as exc:  # no credentials on this machine: the branch head still works
-            print(f"Jira is not available here ({exc}); using the head of feature/{args.ticket}")
+                jira = JiraClient(cfg)
+            except Exception as exc:  # no credentials on this machine: the branch head still works
+                print(f"Jira is not available here ({exc}); using the head of feature/{args.ticket}")
         try:
-            return await try_candidate(cfg, args.ticket, repo=repo, jira=jira, ref=args.ref, keep=args.keep)
+            return await try_candidate(cfg, label, repo=repo, jira=jira, ref=args.ref, keep=args.keep)
         finally:
             if jira is not None:
                 await jira.close()
@@ -1017,7 +1024,7 @@ def cmd_try(args: argparse.Namespace) -> int:
     try:
         return asyncio.run(go())
     except TryError as exc:
-        print(f"{args.ticket}: {exc}", file=sys.stderr)
+        print(f"{label}: {exc}", file=sys.stderr)
         return EXIT_FAIL
     except KeyboardInterrupt:
         return EXIT_OK
@@ -1500,7 +1507,7 @@ def parser(prog: str = "delivery") -> argparse.ArgumentParser:
     sp = with_config(
         sub.add_parser("try", help="run a ticket's candidate on this machine and open it in your browser")
     )
-    sp.add_argument("ticket")
+    sp.add_argument("ticket", nargs="?", help="omit it to run --ref on its own")
     sp.add_argument("--ref", help="run this commit or branch instead of the ticket's candidate")
     sp.add_argument("--keep", action="store_true", help="keep the worktree afterwards")
     sp.set_defaults(func=cmd_try)

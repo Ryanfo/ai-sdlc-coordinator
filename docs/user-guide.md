@@ -428,7 +428,7 @@ coordinator never merges.
 | `attach` / `sessions` / `close` | Open an interactive session / list them / end one left open |
 | `help KEY ["question"]` | Ask Claude what is wrong with a ticket |
 | `inspect KEY` | Why a ticket is (not) eligible, its latest run, findings and the Jira actions available now; read-only |
-| `try KEY` / `preview KEY` | Run the ticket's candidate and open it in your browser / reopen the running app |
+| `try KEY` / `try --ref REF` / `preview KEY` | Run the ticket's candidate (or, with `--ref`, any branch or commit such as `main`, no ticket needed) and open it in your browser / reopen the running app |
 | `stop KEY` | Stop one ticket's session and keep its work |
 | `recover KEY [--resume]` | Reconcile one ticket against Jira/GitHub before any retry; `--resume` continues held work |
 | `handover KEY` | Checkpoint a ticket and move it to Blocked so it can be reassigned |
