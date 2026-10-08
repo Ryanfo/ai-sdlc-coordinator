@@ -19,7 +19,6 @@ PROCEDURES = (
     "review-ticket",
     "verify-ticket",
     "prepare-release",
-    "verify-release",
     "amend-spec",
     "resolve-conflicts",
     "investigate-ticket",

@@ -56,7 +56,6 @@
         "review",
         "verification",
         "release",
-        "release_verification",
         "code",
         "test",
         "doc"
@@ -675,7 +674,6 @@
         "development",
         "verification",
         "release_preparation",
-        "release_verification",
         "resolution"
       ],
       "title": "Stage",

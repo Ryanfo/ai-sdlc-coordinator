@@ -61,14 +61,20 @@ IDs). Names must be unique in the project.
 | Blocked | In Progress | paused |
 | Ready for resolution | To Do | ready (optional: resolving blocked tickets) |
 | Resolving | In Progress | agent active (optional: resolving blocked tickets) |
-| Ready for release preparation | To Do | ready |
-| Preparing release | In Progress | agent active |
-| Release review | In Progress | human review |
-| Ready for release | To Do | human release gate (not a machine queue) |
-| Ready for release verification | To Do | ready |
-| Verifying release | In Progress | agent active |
+| Ready for release preparation | To Do | ready (release proposal only) |
+| Preparing release | In Progress | agent active (release proposal only) |
+| Release review | In Progress | human review (release proposal only) |
+| Ready for release | To Do | waiting for the PR merge (not a machine queue) |
 | Done | Done | terminal (set resolution) |
 | Cancelled | Done | terminal (set resolution) |
+
+**Release proposal: decide first.** By default a ticket goes from Acceptance review to Ready for
+release, the PR is merged, and the coordinator moves the ticket to Done when it sees the merge:
+no release proposal, so the three *release proposal only* statuses are not needed. A team that
+wants Claude to write release notes with smoke and rollback steps for approval before the merge
+sets `proposal = true` under `[release]` in every developer's config and adds those statuses and
+their transitions (marked below). The workflow has no release verification: nothing runs after
+the merge.
 
 ## 4. Transitions
 
@@ -93,13 +99,23 @@ config).
 | Ready for verification | Start verification | Verifying | coordinator |
 | Verifying | Complete verification | Code review | coordinator |
 | Code review | Approve code | Acceptance review | approver |
-| Acceptance review | Accept delivery | Ready for release preparation | approver |
+| Acceptance review | Accept delivery | Ready for release | approver (no release proposal, the default) |
+| Ready for release | Record release | Done | coordinator, when the PR is merged |
+
+With `proposal = true` the same transition, **Accept delivery**, leads to Ready for release
+preparation instead, and these are added:
+
+| From | Name | To | Performed by |
+|---|---|---|---|
+| Acceptance review | Accept delivery | Ready for release preparation | approver (release proposal) |
 | Ready for release preparation | Start release preparation | Preparing release | coordinator |
 | Preparing release | Complete release preparation | Release review | coordinator |
 | Release review | Approve release | Ready for release | release owner |
-| Ready for release | Record release | Ready for release verification | coordinator, when the PR is merged (a release owner may still do it) |
-| Ready for release verification | Start release verification | Verifying release | coordinator |
-| Verifying release | Complete release verification | Done | coordinator |
+
+Exactly one Accept delivery transition leaves Acceptance review: which status it leads to is how
+Jira says whether the team uses a release proposal (`delivery workflow verify` walks whichever
+`[release] proposal` says). **Record release** is the transition the coordinator chooses when it
+sees the merge; nobody chooses it by hand.
 
 ### Changes and failed verification
 
@@ -112,7 +128,7 @@ config).
 | Acceptance review | Request acceptance changes | Changes requested |
 | Changes requested | Submit implementation changes | Ready for development |
 | Changes requested | Revise scope | Ready for refinement |
-| Release review | Request release changes | Ready for release preparation |
+| Release review | Request release changes | Ready for release preparation (release proposal only) |
 
 With [interactive sessions](user-guide.md#interactive-sessions), changes a
 developer asks for in an open development session are verified again as a new candidate. That
@@ -141,7 +157,7 @@ team-managed project each type has its own workflow) and add it to each develope
 ### Optional: resolving a blocked ticket with Claude
 
 For teams that want to clear a Blocked ticket together with Claude instead of fixing the cause by
-hand and choosing Resume. Two more statuses (above) and eleven more transitions. `workflow verify`
+hand and choosing Resume. Two more statuses (above) and ten more transitions (nine without a release proposal). `workflow verify`
 and `doctor` accept them but never require them; the coordinator only offers the feature on
 projects that map both statuses (`delivery workflow inspect` prints their IDs).
 
@@ -153,8 +169,7 @@ projects that map both statuses (`delivery workflow inspect` prints their IDs).
 | Resolving | Resolved: resume planning | Ready for planning | coordinator |
 | Resolving | Resolved: resume development | Ready for development | coordinator |
 | Resolving | Resolved: resume verification | Ready for verification | coordinator |
-| Resolving | Resolved: resume release preparation | Ready for release preparation | coordinator |
-| Resolving | Resolved: resume release verification | Ready for release verification | coordinator |
+| Resolving | Resolved: resume release preparation | Ready for release preparation | coordinator (release proposal only) |
 | Resolving | Block stage | Blocked | coordinator (the same name as from the other active statuses) |
 | Ready for resolution | Cancel | Cancelled | human |
 | Resolving | Cancel | Cancelled | human |
@@ -167,11 +182,11 @@ clears it when the ticket goes back to the stage that blocked.
 
 ### Pausing and resuming
 
-From **each of the six agent-active statuses** add `Ask questions → Needs clarification` and
+From **each of the four agent-active statuses** (five with a release proposal, which adds Preparing release) add `Ask questions → Needs clarification` and
 `Block stage → Blocked` (same names from every status are fine; the coordinator matches name
 **and** destination).
 
-From both paused statuses add six resume transitions:
+From both paused statuses add one resume transition per stage (four, five with a release proposal):
 
 | Delivery resume stage | From Needs clarification | From Blocked | To |
 |---|---|---|---|
@@ -179,8 +194,7 @@ From both paused statuses add six resume transitions:
 | planning | Submit planning answers | Resume planning | Ready for planning |
 | development | Submit development answers | Resume development | Ready for development |
 | verification | Submit verification answers | Resume verification | Ready for verification |
-| release_preparation | Submit release preparation answers | Resume release preparation | Ready for release preparation |
-| release_verification | Submit release verification answers | Resume release verification | Ready for release verification |
+| release_preparation (release proposal only) | Submit release preparation answers | Resume release preparation | Ready for release preparation |
 
 ### Cancel
 
@@ -191,8 +205,8 @@ publishes nothing further.
 ## 5. Delivery resume stage field
 
 Create a **single-select** custom field *Delivery resume stage* with options exactly
-`refinement`, `planning`, `development`, `verification`, `release_preparation`,
-`release_verification`, scoped to the project's issue types. Add it to the issue screens (the
+`refinement`, `planning`, `development`, `verification`, `release_preparation` (only with a
+release proposal), scoped to the project's issue types. Add it to the issue screens (the
 coordinator writes it; humans should not edit it). `delivery workflow inspect` prints its
 `customfield_…` ID.
 
@@ -207,7 +221,7 @@ Blocked with the correct resume stage and explains which action to use.
 - Approval transitions (Approve specification/plan/code, Accept delivery, Approve release):
   restrict to the approver group or role.
 - Record release: the coordinator chooses it once the PR is merged, so allow the worker
-  account (and approvers, who may still record a release by hand).
+  account. Nobody else needs it.
 - Submit/Resume transitions: assignee or approver.
 - Start/Complete/Ask questions/Block stage/Verification failed: if you use a separate worker
   account, restrict them to it. Do **not** add *Only assignee* to worker transitions when the
@@ -229,10 +243,10 @@ Board columns (columns are visual only; the coordinator triggers on exact status
 | Column | Statuses |
 |---|---|
 | Backlog | Backlog |
-| Ready | the six Ready for… statuses (not Ready for release), and Ready for resolution if used |
-| Agent working | Refining, Planning, Developing, Verifying, Preparing release, Verifying release, and Resolving if used |
+| Ready | the Ready for… statuses (not Ready for release), and Ready for resolution if used |
+| Agent working | Refining, Planning, Developing, Verifying, Preparing release (release proposal), and Resolving if used |
 | Needs clarification | Needs clarification |
-| Human review | Specification review, Plan review, Code review, Acceptance review, Release review, Changes requested |
+| Human review | Specification review, Plan review, Code review, Acceptance review, Release review (release proposal), Changes requested |
 | Blocked | Blocked |
 | Ready for release | Ready for release |
 | Done | Done, Cancelled |

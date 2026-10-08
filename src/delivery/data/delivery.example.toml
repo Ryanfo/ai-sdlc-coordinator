@@ -119,7 +119,7 @@ permission_profile = "local_pilot"
 
 # Optional per-procedure overrides; anything not listed uses `model` above.
 # Procedures: refine-ticket, plan-ticket, implement-ticket, review-ticket,
-# verify-ticket, prepare-release, verify-release, amend-spec (rewrites the
+# verify-ticket, prepare-release, amend-spec (rewrites the
 # specification when deviations from it are accepted during development).
 # `delivery doctor --claude-probe` checks every configured model works for you.
 # [claude.models]
@@ -167,10 +167,11 @@ profile = "local_pilot"
 environment = "local-pilot"
 human_merge_required = true
 human_deployment_required = true
-
-[release.smoke_commands]
-# Commands the coordinator runs against the recorded release during verification.
-# smoke = ["npm", "run", "test:smoke"]
+# false: accepting the delivery moves the ticket to Ready for release, you merge the PR, and the
+# coordinator moves the ticket to Done once it sees the merge. true: Claude first writes a
+# release proposal (notes, smoke and rollback steps) for you to approve; this needs the Ready
+# for release preparation, Preparing release and Release review statuses in Jira.
+# proposal = false
 
 [checks]
 # Run once in every fresh worktree before the checks below.

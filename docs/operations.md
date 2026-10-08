@@ -84,7 +84,7 @@ touched. `retention_days = 0` keeps everything until you clean by hand.
 | interrupted, waiting for Claude | Claude's login expired or the usage limit was reached | Resumes by itself once a one-word Claude probe works (checked every 1 to 15 minutes); new work waits meanwhile |
 | blocked | Ticket moved to Blocked with a reason | A human fixes the cause and chooses Resume in Jira, or chooses Request resolution to clear it with Claude (a `resolution` run: it ends `completed` when the ticket returns to the stage that blocked, `blocked` when the cause could not be cleared) |
 | failed | A definite failure the coordinator could not publish around | `delivery inspect` explains; fix, then `delivery recover` |
-| completed | Release verified, ticket Done | — |
+| completed | A resolution run that cleared its blocker (a released ticket has no run: the merge moves it to Done) | — |
 
 ## Stopping
 
@@ -178,7 +178,7 @@ All directories are created with mode 0700 and files 0600. Do not commit anythin
 | The coordinator stopped unexpectedly | `coordinator status` says so; `coordinator logs` has the error; `coordinator` starts it again |
 | Worktrees and logs pile up | `coordinator clean` lists what finished runs left and removes it (`--older-than DAYS` for old logs) |
 | Base branch moved after code approval | The code gate blocks (head or CI no longer current). Request code changes → Submit implementation changes merges the base into the candidate (no rebase) and re-verifies |
-| Merge conflict with the base or another ticket | Flagged in the candidate, code-review and verification comments, never a failure. Resolve it in the PR when merging (for example GitHub's Resolve conflicts); release verification accepts the approved candidate plus merges of the base and lists the files the resolution changed. Any other commit added to the PR is still refused. Or request code changes: the next development run merges the latest base and a short Claude session resolves a conflict with it (left out and still flagged if it cannot) |
+| Merge conflict with the base or another ticket | Flagged in the candidate, code-review and verification comments, never a failure. Resolve it in the PR when merging (for example GitHub's Resolve conflicts); the Done comment says the approved candidate was merged with the base and lists the files the resolution changed. Any other commit added to the PR is flagged there as unapproved changes (the ticket still moves to Done: the merge has happened). Or request code changes: the next development run merges the latest base and a short Claude session resolves a conflict with it (left out and still flagged if it cannot) |
 | Main moved on while a candidate waits for review | The ticket gets one "may be out of date" comment when the new commits touch the same files or conflict. Submit follow-up changes verifies the same candidate again on the latest base |
 | A released change must come out | `delivery revert <KEY> --reason "…"`: a revert PR to review and merge, and a linked Bug for the rework |
 | Reviews wait too long | `delivery team` shows every ticket by what it waits on; reminders comment after `[reminders] after_hours` |

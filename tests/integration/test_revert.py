@@ -33,7 +33,7 @@ async def _to_done(w: World, sup: Supervisor, how: str) -> int:
     await step(sup)
     w.move(KEY, Status.READY_RELEASE)
     w.github.merge(pr, how=how)
-    await step(sup)  # the merge is the release: recorded and verified
+    await step(sup)  # the merge is the release: the ticket moves to Done
     assert w.jira.status_of(KEY) is Status.DONE, w.last_comment(KEY)
     return pr
 

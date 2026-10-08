@@ -33,7 +33,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from delivery import __version__, cancel_cleanup, cleanup, console
+from delivery import __version__, cancel_cleanup, cleanup, console, deviations, release
 from delivery import comments as comment_text
 from delivery.acceptance import Acceptance
 from delivery.alerts import Alerts
@@ -50,6 +50,7 @@ from delivery.intake import (
     IntakeEvaluator,
     IntakeKind,
     RecordCorrupt,
+    ReleaseIntake,
     TicketContext,
     brief_text,
     load_context,
@@ -421,8 +422,8 @@ class Supervisor:
                 except Exception:
                     log.exception("%s check failed", name)
         try:
-            # First, so that a release recorded now starts its verification in this same poll.
-            await self._record_merged_releases(report)
+            # First, so that a merge seen now completes its ticket in this same poll.
+            await self._complete_merged_releases(report)
             issues = await self.deps.jira.search(ready_jql(self.cfg))
             working = await self.deps.jira.search(active_jql(self.cfg))
         except IntegrationError as exc:
@@ -467,13 +468,15 @@ class Supervisor:
         self.deps.store.save_supervisor(self.record)
         return report
 
-    async def _record_merged_releases(self, report: PollReport) -> None:
-        """Tickets in Ready for release whose PR has been merged: record the release.
+    async def _complete_merged_releases(self, report: PollReport) -> None:
+        """Tickets in Ready for release whose PR has been merged: the merge is the release, so
+        check that it contains the accepted candidate and move the ticket to Done.
 
-        The human merge is the pilot release. The coordinator only reads it from GitHub (it never
-        merges or deploys) and chooses Record release, which a human would otherwise do after
-        copying the merge commit into a comment. Release verification then validates the release
-        approval and provenance as usual. A RECORD RELEASE comment, if a human left one, wins.
+        The coordinator only reads the merge from GitHub (it never merges or deploys). A merge
+        that differs from the accepted candidate is said so in the Done comment and never holds
+        the ticket back. A decision that does not stand (say, code approval without a passing CI
+        on the current head) keeps the ticket in Ready for release with the reason, and is checked
+        again on every poll.
         """
         for issue in await self.deps.jira.search(release_jql(self.cfg)):
             key = issue.key
@@ -481,34 +484,86 @@ class Supervisor:
                 continue
             try:
                 ctx = await load_context(self.deps.jira, self.cfg, key)
-                intake = await self.evaluator.merged_release(ctx)
-                if intake.kind is not IntakeKind.READY or intake.release_record is None:
-                    report.waiting.append({"ticket": key, "reason": intake.reason})
-                    self._note_once(f"{key}:release:{intake.reason}", f"{key}: {intake.reason}")
+                found = await self.evaluator.merged_release(ctx)
+                if not found.ready or found.record is None:
+                    report.waiting.append({"ticket": key, "reason": found.reason})
+                    self._note_once(f"{key}:release:{found.reason}", f"{key}: {found.reason}")
                     continue
-                release = intake.release_record
-                what = f"PR #{release['merged_pr']} merged as {str(release['commit'])[:12]}"
                 if self.dry_run:
-                    self.emit(f"[dry-run] would record the release of {key}: {what}")
+                    self.emit(f"[dry-run] would complete {key}: {found.reason}")
                     continue
-                entry = intake.entry.history_id if intake.entry else str(release["commit"])[:12]
-                journal = RunJournal(self.cfg.runtime.state_dir / "intake" / key)
-                pub = Publisher(self.cfg, self.deps.jira, None, None, journal, f"release-{entry}")
-                await pub.transition(key, Status.READY_RELEASE, Action.RECORD_RELEASE)
-                self.emit(console.line(f"{key}: {what}; recorded the release, verifying it"))
+                await self._complete_release(ctx, found)
             except (
                 IntegrationError,
                 RecordCorrupt,
+                GitError,
                 PublicationError,
                 PublicationUncertain,
                 TicketMoved,
             ) as exc:
-                report.skipped.append({"ticket": key, "reason": f"release not recorded: {exc}"})
+                report.skipped.append({"ticket": key, "reason": f"release not completed: {exc}"})
                 self._note_once(
                     f"{key}:release-error:{exc}",
-                    f"{key}: could not record the release ({exc}); retrying on the next poll, or "
-                    "choose Record release in Jira",
+                    f"{key}: could not complete the release ({exc}); retrying on the next poll",
                 )
+
+    async def _complete_release(self, ctx: TicketContext, found: ReleaseIntake) -> None:
+        assert found.record is not None
+        key = ctx.key
+        rec = found.record
+        candidate = rec.candidate_sha or ""
+        proven = await release.establish(
+            self.deps.repo,
+            self.deps.github,
+            base_branch=self.cfg.repository.base_branch,
+            pr_number=found.pr_number,
+            candidate=candidate,
+        )
+        environment = self.cfg.release.environment
+        record = {
+            "commit": found.merge_commit,
+            "environment": environment,
+            "merged_pr": found.pr_number,
+            "merged_by": found.merged_by,
+            "source": "github",
+        }
+        open_deviations = [d.id for d in deviations.open_deviations(rec)]
+        shared = rec.model_copy(
+            update={
+                "release": {
+                    "record": record,
+                    "provenance": proven.info,
+                    "provenance_summary": proven.summary,
+                },
+                "current_state": RunState.COMPLETED,
+                "pause": None,
+                "updated_at": utcnow(),
+            }
+        )
+        # The merge commit identifies this completion, so a retry after a crash repeats nothing.
+        journal = RunJournal(self.cfg.runtime.state_dir / "intake" / key)
+        pub = Publisher(self.cfg, self.deps.jira, None, None, journal, f"release-{found.merge_commit[:12]}")
+        await pub.save_record(key, shared, "done")
+        await pub.comment(
+            key,
+            "done",
+            comment_text.done(
+                found.merge_commit,
+                environment,
+                found.pr_number,
+                found.merged_by,
+                proven.summary,
+                flagged=not proven.ok or proven.warning,
+                deviations=open_deviations,
+            ),
+            found.merge_commit[:12],
+        )
+        await pub.set_resume_field(key, None, "clear")
+        await pub.transition(key, Status.READY_RELEASE, Action.RECORD_RELEASE)
+        flag = "" if proven.ok and not proven.warning else " (flagged: see the ticket comment)"
+        self.emit(
+            console.line(f"{key}: PR #{found.pr_number} merged as {found.merge_commit[:12]}; Done{flag}")
+        )
 
     async def _sweep_comments(self) -> None:
         """Comments on the developer's tickets that ask for something outside any stage:

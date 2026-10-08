@@ -217,6 +217,7 @@ class Acceptance:
                 try_command=self.cfg.preview.enabled,
                 guide=guide,
                 guide_url=guide_url,
+                proposal=self.cfg.release.proposal,
             ),
             f"c{rec.candidate_number}",
         )

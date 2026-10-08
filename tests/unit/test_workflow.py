@@ -6,6 +6,7 @@ from delivery.workflow import (
     ACTIVE_STATUSES,
     BOARD_COLUMNS,
     LIFECYCLE_STAGES,
+    PROPOSAL_STATUSES,
     READY_STATUSES,
     RESOLVED_ACTIONS,
     ROUTES,
@@ -18,7 +19,9 @@ from delivery.workflow import (
     Status,
     coordinator_route,
     human_route,
+    required_statuses,
     resume_route,
+    routes_for,
 )
 
 # Every human route from the handoff §6 table: (from, to, requirement)
@@ -36,7 +39,8 @@ HUMAN_TABLE = [
     (Status.CHANGES_REQUESTED, Status.READY_REFINEMENT, Requirement.SCOPE_REVISION),
     (Status.RELEASE_REVIEW, Status.READY_RELEASE, Requirement.RELEASE_APPROVAL),
     (Status.RELEASE_REVIEW, Status.READY_RELEASE_PREPARATION, Requirement.RELEASE_CHANGES),
-    (Status.READY_RELEASE, Status.READY_RELEASE_VERIFICATION, Requirement.RELEASE_RECORD),
+    # Without a release proposal, accepting the delivery goes straight to Ready for release.
+    (Status.ACCEPTANCE_REVIEW, Status.READY_RELEASE, Requirement.ACCEPTANCE),
 ]
 
 
@@ -72,13 +76,28 @@ def test_coordinator_cannot_take_human_or_wrong_routes(src: Status, action: Acti
         coordinator_route(src, action)
 
 
-def test_coordinator_records_a_merged_release_on_the_human_route() -> None:
-    # The human merge is the release; the coordinator records it on the same Jira transition a
-    # human would use (and humans still may), with the same requirement checked on arrival.
+def test_coordinator_completes_a_merged_release() -> None:
+    # The human merge is the release; the coordinator moves the ticket to Done when it sees it.
     route = coordinator_route(Status.READY_RELEASE, Action.RECORD_RELEASE)
-    assert route.target is Status.READY_RELEASE_VERIFICATION
-    assert route.requires is Requirement.RELEASE_RECORD
-    assert human_route(Status.READY_RELEASE, Status.READY_RELEASE_VERIFICATION)
+    assert route.target is Status.DONE
+    assert not [
+        r
+        for r in ROUTES
+        if r.source is Status.READY_RELEASE and r.actor is Actor.HUMAN and r.target is not Status.CANCELLED
+    ]
+
+
+def test_the_release_proposal_is_optional() -> None:
+    with_proposal = routes_for(True)
+    without = routes_for(False)
+    assert {r.target for r in with_proposal if r.action is Action.ACCEPT_DELIVERY} == {
+        Status.READY_RELEASE_PREPARATION
+    }
+    assert {r.target for r in without if r.action is Action.ACCEPT_DELIVERY} == {Status.READY_RELEASE}
+    # Nothing in a Jira project without a proposal touches the three release preparation statuses.
+    assert not [r for r in without if PROPOSAL_STATUSES & {r.source, r.target}]
+    assert required_statuses(True) >= PROPOSAL_STATUSES
+    assert not PROPOSAL_STATUSES & required_statuses(False)
 
 
 def test_no_global_arbitrary_transition() -> None:
@@ -99,11 +118,6 @@ def test_resume_only_to_recorded_stage(stage: Stage) -> None:
         assert resume_route(paused, d.ready, None) is None
 
 
-def test_failed_release_verification_routes_to_blocked() -> None:
-    r = coordinator_route(Status.VERIFYING_RELEASE, Action.BLOCK_STAGE)
-    assert r.target is Status.BLOCKED
-
-
 def test_board_maps_every_status_exactly_once() -> None:
     mapped = [s for _, statuses in BOARD_COLUMNS for s in statuses]
     assert sorted(mapped) == sorted(Status)
@@ -111,8 +125,8 @@ def test_board_maps_every_status_exactly_once() -> None:
 
 
 def test_ready_and_active_sets() -> None:
-    assert len(READY_STATUSES) == 7  # six stages and resolution
-    assert len(ACTIVE_STATUSES) == 7
+    assert len(READY_STATUSES) == 6  # five stages and resolution
+    assert len(ACTIVE_STATUSES) == 6
     assert Status.READY_RELEASE not in READY_STATUSES  # human release gate, not a machine queue
 
 

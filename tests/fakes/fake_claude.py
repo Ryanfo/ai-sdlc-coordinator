@@ -43,7 +43,6 @@ DEFAULT_FILES = {
     "review-ticket": ("review.md", "review", "# Review\n\nAll criteria met.\n"),
     "verify-ticket": ("verification.md", "verification", "# Verification\n\nObserved.\n"),
     "prepare-release": ("release.md", "release", "# Release\n\nSmoke: open the app.\n"),
-    "verify-release": ("release-verification.md", "release_verification", "# Release verification\n"),
     "investigate-ticket": ("findings.md", "plan", "# Findings\n\n## Answer\nUse the existing index.\n"),
     "amend-spec": (
         "specification.md",

@@ -159,23 +159,19 @@ def test_briefing_has_the_blocker_logs_and_comments(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- next steps
-# The cases below are what went wrong on SDLC-13: a release record naming another ticket's commit,
-# a correction posted as a quoted sentence, and then one with a token the ticket never had.
+# The cases below are what went wrong on SDLC-13: a request comment posted as a quoted sentence, a
+# token the ticket never had, and an action Jira does not offer on a Blocked ticket.
 
-
-GOOD = "48583e88df470ea0dba878b32cf59faa026d1bf7"
-WRONG = "71c5eaab5a2eb945411b9d872012340950193b46"
 EXPECT = {
-    "tokens": {"SPEC": "PILOT-1-SPEC-v2", "RELEASE": "PILOT-1-RELEASE-v1"},
+    "tokens": {"SPEC": "PILOT-1-SPEC-v2"},
     "round_token": None,
     "blocked_actions": {
-        "resume release verification": "release_verification",
+        "resume release preparation": "release_preparation",
         "resume development": "development",
         "request resolution": None,
         "cancel": None,
     },
-    "resume_stage": "release_verification",
-    "release_environment": "local-pilot",
+    "resume_stage": "release_preparation",
 }
 
 
@@ -194,43 +190,33 @@ def _blocked(*steps: dict) -> dict:  # type: ignore[type-arg]
     return {"outcome": "blocked", "resolution": {"next_steps": list(steps)}}
 
 
-def _record(ref: str = "PILOT-1-RELEASE-v1", commit: str = GOOD, env: str = "local-pilot") -> str:
-    return f"RECORD RELEASE {ref}\ncommit: {commit}\nenvironment: {env}\nmerged-pr: 8"
+def _tickets(ref: str = "PILOT-1-SPEC-v2") -> str:
+    return f"CREATE TICKETS {ref}\nS1, S3\nS2: call it Download"
 
 
-def test_a_correct_record_comment_and_resume_action_are_accepted() -> None:
-    steps = [_step("jira_comment", _record()), _step("jira_action", "Resume release verification")]
+def test_a_correct_request_comment_and_resume_action_are_accepted() -> None:
+    steps = [_step("jira_comment", _tickets()), _step("jira_action", "Resume release preparation")]
     assert check_next_steps(_blocked(*steps), EXPECT) is None
     # Wrapped in a code fence as people paste it from the ticket: still the same comment.
-    assert check_next_steps(_blocked(_step("jira_comment", f"```\n{_record()}\n```")), EXPECT) is None
+    assert check_next_steps(_blocked(_step("jira_comment", f"```\n{_tickets()}\n```")), EXPECT) is None
 
 
 def test_the_quoted_sentence_from_the_first_session_is_refused() -> None:
-    quoted = f"'RECORD RELEASE PILOT-1-RELEASE-v1' with 'commit: {GOOD}', 'environment: local-pilot'"
+    quoted = "'CREATE TICKETS PILOT-1-SPEC-v2' with 'S1, S3'"
     problem = check_next_steps(_blocked(_step("jira_comment", quoted)), EXPECT)
     assert problem and "would not be recognised" in problem and problem.startswith("next step 1")
 
 
 def test_decisions_are_actions_and_plain_comments_are_any_wording() -> None:
-    for old in ("APPROVE RELEASE PILOT-1-RELEASE-v1", "ANSWERS PILOT-1-RELVERIFY-R1\nQ1: yes"):
+    for old in ("APPROVE RELEASE PILOT-1-RELEASE-v1", "ANSWERS PILOT-1-RELPREP-R1\nQ1: yes"):
         problem = check_next_steps(_blocked(_step("jira_comment", old)), EXPECT) or ""
         assert "decisions are Jira moves" in problem and "jira_action" in problem
     assert check_next_steps(_blocked(_step("jira_comment", "Use the staging database.")), EXPECT) is None
 
 
-def test_a_token_the_ticket_does_not_have_is_refused() -> None:
-    problem = check_next_steps(_blocked(_step("jira_comment", _record(ref="PILOT-1-RELEASE-v2"))), EXPECT)
-    assert problem and "PILOT-1-RELEASE-v2 is not the current RELEASE token" in problem
-    assert "PILOT-1-RELEASE-v1" in problem  # and says which one to use
-
-
-def test_a_record_needs_a_full_sha_and_the_configured_environment() -> None:
-    assert "40-character" in (
-        check_next_steps(_blocked(_step("jira_comment", _record(commit="48583e8"))), EXPECT) or ""
-    )
-    assert "environment: local-pilot" in (
-        check_next_steps(_blocked(_step("jira_comment", _record(env="prod"))), EXPECT) or ""
-    )
+def test_a_token_of_the_wrong_kind_is_refused() -> None:
+    problem = check_next_steps(_blocked(_step("jira_comment", _tickets(ref="PILOT-1-CODE-c1"))), EXPECT)
+    assert problem and "has problems" in problem
 
 
 def test_an_action_must_exist_on_a_blocked_ticket_for_the_stage_that_paused() -> None:
@@ -238,7 +224,7 @@ def test_an_action_must_exist_on_a_blocked_ticket_for_the_stage_that_paused() ->
         check_next_steps(_blocked(_step("jira_action", "Approve release")), EXPECT) or ""
     )
     problem = check_next_steps(_blocked(_step("jira_action", "Resume development")), EXPECT)
-    assert problem and "paused in release_verification" in problem
+    assert problem and "paused in release_preparation" in problem
     assert check_next_steps(_blocked(_step("jira_action", "Cancel")), EXPECT) is None
 
 
@@ -255,7 +241,7 @@ def test_a_blocked_resolution_must_say_what_to_do_and_a_completed_one_must_not_a
 
 def test_every_problem_is_reported_with_its_step_number() -> None:
     bad = _blocked(
-        _step("jira_comment", _record()),
+        _step("jira_comment", _tickets()),
         _step("jira_comment", "APPROVE CODE PILOT-1-CODE-c1"),
         _step("jira_action", "Nope"),
     )
@@ -280,21 +266,20 @@ def _comment(i: int, hour: int, body: str) -> JiraComment:
     return JiraComment(str(i), "acct", when, when, body, "Ryan")
 
 
-def test_the_briefing_shows_which_record_the_coordinator_actually_uses() -> None:
+def test_the_briefing_shows_which_request_comments_the_coordinator_reads() -> None:
     gates = [_gate("SPEC", 1, "superseded"), _gate("SPEC", 2, "approved"), _gate("RELEASE", 1, "approved")]
     assert current_tokens(gates) == {"SPEC": "PILOT-1-SPEC-v2", "RELEASE": "PILOT-1-RELEASE-v1"}
     comments = [
-        _comment(1, 10, _record(commit=WRONG)),
-        _comment(2, 11, f"'RECORD RELEASE PILOT-1-RELEASE-v1' with 'commit: {GOOD}'"),
-        _comment(3, 12, _record(ref="PILOT-1-RELEASE-v2")),
+        _comment(1, 10, _tickets()),
+        _comment(2, 11, "'CREATE TICKETS PILOT-1-SPEC-v2' with 'S1'"),
+        _comment(3, 12, _tickets()),
         _comment(4, 13, "looks fine to me"),
-        _comment(5, 14, "RECORD RELEASE PILOT-1-RELEASE-v1\ncommit: " + GOOD + "\nenvironment: local-pilot"),
     ]
     text = "\n".join(
         ticket_state_lines(
             gates=gates,
             comments=comments,
-            resume_stage="release_verification",
+            resume_stage="release_preparation",
             blocked_actions=EXPECT["blocked_actions"],  # type: ignore[arg-type]
         )
     )
@@ -302,7 +287,6 @@ def test_the_briefing_shows_which_record_the_coordinator_actually_uses() -> None
     first = next(ln for ln in text.splitlines() if "#1 " in ln)
     assert "superseded by a later comment" in first
     assert "NOT RECOGNISED" in next(ln for ln in text.splitlines() if "#2 " in ln)
-    assert "IGNORED, PILOT-1-RELEASE-v2 is not the current RELEASE token (PILOT-1-RELEASE-v1)" in text
-    assert "CURRENT, the newest for its token" in next(ln for ln in text.splitlines() if "#5 " in ln)
+    assert "CURRENT, the newest for its token" in next(ln for ln in text.splitlines() if "#3 " in ln)
     assert "looks fine" not in text
-    assert "Resume release verification" not in text  # actions are listed by their lower-case keys
+    assert "Resume release preparation" not in text  # actions are listed by their lower-case keys

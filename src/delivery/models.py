@@ -61,7 +61,6 @@ class ArtifactKind(StrEnum):
     REVIEW = "review"
     VERIFICATION = "verification"
     RELEASE = "release"
-    RELEASE_VERIFICATION = "release_verification"
     CODE = "code"
     TEST = "test"
     DOC = "doc"

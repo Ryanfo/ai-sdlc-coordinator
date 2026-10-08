@@ -1,11 +1,10 @@
-"""Human comments on a ticket: plain feedback, answers and the two remaining request lines.
+"""Human comments on a ticket: plain feedback, answers and the one remaining request line.
 
 Decisions are Jira moves (delivery.gates): approving, asking for changes and submitting answers
 need no comment. Comments are what people say, in their own words, and reach Claude as they
 are: feedback for a change request, answers to a clarification round, notes left during a
-review. Only two requests still have a fixed first line, because they are not moves:
-``CREATE TICKETS <token>`` (create proposed tickets) and ``RECORD RELEASE <token>`` (record a
-release by hand instead of reading it from GitHub).
+review. Only one request still has a fixed first line, because it is not a move:
+``CREATE TICKETS <token>`` (create proposed tickets).
 """
 
 from __future__ import annotations
@@ -26,17 +25,14 @@ GATE_TOKEN = re.compile(rf"^(?P<key>{_KEY})-(?P<kind>SPEC|PLAN|RELEASE)-v(?P<rev
 
 
 class DecisionKind(StrEnum):
-    # Record a release by hand (the release is normally read from the PR's merge on GitHub).
-    RECORD_RELEASE = "RECORD RELEASE"
     # Create the tickets a specification or a spike's findings proposed (S1, S2...).
     CREATE_TICKETS = "CREATE TICKETS"
 
 
-_HEADER = re.compile(r"^(?P<verb>RECORD|CREATE)\s+(?P<subject>RELEASE|TICKETS)\s+(?P<token>\S+)\s*$")
+_HEADER = re.compile(r"^(?P<verb>CREATE)\s+(?P<subject>TICKETS)\s+(?P<token>\S+)\s*$")
 _ITEM = re.compile(r"^(?P<id>[QFDS]\d{1,3})\s*[:.)-]\s*(?P<text>.*)$")
 # Proposed-ticket IDs on their own, alone or as a list ("S1", "S1, S3"): no note needed.
 _S_LIST = re.compile(r"^S\d{1,3}(?:\s*[,;\s]\s*S\d{1,3})*\s*[.]?$")
-_FIELD = re.compile(r"^(?P<name>commit|environment|merged-pr|pr)\s*:\s*(?P<value>\S+)\s*$", re.I)
 
 
 @dataclass(frozen=True)
@@ -44,7 +40,6 @@ class Decision:
     kind: DecisionKind
     token: str
     items: dict[str, str] = field(default_factory=dict)
-    fields: dict[str, str] = field(default_factory=dict)
     problems: tuple[str, ...] = ()
 
 
@@ -52,21 +47,14 @@ def is_coordinator_comment(comment: JiraComment) -> bool:
     return MARKER_PREFIX in comment.body_text
 
 
-def token_kind(kind: DecisionKind) -> str:
-    """The kind of gate token a request names: RELEASE, or SPEC/PLAN for proposed tickets."""
-    return "RELEASE" if kind is DecisionKind.RECORD_RELEASE else "SPEC"
-
-
 def token_matches_kind(kind: DecisionKind, token: str) -> bool:
+    # A specification's proposals, or a spike's findings (reviewed as its plan).
     m = GATE_TOKEN.match(token)
-    if kind is DecisionKind.CREATE_TICKETS:
-        # A specification's proposals, or a spike's findings (reviewed as its plan).
-        return bool(m and m.group("kind") in ("SPEC", "PLAN"))
-    return bool(m and m.group("kind") == "RELEASE")
+    return bool(m and m.group("kind") in ("SPEC", "PLAN"))
 
 
 def parse_decision(text: str) -> Decision | None:
-    """Parse a request comment (CREATE TICKETS, RECORD RELEASE). None when it is not one."""
+    """Parse a request comment (CREATE TICKETS). None when it is not one."""
     lines = [ln.strip().strip("`").strip() for ln in text.strip().splitlines()]
     lines = [ln for ln in lines if ln]
     if not lines:
@@ -84,7 +72,6 @@ def parse_decision(text: str) -> Decision | None:
     if not token_matches_kind(kind, token):
         problems.append(f"token {token!r} does not match {kind.value}")
     items: dict[str, str] = {}
-    fields: dict[str, str] = {}
     current: str | None = None
     for ln in body:
         if MARKER_PREFIX in ln:
@@ -100,12 +87,9 @@ def parse_decision(text: str) -> Decision | None:
             if current in items:
                 problems.append(f"{current} appears more than once")
             items[current] = im.group("text").strip()
-        elif fm := _FIELD.match(ln):
-            fields[fm.group("name").lower()] = fm.group("value")
-            current = None
         elif current is not None:
             items[current] = (items[current] + "\n" + ln).strip()
-    return Decision(kind, token, items, fields, tuple(problems))
+    return Decision(kind, token, items, tuple(problems))
 
 
 @dataclass(frozen=True)
@@ -151,7 +135,7 @@ def said(
     """What people wrote on the ticket in a window, oldest first, in their own words.
 
     Leaves out the coordinator's comments (even when it uses the same Jira account), request
-    lines (CREATE TICKETS, RECORD RELEASE) and ``FOR CLAUDE`` notes, which reach Claude as notes
+    lines (CREATE TICKETS) and ``FOR CLAUDE`` notes, which reach Claude as notes
     already. Comments by accounts that may not decide are left out too.
     """
     out = [

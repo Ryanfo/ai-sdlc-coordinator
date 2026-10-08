@@ -120,6 +120,9 @@ def make_world(
     sections["checks.commands"] = checks or {"unit": ["true"]}
     sections["checks.ci"] = {"required_names": ["unit"]}
     sections["approvals"] = {"jira_account_ids": [APPROVER], "github_logins": [REVIEWER]}
+    # Most tests walk the whole workflow, release proposal included; test_release.py covers the
+    # default (no proposal) too.
+    sections["release"] = {"proposal": True}
     # The fake Jira's clock is not real time: reminders are tested on their own.
     sections["reminders"] = {"after_hours": 0}
     if interactive:
@@ -133,7 +136,7 @@ def make_world(
         sections.setdefault(sec, {}).update(body)
     (base / "delivery.toml").write_text(render_config(sections, {"config_version": 1}))
     cfg = load_config(base / "delivery.toml")
-    jira = jira or FakeJira(STATUS_IDS, me=account)
+    jira = jira or FakeJira(STATUS_IDS, me=account, proposal=cfg.release.proposal)
     github = github or FakeGitHub(origin, auto_ci={"unit": "success"})
     locks = RepoLocks(cfg.runtime.state_dir / "locks")
     # The managed clone uses the local origin path in place of the GitHub URL.

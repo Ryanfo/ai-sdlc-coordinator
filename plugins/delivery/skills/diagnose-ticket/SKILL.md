@@ -30,7 +30,7 @@ answer that question.
   wrote on the ticket since the revision was posted says what to change, and Claude asks when
   nobody wrote anything. A comment alone never restarts work. A move counts only when it is
   made by someone allowed to decide, after the current revision was posted. The only comments
-  with a fixed format are `RECORD RELEASE` and `CREATE TICKETS` (`docs/human-templates.md`).
+  with a fixed format is `CREATE TICKETS` (`docs/human-templates.md`).
 - Each stage runs a Claude session in a sandbox and returns a structured result. The
   coordinator validates it, publishes documents to `delivery/<KEY>` and code to
   `feature/<KEY>`, runs the configured checks itself, comments in Jira and moves the ticket.
@@ -56,7 +56,7 @@ answer that question.
    output), quoted briefly with where it came from.
 
    **What to do**: numbered steps the developer can follow now. For Jira, give the action to
-   choose (and, only for a `RECORD RELEASE` or `CREATE TICKETS` request, the exact comment with
+   choose (and, only for a `CREATE TICKETS` request, the exact comment with
    the current token from the briefing).
    For the coordinator, give the exact command (`coordinator recover <KEY> --resume`,
    `coordinator restart`, …). Say who has to do it when it is not the developer (an
