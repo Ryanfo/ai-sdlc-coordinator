@@ -35,7 +35,8 @@ async def find_candidate(
 ) -> tuple[str, str]:
     """(commit, description) of what to run: ``ref``, the recorded candidate, or the branch head."""
     if ref:
-        sha = await repo.resolve(ref) or await repo.resolve(f"origin/{ref}")
+        # The managed clone only refreshes origin/*; a local branch of the same name is stale.
+        sha = await repo.resolve(f"origin/{ref}") or await repo.resolve(ref)
         if not sha:
             raise TryError(f"{ref} is not a commit or branch of the application repository")
         return sha, ref
