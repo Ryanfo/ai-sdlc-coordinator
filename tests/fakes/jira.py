@@ -35,11 +35,11 @@ from delivery.ports import (
 )
 from delivery.workflow import (
     DEFAULT_ACTION_NAMES,
+    ROUTES,
     STATUS_CATEGORIES,
     STATUS_NAMES,
     Action,
     Status,
-    routes_for,
 )
 
 
@@ -69,10 +69,8 @@ class FakeJira:
         me: str,
         project: str = "PILOT",
         actor_names: dict[Status, str] | None = None,
-        proposal: bool = False,
     ) -> None:
         self.status_ids = status_ids
-        self.routes = routes_for(proposal)  # the transitions the Jira project has
         self.by_id = {v: k for k, v in status_ids.items()}
         self.me = me
         self.project = project
@@ -170,7 +168,7 @@ class FakeJira:
     def _available(self, issue: FakeIssue) -> list[JiraTransition]:
         out = []
         seen: set[tuple[Action, Status]] = set()
-        for r in self.routes:
+        for r in ROUTES:
             if r.target not in self.status_ids:
                 continue  # a project without the optional statuses (resolution)
             if r.source is issue.status and (r.source, r.target) not in self.drop_routes:

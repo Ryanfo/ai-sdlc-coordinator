@@ -707,8 +707,6 @@ def _next_action(outcome: str, stage: Stage, *, session_open: bool = False) -> s
             else "Nothing yet: it moves into Ready for verification and verification starts.",
             Stage.VERIFICATION: "Independent GitHub review, then Approve code in Jira "
             "(moves into Acceptance review).",
-            Stage.RELEASE_PREPARATION: "Review the release proposal; approving moves it into "
-            "Ready for release. Then merge the PR: the ticket moves to Done once the merge is seen.",
         }[stage],
         "clarification": f"Answer the questions in Jira, then Submit answers (moves into {ready}).",
         "verification_failed": "Submit implementation changes to fix (moves into Ready for development), "

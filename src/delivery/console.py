@@ -243,7 +243,7 @@ def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path
             if record.outcome is Outcome.COMPLETED:
                 picked_up += "; verification and review start once you type /exit in it"
             picked_up += ")"
-        elif record.stage in (Stage.REFINEMENT, Stage.PLANNING, Stage.RELEASE_PREPARATION):
+        elif record.stage in (Stage.REFINEMENT, Stage.PLANNING):
             picked_up = " (changes you ask for are published as the next revision for review)"
     return block(
         f"FINISHED  {_stage_title(record.stage)}  {record.ticket_key}  -  {outcome}",

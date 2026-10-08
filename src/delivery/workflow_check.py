@@ -24,21 +24,17 @@ from delivery.workflow import (
     OPTIONAL_ROUTES,
     OPTIONAL_STATUSES,
     PAUSED_STATUSES,
+    ROUTES,
     STATUS_NAMES,
     TERMINAL_STATUSES,
     Action,
     Stage,
     Status,
-    required_statuses,
-    routes_for,
+    route_for_action,
 )
 
 CHECK_LABEL = "delivery-workflow-check"
 PROPERTY = "delivery.workflow-check"
-
-# Named routes the setup instructions allow in addition to the route table. The coordinator
-# itself uses Block stage for these; the extra name only helps humans reading the history.
-OPTIONAL: dict[tuple[Status, Status], set[str]] = {}
 
 
 class CreatesIssues(JiraPort, Protocol):
@@ -85,24 +81,9 @@ WALK: tuple[tuple[Action, Stage | str | None], ...] = (
 Walk = tuple[tuple[Action, Stage | str | None], ...]
 
 
-def _with_proposal(walk: Walk) -> Walk:
-    """The walk plus the release proposal (``[release] proposal``): accepting the delivery leads
-    to release preparation and an approved proposal, not straight to Ready for release."""
-    out: list[tuple[Action, Stage | str | None]] = []
-    for action, resume in walk:
-        out.append((action, resume))
-        if action is Action.ACCEPT_DELIVERY:
-            out += [
-                (Action.START_RELEASE_PREPARATION, None),
-                (Action.COMPLETE_RELEASE_PREPARATION, None),
-                (Action.APPROVE_RELEASE, None),
-            ]
-    return tuple(out)
-
-
 def _with_resolution(walk: Walk) -> Walk:
     """The walk plus resolution. A blocker that is not resolved goes back to Blocked; one that is
-    goes back to the stage that blocked. (The other five Resolved: actions are checked for
+    goes back to the stage that blocked. (The other three Resolved: actions are checked for
     existence at Resolving, as the resume actions are at Blocked.)"""
     request = ((Action.REQUEST_RESOLUTION, None), (Action.START_RESOLUTION, None))
     out: list[tuple[Action, Stage | str | None]] = []
@@ -163,7 +144,6 @@ class _Walker:
         self.cfg, self.jira, self.report, self.emit = cfg, jira, report, emit
         self.by_id = cfg.status_by_id()
         self.field = cfg.jira.fields.resume_stage
-        self.routes = routes_for(cfg.release.proposal)
 
     def _label(self, t: JiraTransition) -> str:
         target = self.by_id.get(t.to_status_id)
@@ -173,7 +153,7 @@ class _Walker:
         follow_ups = self.cfg.claude.interactive.follow_ups
         return {
             (self.cfg.workflow.action_name(r.action), r.target)
-            for r in self.routes
+            for r in ROUTES
             if r.source is status
             and r.resume_stage is None
             and (follow_ups or r.action is not Action.SUBMIT_FOLLOW_UP)
@@ -194,13 +174,10 @@ class _Walker:
         finding = StatusFinding(status)
         finding.missing = sorted(f"{n} -> {t.value}" for n, t in want - have)
         resume_names = {
-            self.cfg.workflow.action_name(r.action)
-            for r in self.routes
-            if r.source is status and r.resume_stage
+            self.cfg.workflow.action_name(r.action) for r in ROUTES if r.source is status and r.resume_stage
         }
-        optional = {(n, dst) for (src, dst), names in OPTIONAL.items() if src is status for n in names}
         # Follow-up transitions are only required with interactive sessions kept open.
-        optional |= {
+        optional = {
             (self.cfg.workflow.action_name(r.action), r.target)
             for r in (*FOLLOW_UP_ROUTES, *OPTIONAL_ROUTES)
             if r.source is status
@@ -232,7 +209,7 @@ class _Walker:
 
     async def check_resume(self, key: str, paused: Status) -> None:
         """Each resume action exists, and whether Jira hides the ones for other stages."""
-        routes = [r for r in self.routes if r.source is paused and r.resume_stage is not None]
+        routes = [r for r in ROUTES if r.source is paused and r.resume_stage is not None]
         current = (await self.jira.get_issue(key)).view.resume_stage
         hides = True
         for r in routes:
@@ -274,7 +251,7 @@ class _Walker:
         status = await self.status_of(key)
         if status is None:
             raise WalkAborted(f"{key} is in a status the config does not map")
-        route = next((r for r in self.routes if r.source is status and r.action is action), None)
+        route = route_for_action(status, action)
         if route is None:  # pragma: no cover - WALK is checked by tests
             raise WalkAborted(f"walk bug: {action.value} is not a route from {status.value}")
         offered = await self.compare(key, status)
@@ -371,7 +348,7 @@ async def _verify(
         return
     report.info.append("new tickets start in Backlog")
 
-    walk = _with_proposal(WALK) if cfg.release.proposal else WALK
+    walk = WALK
     if set(cfg.workflow.statuses) >= OPTIONAL_STATUSES:
         walk = _with_resolution(walk)
         report.info.append("resolution statuses are mapped: the walk includes resolving a blocker")
@@ -432,11 +409,7 @@ async def _verify(
     unvisited = [
         STATUS_NAMES[s]
         for s in Status
-        if s.value not in visited
-        and (
-            s in required_statuses(cfg.release.proposal)
-            or (s in OPTIONAL_STATUSES and s in cfg.workflow.statuses)
-        )
+        if s.value not in visited and (s not in OPTIONAL_STATUSES or s in cfg.workflow.statuses)
     ]
     if unvisited:
         report.warnings.append(f"statuses not reached: {', '.join(unvisited)}")

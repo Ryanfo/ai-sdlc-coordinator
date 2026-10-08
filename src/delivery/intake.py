@@ -138,9 +138,6 @@ class Intake:
     resume_stage: Stage | None = None
     blocker_kind: str = ""
     gate_token: str | None = None
-    # Deviations from the specification an approver accepted: the run has Claude rewrite the
-    # specification to include them before its own work (delivery.deviations).
-    accepted_deviations: list[str] = field(default_factory=list)
 
     def persisted(self) -> dict[str, Any]:
         return {
@@ -157,7 +154,6 @@ class Intake:
             "resume_stage": self.resume_stage.value if self.resume_stage else None,
             "blocker_kind": self.blocker_kind,
             "gate_token": self.gate_token,
-            "accepted_deviations": self.accepted_deviations,
         }
 
     @classmethod
@@ -180,7 +176,6 @@ class Intake:
             Stage(data["resume_stage"]) if data.get("resume_stage") else None,
             data.get("blocker_kind", ""),
             data.get("gate_token"),
-            list(data.get("accepted_deviations") or []),
         )
 
     def material(self, brief_digest: str) -> dict[str, Any]:
@@ -201,15 +196,14 @@ class Intake:
             "feedback": self.feedback_token,
             "items": sorted(self.feedback_items.items()),
             "decided_gates": sorted(decided, key=str),
-            "accepted_deviations": self.accepted_deviations,
         }
 
 
 @dataclass
 class ReleaseIntake:
     """A ticket in Ready for release: can it be completed? Once its PR is merged and the decisions
-    that led here (code approved, delivery accepted, the release proposal approved when there is
-    one) stand, ``record`` carries them and ``merge_commit`` is the release."""
+    that led here (code approved, delivery accepted) stand, ``record`` carries them and
+    ``merge_commit`` is the release."""
 
     ready: bool
     reason: str
@@ -257,7 +251,6 @@ def _decided(gate: GateRecord, ev: GateEval, state: GateState) -> GateRecord:
 _JIRA_GATES: dict[GateKind, tuple[Status, Status, Status]] = {
     GateKind.SPEC: (Status.SPECIFICATION_REVIEW, Status.READY_PLANNING, Status.READY_REFINEMENT),
     GateKind.PLAN: (Status.PLAN_REVIEW, Status.READY_DEVELOPMENT, Status.READY_PLANNING),
-    GateKind.RELEASE: (Status.RELEASE_REVIEW, Status.READY_RELEASE, Status.READY_RELEASE_PREPARATION),
 }
 
 
@@ -355,21 +348,17 @@ class IntakeEvaluator:
             Stage.PLANNING,
             Stage.DEVELOPMENT,
             Stage.VERIFICATION,
-            Stage.RELEASE_PREPARATION,
         ):
             need.append(GateKind.SPEC)
         if stage in (
             Stage.DEVELOPMENT,
             Stage.VERIFICATION,
-            Stage.RELEASE_PREPARATION,
         ):
             need.append(GateKind.PLAN)
-        if stage is Stage.RELEASE_PREPARATION:
-            need += [GateKind.CODE, GateKind.ACCEPT]
         missing = [k.value for k in need if approved_gate(rec.gates, k) is None]
         if missing:
             return f"no current approved {', '.join(missing)} decision"
-        if stage in (Stage.VERIFICATION, Stage.RELEASE_PREPARATION) and not rec.candidate_sha:
+        if stage is Stage.VERIFICATION and not rec.candidate_sha:
             return "no implementation candidate is recorded"
         return None
 
@@ -412,27 +401,7 @@ class IntakeEvaluator:
                     kind="missing_prerequisite",
                     entry=entry,
                 )
-            if stage is Stage.RELEASE_PREPARATION:
-                return self._accept_deviations(ctx, result)
         return result
-
-    def _accept_deviations(self, ctx: TicketContext, intake: Intake) -> Intake:
-        """Approving the code and accepting the delivery accepted the candidate as it is, so its
-        open deviations from the specification are accepted with it (a deviation someone wanted
-        changed back went to development in a change request, which made a new candidate).
-        Release preparation first has the specification rewritten to include them, so the
-        specification describes what is released."""
-        rec = intake.record or ctx.record
-        ids = [d.id for d in deviations.open_deviations(rec)]
-        if not ids:
-            return intake
-        intake.accepted_deviations = ids
-        note = (
-            f"deviations {', '.join(ids)} accepted with the code (the specification is rewritten "
-            "to include them)"
-        )
-        intake.reason = f"{intake.reason}; {note}" if intake.reason else note
-        return intake
 
     async def _resume(self, ctx: TicketContext, stage: Stage, src: Status, entry: StatusChange) -> Intake:
         rec = ctx.record
@@ -518,7 +487,7 @@ class IntakeEvaluator:
                 "Review the current revision.",
                 entry=entry,
             )
-        if gate.kind not in (GateKind.SPEC, GateKind.PLAN, GateKind.CODE, GateKind.ACCEPT, GateKind.RELEASE):
+        if gate.kind not in (GateKind.SPEC, GateKind.PLAN, GateKind.CODE, GateKind.ACCEPT):
             return self._block(stage, f"cannot re-decide {token}", "Contact the delivery lead.", entry=entry)
         ev = self._gate_eval(ctx, gate, entry, Status.BLOCKED, STAGES[stage].ready, None)
         if ev.outcome is not GateOutcome.APPROVED:
@@ -542,27 +511,6 @@ class IntakeEvaluator:
                     gate_token=token,
                 )
         rec = _with_gate(rec, _decided(gate, ev, GateState.APPROVED))
-        # The original human move may have carried a second decision (code approval is
-        # followed by acceptance; release approval by the release record). Re-validate it
-        # against its original transition now that the first decision is settled.
-        follow = {
-            (Stage.RELEASE_PREPARATION, GateKind.CODE): (
-                Status.ACCEPTANCE_REVIEW,
-                Status.READY_RELEASE_PREPARATION,
-                self._req_acceptance,
-            ),
-        }.get((stage, gate.kind))
-        if follow:
-            src, dst, handler = follow
-            original = ctx.latest_change(self.ids[src], self.ids[dst])
-            if original is not None:
-                sub: Intake = await handler(
-                    TicketContext(ctx.issue, ctx.status, ctx.comments, ctx.changes, rec), stage, src, original
-                )
-                sub.entry = entry
-                if sub.kind is IntakeKind.READY:
-                    sub.requirement = Requirement.BLOCKER_RESOLVED
-                return sub
         return Intake(
             IntakeKind.READY,
             stage,
@@ -732,11 +680,6 @@ class IntakeEvaluator:
     ) -> Intake:
         return await self._gate_route(ctx, stage, e, GateKind.PLAN, GateOutcome.APPROVED)
 
-    async def _req_release_changes(
-        self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange
-    ) -> Intake:
-        return await self._gate_route(ctx, stage, e, GateKind.RELEASE, GateOutcome.CHANGES_REQUESTED)
-
     async def _req_scope_revision(
         self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange
     ) -> Intake:
@@ -803,9 +746,7 @@ class IntakeEvaluator:
                 return self._block(
                     stage, f"no current {kind.value} gate", "Contact the delivery lead.", entry=e
                 )
-            approve_to = (
-                Status.ACCEPTANCE_REVIEW if kind is GateKind.CODE else Status.READY_RELEASE_PREPARATION
-            )
+            approve_to = Status.ACCEPTANCE_REVIEW if kind is GateKind.CODE else Status.READY_RELEASE
             ev = self._gate_eval(ctx, gate, into[-1], origin, approve_to, Status.CHANGES_REQUESTED)
             if ev.outcome is not GateOutcome.CHANGES_REQUESTED:
                 return self._block(
@@ -937,30 +878,25 @@ class IntakeEvaluator:
             return False, "CI for the current head is not passing: " + "; ".join(ci.problems[:5])
         return True, rv.reason
 
-    async def _req_acceptance(
-        self, ctx: TicketContext, stage: Stage, src: Status, e: StatusChange, *, merged: bool = False
-    ) -> Intake:
+    async def _decisions_before_release(
+        self, ctx: TicketContext, entry: StatusChange
+    ) -> tuple[SharedExecutionRecord | None, str, str]:
+        """Code approved (with an independent review and passing CI) and the delivery accepted, as
+        the Jira history and GitHub show them now. The record with both gates decided, or None
+        with the reason and what to do. ``entry`` is the Accept delivery move into Ready for
+        release. The PR is merged by now, so a head that is no longer the verified candidate is not
+        a reason to wait: delivery.release reports what was merged."""
         rec = ctx.record
         code = current_gate(rec.gates, GateKind.CODE)
         accept = current_gate(rec.gates, GateKind.ACCEPT)
         if code is None or accept is None:
-            return self._block(
-                stage,
-                "code/acceptance gates are not recorded",
-                "Return the ticket to verification.",
-                entry=e,
-            )
+            return None, "code/acceptance gates are not recorded", "Return the ticket to verification."
         if code.state is not GateState.APPROVED:
             code_entry = ctx.latest_change(
                 self.ids[Status.CODE_REVIEW], self.ids[Status.ACCEPTANCE_REVIEW], code.published_at
             )
             if code_entry is None:
-                return self._block(
-                    stage,
-                    "no Approve code transition after the code gate",
-                    "Return through Code review.",
-                    entry=e,
-                )
+                return None, "no Approve code transition after the code gate", "Return through Code review."
             ev = self._gate_eval(
                 ctx,
                 code,
@@ -970,59 +906,40 @@ class IntakeEvaluator:
                 Status.CHANGES_REQUESTED,
             )
             if ev.outcome is not GateOutcome.APPROVED:
-                return self._block(
-                    stage,
+                return (
+                    None,
                     f"code approval invalid: {ev.reason}",
                     ev.next_action or "Resolve the code decision.",
-                    kind="invalid_decision",
-                    entry=e,
-                    gate_token=code.token,
                 )
-            ok, why = await self._code_evidence(rec, merged=merged)
+            ok, why = await self._code_evidence(rec, merged=True)
             if not ok:
-                return self._block(
-                    stage,
+                return (
+                    None,
                     f"code gate evidence: {why}",
-                    "Obtain an independent GitHub review and passing CI on the current "
-                    "head, then an approver resumes.",
-                    kind="invalid_decision",
-                    entry=e,
-                    gate_token=code.token,
+                    "Obtain an independent GitHub review and passing CI on the current head.",
                 )
             rec = _with_gate(rec, _decided(code, ev, GateState.APPROVED))
-        ev2 = self._gate_eval(
-            ctx,
-            accept,
-            e,
-            Status.ACCEPTANCE_REVIEW,
-            self.by_id.get(e.to_id, Status.READY_RELEASE_PREPARATION),
-            Status.CHANGES_REQUESTED,
-        )
-        if ev2.outcome is not GateOutcome.APPROVED:
-            return self._block(
-                stage,
-                ev2.reason,
-                ev2.next_action or "Resolve the acceptance decision.",
-                kind="invalid_decision",
-                entry=e,
-                gate_token=accept.token,
+        if accept.state is not GateState.APPROVED:
+            ev2 = self._gate_eval(
+                ctx,
+                accept,
+                entry,
+                Status.ACCEPTANCE_REVIEW,
+                Status.READY_RELEASE,
+                Status.CHANGES_REQUESTED,
             )
-        rec = _with_gate(rec, _decided(accept, ev2, GateState.APPROVED))
-        return Intake(
-            IntakeKind.READY,
-            stage,
-            reason="code approved and delivery accepted",
-            record=rec,
-            selected=list(ev2.comments),
-        )
+            if ev2.outcome is not GateOutcome.APPROVED:
+                return None, ev2.reason, ev2.next_action or "Resolve the acceptance decision."
+            rec = _with_gate(rec, _decided(accept, ev2, GateState.APPROVED))
+        return rec, "", ""
 
     # ------------------------------------------------------------------ release
     async def merged_release(self, ctx: TicketContext) -> ReleaseIntake:
         """A ticket in Ready for release is complete once its PR is merged.
 
         The human merge is the release; the coordinator only reads it from GitHub. The decisions
-        behind the move into Ready for release are validated only now, because with no release
-        proposal nothing else would: Accept delivery leads here directly. A problem with a
+        behind the move into Ready for release (Approve code, Accept delivery) are validated only
+        now, because Accept delivery leads here directly and no stage follows it. A problem with a
         decision is reported and re-checked on every poll (fix it in Jira or GitHub and the next
         poll goes on); it never blocks the ticket.
         """
@@ -1043,60 +960,21 @@ class IntakeEvaluator:
             )
         entry = ctx.latest_entry(self.ids[Status.READY_RELEASE])
         src = self.by_id.get(entry.from_id) if entry else None
-        if entry is None or src is None:
+        if entry is None or src is not Status.ACCEPTANCE_REVIEW:
+            came = f"from {STATUS_NAMES[src]}" if src else "without a recorded transition"
             return ReleaseIntake(
                 False,
-                "the ticket is in Ready for release without a recorded transition",
-                "Move it through the workflow actions.",
-            )
-        ctx = replace(ctx, record=self.catch_up_gates(ctx))
-        rec = ctx.record
-        if src is Status.ACCEPTANCE_REVIEW:
-            accepted = await self._req_acceptance(ctx, Stage.RELEASE_PREPARATION, src, entry, merged=True)
-            if accepted.kind is not IntakeKind.READY:
-                return ReleaseIntake(False, accepted.reason, accepted.next_action)
-            assert accepted.record is not None
-            rec = accepted.record
-        elif src is Status.RELEASE_REVIEW:
-            rel = current_gate(rec.gates, GateKind.RELEASE)
-            if rel is None:
-                return ReleaseIntake(False, "no release gate is recorded", "Return through Release review.")
-            if rel.state is not GateState.APPROVED:
-                change = ctx.latest_change(
-                    self.ids[Status.RELEASE_REVIEW], self.ids[Status.READY_RELEASE], rel.published_at
-                )
-                if change is None:
-                    return ReleaseIntake(
-                        False,
-                        "no Approve release transition after the release proposal",
-                        "Return through Release review.",
-                    )
-                ev = self._gate_eval(
-                    ctx,
-                    rel,
-                    change,
-                    Status.RELEASE_REVIEW,
-                    Status.READY_RELEASE,
-                    Status.READY_RELEASE_PREPARATION,
-                )
-                if ev.outcome is not GateOutcome.APPROVED:
-                    return ReleaseIntake(
-                        False,
-                        f"release approval invalid: {ev.reason}",
-                        ev.next_action or "Resolve the release decision.",
-                    )
-                rec = _with_gate(rec, _decided(rel, ev, GateState.APPROVED))
-        else:
-            return ReleaseIntake(
-                False,
-                f"moved to Ready for release from {STATUS_NAMES[src]}, not by Accept delivery or "
-                "Approve release",
+                f"the ticket was moved to Ready for release {came}, not by Accept delivery",
                 "Cancel the ticket, or return it through acceptance.",
             )
-        need = [GateKind.SPEC, GateKind.PLAN, GateKind.CODE, GateKind.ACCEPT]
-        if src is Status.RELEASE_REVIEW:
-            need.append(GateKind.RELEASE)
-        missing = [k.value for k in need if approved_gate(rec.gates, k) is None]
+        decided, reason, next_action = await self._decisions_before_release(ctx, entry)
+        if decided is None:
+            return ReleaseIntake(False, reason, next_action)
+        missing = [
+            k.value
+            for k in (GateKind.SPEC, GateKind.PLAN, GateKind.CODE, GateKind.ACCEPT)
+            if approved_gate(decided.gates, k) is None
+        ]
         if missing:
             return ReleaseIntake(
                 False,
@@ -1106,7 +984,7 @@ class IntakeEvaluator:
         return ReleaseIntake(
             True,
             f"PR #{pr.number} merged as {pr.merge_commit_sha[:12]}",
-            record=rec,
+            record=decided,
             pr_number=pr.number,
             merge_commit=pr.merge_commit_sha,
             merged_by=pr.merged_by,

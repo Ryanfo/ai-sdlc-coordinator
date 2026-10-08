@@ -96,7 +96,7 @@ async def test_acceptance_review_says_how_to_try_the_candidate_and_what_to_check
         assert len(w.comments(KEY)) == before
         assert AcceptanceStore(w.cfg.runtime.state_dir).load(KEY) is not None
         # Accepted: it leaves Acceptance review and its record goes.
-        w.move(KEY, Status.READY_RELEASE_PREPARATION)
+        w.move(KEY, Status.READY_RELEASE)
         await sup.acceptance.tick(full=True)
         assert AcceptanceStore(w.cfg.runtime.state_dir).load(KEY) is None
 

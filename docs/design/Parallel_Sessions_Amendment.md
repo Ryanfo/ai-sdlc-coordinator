@@ -1,5 +1,7 @@
 # Amendments for parallel Claude Code sessions
 
+> **Superseded in part (8 Oct 2026):** release preparation, release review and release verification no longer exist. The release is the human merge of the PR: Accept delivery moves the ticket to Ready for release, and the coordinator checks the merge and moves it to Done. References below to those stages, their statuses, the release proposal, `RECORD RELEASE` and `amend-spec` are historical. See `docs/jira-workflow-setup.md` and `docs/user-guide.md`.
+
 1 October 2026 | Addendum to Claude_Code_AI_SDLC_Build_Handoff.md
 
 This document contains amendments only. Where it conflicts with the original handoff or onboarding documents, these amendments take precedence. Implement parallel execution in the initial build, not as a later pilot extension.

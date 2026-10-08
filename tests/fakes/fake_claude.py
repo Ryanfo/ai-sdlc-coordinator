@@ -42,13 +42,7 @@ DEFAULT_FILES = {
     "plan-ticket": ("plan.md", "plan", "# Plan\n\n| AC1 | search.test.ts |\n"),
     "review-ticket": ("review.md", "review", "# Review\n\nAll criteria met.\n"),
     "verify-ticket": ("verification.md", "verification", "# Verification\n\nObserved.\n"),
-    "prepare-release": ("release.md", "release", "# Release\n\nSmoke: open the app.\n"),
     "investigate-ticket": ("findings.md", "plan", "# Findings\n\n## Answer\nUse the existing index.\n"),
-    "amend-spec": (
-        "specification.md",
-        "specification",
-        "# Specification\n\n- **AC1**: search works\n- **AC2**: results are highlighted (amended)\n",
-    ),
 }
 
 
@@ -120,12 +114,6 @@ def build_result(
         result["footprint"] = b.get(
             "footprint", {"paths": [f"src/{ticket.lower()}.ts"], "components": [f"comp-{ticket}"]}
         )
-    if procedure == "prepare-release":
-        result["release"] = {
-            "candidate_sha": envelope["source"]["candidate_sha"],
-            "smoke_steps": ["open"],
-            "rollback_steps": ["revert"],
-        }
     result.update(b.get("override", {}))
     return result
 

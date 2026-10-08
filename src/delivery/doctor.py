@@ -38,14 +38,12 @@ from delivery.workflow import (
     FOLLOW_UP_ROUTES,
     OPTIONAL_ROUTES,
     OPTIONAL_STATUSES,
-    PROPOSAL_STATUSES,
+    ROUTES,
     STATUS_CATEGORIES,
     STATUS_NAMES,
     Action,
     Actor,
     Status,
-    required_statuses,
-    routes_for,
 )
 
 Level = Literal["ok", "warn", "fail", "skip", "info"]
@@ -114,7 +112,7 @@ async def inspect_workflow(cfg: Config, jira: JiraPort) -> WorkflowReport:
         if len(ids) == 1:
             resolved[st.value] = ids[0]
         elif not ids:
-            if st in required_statuses(cfg.release.proposal):
+            if st not in OPTIONAL_STATUSES:
                 missing.append(f"{st.value} ({STATUS_NAMES[st]})")
         else:
             ambiguous[st.value] = ids
@@ -140,10 +138,9 @@ async def inspect_workflow(cfg: Config, jira: JiraPort) -> WorkflowReport:
     by_id = {v: Status(k) for k, v in mapping.items()}
     checked: dict[str, dict[str, Any]] = {}
     problems: list[str] = []
-    routes = routes_for(cfg.release.proposal)
     for st in Status:
         sid = mapping.get(st.value)
-        if not sid or (st in PROPOSAL_STATUSES and not cfg.release.proposal):
+        if not sid:
             continue
         sample = await jira.search(f'project = "{cfg.jira.project_key}" AND status = {sid} ORDER BY key ASC')
         if not sample:
@@ -152,7 +149,7 @@ async def inspect_workflow(cfg: Config, jira: JiraPort) -> WorkflowReport:
         follow_ups = cfg.claude.interactive.follow_ups
         expected = {
             (r.action, r.target)
-            for r in routes
+            for r in ROUTES
             if r.source is st
             and r.action is not Action.CANCEL
             and (follow_ups or r.action is not Action.SUBMIT_FOLLOW_UP)
@@ -210,7 +207,7 @@ def check_config(cfg: Config, report: Report) -> None:
         )
     else:
         report.add("config", "placeholders", "ok", "no template placeholders")
-    missing = cfg.workflow.missing_statuses(cfg.release.proposal)
+    missing = cfg.workflow.missing_statuses()
     if missing:
         report.add(
             "config",
@@ -225,7 +222,7 @@ def check_config(cfg: Config, report: Report) -> None:
             "config",
             "status mapping",
             "ok",
-            f"all {len(required_statuses(cfg.release.proposal))} statuses mapped"
+            f"all {len(Status) - len(OPTIONAL_STATUSES)} statuses mapped"
             + (f" (and resolution: {len(optional)} of {len(OPTIONAL_STATUSES)})" if optional else ""),
         )
     if not cfg.jira.fields.resume_stage:
@@ -375,7 +372,7 @@ def check_interactive(cfg: Config, report: Report) -> None:
             "changes made in an open development session are pushed as a new candidate; the ticket "
             "needs Submit follow-up changes transitions from Code review, Acceptance review and "
             "Changes requested to Ready for verification (checked with the workflow). Changes made "
-            "in an open specification, plan or release proposal session are published as its next "
+            "in an open specification or plan session are published as its next "
             "revision for review (no transition needed)",
         )
 

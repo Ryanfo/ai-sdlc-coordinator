@@ -16,7 +16,7 @@ one would repeat the whole review. This module tracks those sessions in
   review or Changes requested and no run is working on it; otherwise the change waits. When the
   session is ended, a reply not yet published is published before it closes, so the candidate
   verified next includes it;
-* publishes follow-up changes from specification, plan and release proposal sessions. When
+* publishes follow-up changes from specification and plan sessions. When
   Claude finishes a reply and the document in its output directory has changed, the
   coordinator publishes it as the next revision for review, through the stage's own
   publication: the new gate supersedes the one under review and the ticket stays in its review
@@ -105,14 +105,6 @@ DOCUMENTS: dict[Stage, Document] = {
     ),
     Stage.PLANNING: Document(
         "plan-ticket", "plan", "plan.md", GateKind.PLAN, Status.PLAN_REVIEW, "plan_revision"
-    ),
-    Stage.RELEASE_PREPARATION: Document(
-        "prepare-release",
-        "release proposal",
-        "release.md",
-        GateKind.RELEASE,
-        Status.RELEASE_REVIEW,
-        "release_revision",
     ),
 }
 
@@ -544,7 +536,7 @@ class OpenSessions:
 
     # ------------------------------------------------------------------ document follow-ups
     async def follow_up_document(self, rec: OpenRecord) -> None:
-        """Publish the session's edited specification, plan or release proposal for review."""
+        """Publish the session's edited specification or plan for review."""
         key = rec.ticket_key
         if self.is_running(key) or key in self.busy:
             return

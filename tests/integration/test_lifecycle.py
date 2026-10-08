@@ -63,11 +63,8 @@ async def test_full_lifecycle_with_clarification_change_request_and_release(tmp_
         # Human code gate: independent GitHub review + the Jira move; then acceptance.
         w.github.approve(rec.pr_number, REVIEWER)
         w.move("PILOT-1", Status.ACCEPTANCE_REVIEW)
-        w.move("PILOT-1", Status.READY_RELEASE_PREPARATION)
-        assert await step(sup) == ["PILOT-1"]
-        assert w.jira.status_of("PILOT-1") is Status.RELEASE_REVIEW
 
-        # Release approval, then the human merge is the release: the next poll moves it to Done.
+        # Accepted: the human merge is the release and the next poll moves the ticket to Done.
         w.move("PILOT-1", Status.READY_RELEASE)
         w.github.merge(rec.pr_number)
         await step(sup)
@@ -83,7 +80,6 @@ async def test_full_lifecycle_with_clarification_change_request_and_release(tmp_
         "specification/v003.md",
         "plan/v001.md",
         "plan/v001.footprint.json",
-        "releases/v001.md",
     ):
         assert f"docs/delivery/PILOT-1/{expected}" in names
     assert any("/reviews/" in n and n.endswith("review.md") for n in names)

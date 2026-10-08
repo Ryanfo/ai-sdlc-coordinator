@@ -247,7 +247,7 @@ async def _supervise(args: argparse.Namespace, cfg: Config, log_file: Path) -> i
     from delivery.ownership import LockHeld
     from delivery.supervisor import Supervisor
 
-    missing = cfg.workflow.missing_statuses(cfg.release.proposal)
+    missing = cfg.workflow.missing_statuses()
     if missing:
         _error(
             f"{len(missing)} workflow statuses are unmapped; "
@@ -562,7 +562,7 @@ async def _workflow_verify(args: argparse.Namespace) -> int:
     from delivery.workflow_check import CHECK_LABEL, render, verify_workflow
 
     cfg = _load(args)
-    missing = cfg.workflow.missing_statuses(cfg.release.proposal)
+    missing = cfg.workflow.missing_statuses()
     if missing:
         print(f"Map every status first ({len(missing)} missing); run `delivery workflow inspect`.")
         return EXIT_CONFIG
@@ -1165,7 +1165,7 @@ def _start(args: argparse.Namespace, attach: bool) -> int:
     from delivery import background
 
     cfg = _load(args)
-    if cfg.workflow.missing_statuses(cfg.release.proposal):
+    if cfg.workflow.missing_statuses():
         print("The Jira workflow is not mapped yet: run `coordinator setup` first.", file=sys.stderr)
         return EXIT_CONFIG
     if not background.server(cfg).available():

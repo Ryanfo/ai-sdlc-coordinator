@@ -55,7 +55,6 @@
         "architecture",
         "review",
         "verification",
-        "release",
         "code",
         "test",
         "doc"
@@ -673,7 +672,6 @@
         "planning",
         "development",
         "verification",
-        "release_preparation",
         "resolution"
       ],
       "title": "Stage",

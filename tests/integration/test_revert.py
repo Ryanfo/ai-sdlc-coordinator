@@ -29,8 +29,6 @@ async def _to_done(w: World, sup: Supervisor, how: str) -> int:
     assert pr
     w.github.approve(pr, REVIEWER)
     w.move(KEY, Status.ACCEPTANCE_REVIEW)
-    w.move(KEY, Status.READY_RELEASE_PREPARATION)
-    await step(sup)
     w.move(KEY, Status.READY_RELEASE)
     w.github.merge(pr, how=how)
     await step(sup)  # the merge is the release: the ticket moves to Done

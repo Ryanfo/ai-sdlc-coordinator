@@ -27,7 +27,7 @@ from typing import Any
 
 
 class Role(StrEnum):
-    AUTHOR = "author"  # refine, plan, prepare-release, amend-spec: write documents to the output dir
+    AUTHOR = "author"  # refine, plan: write documents to the output dir
     IMPLEMENTER = "implementer"  # implement: edit the feature worktree, run tests
     REVIEWER = "reviewer"  # review: read-only code access, report to output dir
     VERIFIER = "verifier"  # verify: run commands in a disposable worktree
@@ -37,11 +37,9 @@ class Role(StrEnum):
 PROCEDURE_ROLES: dict[str, Role] = {
     "refine-ticket": Role.AUTHOR,
     "plan-ticket": Role.AUTHOR,
-    "prepare-release": Role.AUTHOR,
     "implement-ticket": Role.IMPLEMENTER,
     "review-ticket": Role.REVIEWER,
     "verify-ticket": Role.VERIFIER,
-    "amend-spec": Role.AUTHOR,
     "resolve-conflicts": Role.IMPLEMENTER,
     "investigate-ticket": Role.VERIFIER,
     "resolve-blocker": Role.RESOLVER,

@@ -4,29 +4,23 @@ import pytest
 
 from conftest import DEV, STATUS_IDS, ConfigFactory
 from delivery.ownership import evaluate_eligibility
-from delivery.workflow import OPTIONAL_STATUSES, PROPOSAL_STATUSES, STATUS_NAMES, Action, Status, routes_for
-from delivery.workflow_check import CHECK_LABEL, WALK, _with_proposal, _with_resolution, verify_workflow
+from delivery.workflow import OPTIONAL_STATUSES, ROUTES, STATUS_NAMES, Action, Status
+from delivery.workflow_check import CHECK_LABEL, WALK, _with_resolution, verify_workflow
 from fakes.jira import FakeJira
 
 
-def fake(proposal: bool = False) -> FakeJira:
-    return FakeJira(STATUS_IDS, me=DEV, proposal=proposal)
+def fake() -> FakeJira:
+    return FakeJira(STATUS_IDS, me=DEV)
 
 
 @pytest.mark.parametrize(
-    ("walk", "proposal", "unreached"),
-    [
-        (WALK, False, {Status.CANCELLED, *OPTIONAL_STATUSES, *PROPOSAL_STATUSES}),
-        (_with_resolution(WALK), False, {Status.CANCELLED, *PROPOSAL_STATUSES}),
-        (_with_proposal(WALK), True, {Status.CANCELLED, *OPTIONAL_STATUSES}),
-        (_with_resolution(_with_proposal(WALK)), True, {Status.CANCELLED}),
-    ],
+    ("walk", "unreached"),
+    [(WALK, {Status.CANCELLED, *OPTIONAL_STATUSES}), (_with_resolution(WALK), {Status.CANCELLED})],
 )
-def test_walk_follows_permitted_routes_and_visits_every_status(walk, proposal, unreached) -> None:  # type: ignore[no-untyped-def]
+def test_walk_follows_permitted_routes_and_visits_every_status(walk, unreached) -> None:  # type: ignore[no-untyped-def]
     status, seen = Status.BACKLOG, {Status.BACKLOG}
-    routes = routes_for(proposal)
     for action, _ in walk:
-        route = next((r for r in routes if r.source is status and r.action is action), None)
+        route = next((r for r in ROUTES if r.source is status and r.action is action), None)
         assert route is not None, f"{action} from {status}"
         status = route.target
         seen.add(status)
@@ -41,7 +35,7 @@ async def test_matching_workflow_passes_and_leaves_unassigned_labelled_tickets(
     report = await verify_workflow(cfg, jira, emit=lambda _: None)
     assert report.ok, report.problems
     assert report.warnings == []
-    assert set(report.findings) == {s.value for s in Status if s not in PROPOSAL_STATUSES}
+    assert set(report.findings) == {s.value for s in Status}
     assert report.transitions_done == len(_with_resolution(WALK)) + 1
     done, cancelled = (jira.issues[k] for k in report.tickets)
     assert (done.status, cancelled.status) == (Status.DONE, Status.CANCELLED)
@@ -73,14 +67,10 @@ async def test_missing_main_route_stops_the_walk(make_config: ConfigFactory) -> 
 
 
 async def test_missing_resume_route_is_found_although_conditions_hide_it(make_config: ConfigFactory) -> None:
-    jira = fake(proposal=True)
-    jira.drop_routes.add((Status.BLOCKED, Status.READY_RELEASE_PREPARATION))
-    report = await verify_workflow(
-        make_config(overrides={"release": {"proposal": True}}), jira, emit=lambda _: None
-    )
-    assert report.problems == [
-        "Blocked: missing transition Resume release preparation -> ready_release_preparation"
-    ]
+    jira = fake()
+    jira.drop_routes.add((Status.BLOCKED, Status.READY_VERIFICATION))
+    report = await verify_workflow(make_config(), jira, emit=lambda _: None)
+    assert report.problems == ["Blocked: missing transition Resume verification -> ready_verification"]
 
 
 async def test_renamed_transition_is_reported_but_still_used(make_config: ConfigFactory) -> None:
@@ -131,25 +121,6 @@ async def test_supported_issue_type_without_the_workflow_fails(make_config: Conf
     ]
     assert jira.issues[report.tickets[0]].issue_type == "Story"
     assert jira.issues[report.tickets[0]].status is Status.DONE
-
-
-async def test_with_a_release_proposal_the_walk_goes_through_release_preparation(
-    make_config: ConfigFactory,
-) -> None:
-    cfg = make_config(overrides={"release": {"proposal": True}})
-    report = await verify_workflow(cfg, fake(proposal=True), emit=lambda _: None)
-    assert report.ok, report.problems
-    assert report.warnings == []
-    assert set(report.findings) == {s.value for s in Status}
-    assert report.transitions_done == len(_with_resolution(_with_proposal(WALK))) + 1
-
-
-async def test_a_jira_project_built_for_the_other_choice_is_reported(make_config: ConfigFactory) -> None:
-    # Configured for a release proposal, but Accept delivery in Jira still goes to Ready for release.
-    cfg = make_config(overrides={"release": {"proposal": True}})
-    report = await verify_workflow(cfg, fake(proposal=False), emit=lambda _: None)
-    assert not report.ok
-    assert any("Accept delivery -> ready_release_preparation" in p for p in report.problems)
 
 
 async def test_jira_failure_mid_walk_is_reported_not_raised(make_config: ConfigFactory) -> None:

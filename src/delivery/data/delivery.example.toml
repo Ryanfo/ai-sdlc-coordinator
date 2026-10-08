@@ -119,8 +119,7 @@ permission_profile = "local_pilot"
 
 # Optional per-procedure overrides; anything not listed uses `model` above.
 # Procedures: refine-ticket, plan-ticket, implement-ticket, review-ticket,
-# verify-ticket, prepare-release, amend-spec (rewrites the
-# specification when deviations from it are accepted during development).
+# verify-ticket, resolve-conflicts, investigate-ticket, resolve-blocker.
 # `delivery doctor --claude-probe` checks every configured model works for you.
 # [claude.models]
 # plan-ticket = "opus"
@@ -148,7 +147,7 @@ enabled = true
 # keep_open = true          # stay open for questions after handing over the result; changes
 #                           # you ask for there are published: a development session's as a
 #                           # new candidate (the ticket returns to Ready for verification), a
-#                           # specification, plan or release proposal session's as the next
+#                           # specification or plan session's as the next
 #                           # revision for review. Verification waits until you end a
 #                           # development session (/exit), so it runs once on the final candidate
 # idle_close_hours = 12
@@ -167,11 +166,8 @@ profile = "local_pilot"
 environment = "local-pilot"
 human_merge_required = true
 human_deployment_required = true
-# false: accepting the delivery moves the ticket to Ready for release, you merge the PR, and the
-# coordinator moves the ticket to Done once it sees the merge. true: Claude first writes a
-# release proposal (notes, smoke and rollback steps) for you to approve; this needs the Ready
-# for release preparation, Preparing release and Release review statuses in Jira.
-# proposal = false
+# The release is the PR merge: Accept delivery moves the ticket to Ready for release, you merge
+# the PR, and the coordinator moves the ticket to Done once it sees the merge.
 
 [checks]
 # Run once in every fresh worktree before the checks below.
@@ -201,9 +197,7 @@ allow_skipped = []
 #   ready_development, developing,
 #   ready_verification, verifying, code_review, acceptance_review,
 #   changes_requested, needs_clarification, blocked,
-#   ready_release_preparation, preparing_release, release_review,
-#   ready_release, ready_release_verification, verifying_release,
-#   done, cancelled
+#   ready_release, done, cancelled
 # Optional (a developer-attended session that clears a blocker): ready_resolution, resolving
 
 [workflow.actions]
