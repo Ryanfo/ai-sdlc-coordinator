@@ -118,6 +118,8 @@ async def test_waiting_runs_continue_when_the_coordinator_starts_again(tmp_path:
         assert sup.record.claude_unavailable is not None
     async with Supervisor(w.deps) as sup:
         assert sup.record.claude_unavailable is None, "a new start checks again"
+        types = [e["type"] for e in w.deps.store.supervisor_events.read()]
+        assert types[-2:] == ["supervisor_started", "claude_available"], "the wait is closed in the log"
         await sup.reconcile()
         await drain(sup)
     assert w.jira.status_of(KEY) is Status.SPECIFICATION_REVIEW

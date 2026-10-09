@@ -206,6 +206,9 @@ class Supervisor:
             await self.control.start()
             self.record = self.record.model_copy(update={"control_socket": str(path)})
         self.deps.store.save_supervisor(self.record, "supervisor_started", pid=os.getpid())
+        if previous is not None and previous.claude_unavailable is not None:
+            # The wait above was cleared; close it in the event log so readers don't stay waiting.
+            self.deps.store.save_supervisor(self.record, "claude_available", resumed_on_start=True)
         if unexpected and previous is not None:
             last = previous.heartbeat_at or previous.started_at
             when = last.astimezone().strftime("%a %d %b %H:%M") if last else "?"

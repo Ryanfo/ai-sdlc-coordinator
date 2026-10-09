@@ -568,6 +568,7 @@ function ticketTask(actor, t, fn) {
 function stageWorkerOf(t, b) { return workerFor(t, b.stage || t.stage); }
 
 function animate(b) {
+  if (b.kind === 'boss_in' && breakTime) animate({ kind: 'back' });
   if (b.kind === 'boss_in') return A.michael.enqueue(async () => {
     if (!A.michael.out) return;
     A.michael.out = false; A.michael.hidden = false; [A.michael.x, A.michael.y] = tileXY(SPOT.door);
@@ -587,6 +588,7 @@ function animate(b) {
     return;
   }
   if (b.kind === 'back') {
+    if (!breakTime) return;
     breakTime = false;
     A.michael.say('Back to work, people!');
     Object.values(A).forEach((a) => a.enqueue(async () => { if (!a.hidden) await a.goHome(); }));
@@ -706,7 +708,8 @@ function animate(b) {
 
 // History applied without animation: where everything is now.
 function applyInstant(b) {
-  if (b.kind === 'boss_in') { A.michael.out = false; return; }
+  // A supervisor (re)start clears any wait for Claude, so it also ends a coffee break.
+  if (b.kind === 'boss_in') { A.michael.out = false; breakTime = false; return; }
   if (b.kind === 'boss_out') { A.michael.out = true; return; }
   if (b.kind === 'break') { breakTime = true; return; }
   if (b.kind === 'back') { breakTime = false; return; }
@@ -1140,9 +1143,8 @@ function startLive(state) {
   stale = false;
   logEl.innerHTML = '';
   for (const b of state.beats) applyInstant(b);
-  settleActors(state.supervisor.running);
   breakTime = state.supervisor.claude_unavailable;
-  if (breakTime) settleActors(state.supervisor.running);
+  settleActors(state.supervisor.running);
   state.beats.slice(-25).forEach(logBeat);
   lastSeq = state.beats.length ? state.beats[state.beats.length - 1].seq : 0;
   source = new EventSource(`/api/events?after=${lastSeq}`);
