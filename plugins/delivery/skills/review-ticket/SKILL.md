@@ -46,10 +46,19 @@ author's reasoning; judge only the artefacts and the code.
 4. Record `findings` for defects, missing tests, standards violations, security or
    accessibility problems, and test weakening. Severity: `blocker` (criterion not met,
    broken behaviour, unsafe), `major` (should fix before acceptance), `minor`, `info`.
-5. Read `related_work` and the integration notes in the inputs. Flag behavioural
+5. Run a ponytail quality review of the candidate diff: read
+   `${CLAUDE_PLUGIN_ROOT}/skills/ponytail-review/SKILL.md` and follow its sections 1–3
+   (understand first, look for, check before you report). Use Grep for callers; you cannot
+   run commands. Do not use its section 4 output format. Record each finding that survives
+   its checks in `findings` with its location in `path`, and put its four parts (what this
+   is, problem, fix, if we skip it) in the description. Severity: its **Must fix** is
+   `blocker` when it breaks a criterion or is unsafe, otherwise `major`; **Should fix** is
+   `major` or `minor`; **Nice to have** is `info`. Do not record a finding twice when step 4
+   already has it.
+6. Read `related_work` and the integration notes in the inputs. Flag behavioural
    interactions with other in-flight tickets (`related_tickets`). Never claim that
    non-overlapping file paths prove independence.
-6. Write `review.md` in `output.artifact_dir` from `${CLAUDE_PLUGIN_ROOT}/templates/review.md`.
+7. Write `review.md` in `output.artifact_dir` from `${CLAUDE_PLUGIN_ROOT}/templates/review.md`.
 
 ## Rules
 

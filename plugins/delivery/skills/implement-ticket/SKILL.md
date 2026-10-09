@@ -22,6 +22,11 @@ acceptance criterion in the approved specification is met, following the approve
 
 ## Rules
 
+- Build the smallest complete change: read `${CLAUDE_PLUGIN_ROOT}/skills/ponytail/SKILL.md`
+  and follow it at the `full` level for the whole session. Where it and this procedure
+  differ, this procedure wins: scope is the approved specification (not "push back on the
+  request"), every acceptance criterion still gets a test, and its closing reply line goes in
+  `summary`.
 - Scope is the approved specification. The plan is the agreed approach. Deviate from the
   plan only when necessary, and explain why in `summary` and `findings`.
 - Follow the application's standards (`CLAUDE.md`, `docs/`): strict types, small

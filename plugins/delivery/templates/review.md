@@ -18,6 +18,11 @@ Working behaviour that differs from the approved specification, for a human to a
 | ID | Severity | Location | Description |
 |---|---|---|---|
 
+## Ponytail quality review
+The `ponytail-review` pass: what this change does (two or three sentences), the load assumed,
+`Lean: -<N> lines possible.` when lean findings exist, and `Not checked:` when something
+mattered and could not be checked. Its findings are in the table above.
+
 ## Scope and standards
 Standards, tests weakened, accessibility, security.
 
