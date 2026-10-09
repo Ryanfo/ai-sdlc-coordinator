@@ -8,9 +8,9 @@ import pytest
 
 from conftest import DEV, STATUS_IDS, ConfigFactory
 from delivery import cli
-from delivery.doctor import Report, check_config, inspect_workflow
+from delivery.doctor import Report, check_config, check_github, inspect_workflow
 from delivery.github import GhClient
-from delivery.ports import NotFound
+from delivery.ports import BranchProtection, NotFound, RepoInfo
 from delivery.workflow import Status
 from fakes.jira import FakeJira
 
@@ -167,3 +167,44 @@ async def test_git_push_check_is_a_dry_run(tmp_path: Path, make_config: ConfigFa
     assert heads.splitlines() == ["refs/heads/main"]  # the dry run created no branch
     await check_git_push(cfg, report, url=str(tmp_path / "missing.git"))
     assert report.checks[-1].level == "fail" and "gh auth setup-git" in report.checks[-1].action
+
+
+PLAN_LIMITED_GH = """#!{py}
+import sys
+sys.stderr.write("gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)\\n")
+sys.exit(1)
+"""
+
+
+async def test_free_plan_private_repo_reads_as_unprotected(tmp_path: Path) -> None:
+    exe = tmp_path / "gh"
+    exe.write_text(PLAN_LIMITED_GH.format(py=sys.executable))
+    exe.chmod(0o755)
+    assert await GhClient("example/app", executable=str(exe)).branch_protection("main") is None
+
+
+class _UnprotectedGitHub:
+    def __init__(self, visibility: str) -> None:
+        self.visibility = visibility
+
+    async def viewer_login(self) -> str:
+        return "dev-bot"
+
+    async def repo(self) -> RepoInfo:
+        return RepoInfo("example/app", self.visibility, "main", True, False)
+
+    async def branch_protection(self, branch: str) -> BranchProtection | None:
+        return None
+
+
+@pytest.mark.parametrize(
+    ("visibility", "level"), [("private", "warn"), ("internal", "warn"), ("public", "fail")]
+)
+async def test_unprotected_base_fails_only_for_public_repos(
+    make_config: ConfigFactory, visibility: str, level: str
+) -> None:
+    report = Report()
+    await check_github(make_config(), _UnprotectedGitHub(visibility), report)  # type: ignore[arg-type]
+    (prot,) = [c for c in report.checks if c.name == "branch protection"]
+    assert prot.level == level
+    assert report.ready == (level != "fail")

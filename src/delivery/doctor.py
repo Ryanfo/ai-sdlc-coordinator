@@ -682,6 +682,16 @@ async def check_github(cfg: Config, gh: GitHubPort | None, report: Report) -> No
             "List a different human in approvals.github_logins.",
         )
     prot = await gh.branch_protection(cfg.repository.base_branch)
+    if prot is None and repo.visibility != "public":
+        report.add(
+            "github",
+            "branch protection",
+            "warn",
+            f"{cfg.repository.base_branch} is unprotected ({repo.visibility} repository): merge gates "
+            "are not enforced by GitHub, only by the coordinator and the people merging",
+            "Protect the base branch when the plan allows it (GitHub Pro or a paid organisation).",
+        )
+        return
     if prot is None:
         report.add(
             "github",

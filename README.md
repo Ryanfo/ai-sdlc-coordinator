@@ -12,7 +12,8 @@ Humans approve, merge and release; the coordinator never does.
 - **Jira**: a project with the delivery workflow ([setup guide](docs/jira-workflow-setup.md),
   done once by a Jira administrator), and permission to comment on and transition tickets.
 - **GitHub**: you can push branches and open PRs in the application repository, its base branch
-  is protected, and a second person can review your PRs.
+  is protected, and a second person can review your PRs. (A private repository on GitHub's free
+  plan cannot be protected; `delivery doctor` warns about that instead of failing.)
 - **Tools** (macOS or Linux; Windows via WSL2): Python 3.11+, Git 2.39+ and a Claude
   subscription. The installer offers to add Git, uv, Claude Code and the GitHub CLI if they are
   missing, and signs you in to GitHub.

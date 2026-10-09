@@ -44,6 +44,9 @@ class RateLimited(IntegrationError):
 _HTTP = re.compile(r"HTTP (\d{3})")
 # GitHub's primary and secondary rate limits answer 403 or 429 with one of these.
 _RATE_LIMITED = re.compile(r"(rate limit|abuse detection|retry-after|too many requests)", re.I)
+# Private repositories on GitHub's free plan cannot have branch protection or rulesets; GitHub
+# answers 403 with this instead of the rules.
+_PLAN_LIMITED = re.compile(r"Upgrade to GitHub Pro", re.I)
 # Seconds to wait before each new try of a rate-limited request.
 RATE_LIMIT_PAUSES = (20.0, 60.0, 120.0)
 
@@ -253,6 +256,10 @@ class GhClient:
             rules = await self.api(f"repos/{self.slug}/rules/branches/{branch}", paginate=True)
         except NotFound:
             rules = []
+        except AuthError as exc:
+            if not _PLAN_LIMITED.search(str(exc)):
+                raise
+            return None
         if rules:
             reviews = 0
             dismiss = last_push = strict = False
@@ -289,7 +296,9 @@ class GhClient:
             d = await self.api(f"repos/{self.slug}/branches/{branch}/protection")
         except NotFound:
             return None
-        except AuthError:
+        except AuthError as exc:
+            if _PLAN_LIMITED.search(str(exc)):
+                return None
             return BranchProtection(source="unreadable (needs admin to read classic protection)")
         prr = d.get("required_pull_request_reviews") or {}
         rsc = d.get("required_status_checks") or {}
