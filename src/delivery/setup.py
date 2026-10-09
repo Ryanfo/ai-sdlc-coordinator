@@ -470,6 +470,11 @@ def origin_of(checkout: Path) -> str:
     return r.stdout.strip()
 
 
+def git_capture(git_dir: Path, *args: str) -> str:
+    r = subprocess.run(["git", "--git-dir", str(git_dir), *args], capture_output=True, text=True, check=False)
+    return r.stdout.strip()
+
+
 # Where people usually keep clones, searched for an existing clone of the application.
 _CODE_DIRS = ("Projects", "projects", "src", "code", "dev", "Developer", "repos", "git", "GitHub", "")
 
@@ -739,6 +744,7 @@ class Wizard:
             self.this_machine()
             if not self.save():
                 return None
+            self.managed_clone()
             self.map_workflow()
         except (KeyboardInterrupt, EOFError):
             io.say("")
@@ -1262,6 +1268,43 @@ class Wizard:
         self.path.write_text(self.text)
         self.path.chmod(0o600)
         self.saved = True
+
+    def managed_clone(self) -> None:
+        """Move aside a coordinator clone of another repository, left by a change of repository.
+
+        The coordinator refuses a clone at ``<worktree_root>/_repo.git`` whose origin is not the
+        configured repository, so after a switch it would never start working.
+        """
+        io, cfg = self.io, self.config()
+        root = cfg.repository.worktree_root
+        git_dir = root / "_repo.git"
+        if not git_dir.is_dir():
+            return
+        old = git_capture(git_dir, "config", "--get", "remote.origin.url")
+        old_slug, slug = parse_repo(old) or old, parse_repo(cfg.repository.url) or cfg.repository.url
+        if old_slug.lower() == slug.lower():
+            return
+        was = old_slug or "another repository"
+        io.say(f"\n{tilde(root)} holds the coordinator's clone of {was}, not {slug}.")
+        listed = git_capture(git_dir, "worktree", "list", "--porcelain").splitlines()
+        paths = [Path(line.removeprefix("worktree ")) for line in listed if line.startswith("worktree ")]
+        # Previews (`delivery try`) are throwaway; any other worktree is a run or an acceptance review.
+        work = [p for p in paths if p.resolve() != git_dir.resolve() and not p.parent.name.startswith("try-")]
+        if work:
+            io.say(f"  It still has work for {was} in it: {', '.join(tilde(p) for p in work)}.")
+            self.note(f"Finish or close the {was} tickets, then move {tilde(root)} aside")
+            return
+        name = f"{root.name}.old-{old_slug.rsplit('/', 1)[-1] or 'repository'}"
+        aside, n = root.with_name(name), 1
+        while aside.exists():
+            n += 1
+            aside = root.with_name(f"{name}-{n}")
+        if not confirm(io, f"  Move it aside to {tilde(aside)} so the coordinator clones {slug}?"):
+            self.note(f"Move {tilde(root)} aside; the coordinator will not start until it is")
+            return
+        root.rename(aside)
+        io.say(f"  Moved. Delete {tilde(aside)} once you no longer need it.")
+        self.note("Restart the coordinator to use the new repository: coordinator restart")
 
     def map_workflow(self) -> None:
         from delivery.doctor import inspect_workflow

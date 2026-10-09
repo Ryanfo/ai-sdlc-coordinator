@@ -341,6 +341,53 @@ def test_setup_writes_a_working_config(home: Path, jira: FakeJira) -> None:
     assert "There is no GitHub user ghost" in io.output
 
 
+def managed_clone(home: Path, slug: str, *worktrees: str) -> Path:
+    """The coordinator's own clone (``~/delivery-worktrees/_repo.git``) of ``slug``."""
+    root = home / "delivery-worktrees"
+    git_dir = root / "_repo.git"
+    git = ["git", "-c", "user.name=a", "-c", "user.email=a@b.co", "--git-dir", str(git_dir)]
+    subprocess.run(["git", "init", "-q", "--bare", str(git_dir)], check=True)
+    subprocess.run([*git, "remote", "add", "origin", f"https://github.com/{slug}.git"], check=True)
+    tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"  # Git's empty tree
+    subprocess.run([*git, "hash-object", "-t", "tree", "-w", "/dev/null"], check=True, capture_output=True)
+    commit = subprocess.run(
+        [*git, "commit-tree", tree, "-m", "c"], capture_output=True, text=True, check=True
+    )
+    for wt in worktrees:
+        subprocess.run(
+            [*git, "worktree", "add", "-q", "--detach", str(root / wt), commit.stdout.strip()], check=True
+        )
+    return root
+
+
+def test_setup_moves_aside_the_clone_of_a_previous_repository(home: Path, jira: FakeJira) -> None:
+    root = managed_clone(home, "acme/old-app", "SDLC-1/try-abc-1/app")
+    save = FIRST_RUN.index(("Save to", ""))
+    io = Script([*FIRST_RUN[: save + 1], ("Move it aside", "")])
+    result = run_setup(home / "delivery.local.toml", deps(io, jira, {}, []))
+    assert result is not None, io.output
+    assert "holds the coordinator's clone of acme/old-app, not acme/shop" in io.output
+    assert not root.exists() and (home / "delivery-worktrees.old-old-app" / "_repo.git").is_dir()
+    assert any("coordinator restart" in n for n in result.notes)
+
+
+def test_setup_keeps_a_previous_clone_that_still_has_runs(home: Path, jira: FakeJira) -> None:
+    root = managed_clone(home, "acme/old-app", "SDLC-1/SDLC-1-implementation-1/app")
+    io = Script(FIRST_RUN)  # nothing more is asked
+    result = run_setup(home / "delivery.local.toml", deps(io, jira, {}, []))
+    assert result is not None, io.output
+    assert "still has work for acme/old-app" in io.output
+    assert (root / "_repo.git").is_dir()
+    assert any("then move ~/delivery-worktrees aside" in n for n in result.notes)
+
+
+def test_setup_leaves_the_clone_of_the_same_repository(home: Path, jira: FakeJira) -> None:
+    root = managed_clone(home, "Acme/Shop")
+    io = Script(FIRST_RUN)
+    assert run_setup(home / "delivery.local.toml", deps(io, jira, {}, [])) is not None, io.output
+    assert "coordinator's clone" not in io.output and (root / "_repo.git").is_dir()
+
+
 def test_session_windows_offer_the_app_preview(home: Path, jira: FakeJira) -> None:
     at = next(n for n, (q, _) in enumerate(FIRST_RUN) if q == "Open a window")
     answers = [

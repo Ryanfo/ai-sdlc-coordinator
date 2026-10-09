@@ -140,7 +140,8 @@ class ManagedRepo:
                 if res.stdout.strip() != self.url:
                     raise GitError(
                         f"managed repository at {self.git_dir} points at "
-                        f"{res.stdout.strip() or 'nothing'}, not {self.url}"
+                        f"{res.stdout.strip() or 'nothing'}, not {self.url}. Run `delivery setup`, "
+                        f"which offers to move {self.root} aside, or move it yourself"
                     )
         await self.fetch()
 
