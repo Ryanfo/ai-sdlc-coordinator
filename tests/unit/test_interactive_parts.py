@@ -439,9 +439,10 @@ def test_change_requests_and_development_get_a_closing_message() -> None:
     assert "pushes them as the next candidate" in note
     assert "type /exit to end this session" in note and "start then, not before" in note
     assert "close this window" not in note, "closing the window does not start verification"
-    spec = closing_note("refine-ticket", ["F1"], document=Path("/out/specification.md"))
+    spec = closing_note("refine-ticket", ["F1"])
     assert "The changes requested in Jira have been actioned" in spec
-    assert "edit /out/specification.md in place" in spec and "next revision of the specification" in spec
+    assert "further changes you'd like" not in spec, "only the development session stays open"
+    assert "requested in Jira" in spec and "closes this session" in spec
     assert closing_note("verify-ticket", ["F1"]) == ""
     assert closing_note("refine-ticket", []) == "", "a first draft is not a change request"
     # Development always asks, so further changes go to the session that made the candidate.

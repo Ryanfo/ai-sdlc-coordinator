@@ -237,14 +237,11 @@ def session_finished(cfg: Config, record: RunRecord, summary: str, log_dir: Path
         r.procedure for r in SessionRegistry(cfg.runtime.state_dir).all() if r.run_id == record.run_id
     ]
     picked_up = ""
-    if cfg.claude.interactive.follow_ups:
-        if record.stage is Stage.DEVELOPMENT:
-            picked_up = " (changes you ask for are pushed as a new candidate"
-            if record.outcome is Outcome.COMPLETED:
-                picked_up += "; verification and review start once you type /exit in it"
-            picked_up += ")"
-        elif record.stage in (Stage.REFINEMENT, Stage.PLANNING):
-            picked_up = " (changes you ask for are published as the next revision for review)"
+    if cfg.claude.interactive.follow_ups and record.stage is Stage.DEVELOPMENT:
+        picked_up = " (changes you ask for are pushed as a new candidate"
+        if record.outcome is Outcome.COMPLETED:
+            picked_up += "; verification and review start once you type /exit in it"
+        picked_up += ")"
     return block(
         f"FINISHED  {_stage_title(record.stage)}  {record.ticket_key}  -  {outcome}",
         [
@@ -329,7 +326,11 @@ def supervisor_started(
             (
                 "Sessions",
                 "interactive in tmux; `delivery attach <ticket>` to watch or type"
-                + ("; left open for questions after the work" if cfg.claude.interactive.keep_open else "")
+                + (
+                    "; development left open for questions after the work"
+                    if cfg.claude.interactive.keep_open
+                    else ""
+                )
                 if cfg.claude.interactive.enabled
                 else "",
             ),

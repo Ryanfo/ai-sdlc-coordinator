@@ -144,12 +144,11 @@ permission_profile = "local_pilot"
 [claude.interactive]
 enabled = true
 # window = "Terminal"       # or "iTerm", or "none" (then: delivery attach <ticket>)
-# keep_open = true          # stay open for questions after handing over the result; changes
-#                           # you ask for there are published: a development session's as a
-#                           # new candidate (the ticket returns to Ready for verification), a
-#                           # specification or plan session's as the next
-#                           # revision for review. Verification waits until you end a
-#                           # development session (/exit), so it runs once on the final candidate
+# keep_open = true          # a development session stays open for questions after handing
+#                           # over the result; changes you ask for there are pushed as a new
+#                           # candidate (the ticket returns to Ready for verification).
+#                           # Verification waits until you end it (/exit), so it runs once on
+#                           # the final candidate. Other sessions close at hand-off regardless
 # idle_close_hours = 12
 
 [approvals]

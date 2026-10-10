@@ -237,11 +237,13 @@ async def test_stop_hook_keeps_claude_working_until_the_result_is_valid(world: W
     async with Supervisor(w.deps) as sup:
         await step(sup)
         assert w.jira.status_of(KEY) is Status.SPECIFICATION_REVIEW, w.last_comment(KEY)
-    rec = _open(w, "refine-ticket")
-    assert rec is not None
-    results = [e.get("result") for e in read_events(Path(rec.session_dir)) if e.get("event") == "stop"]
+    assert _open(w, "refine-ticket") is None, "a specification session closes at hand-off"
+    (run,) = (Path(w.cfg.runtime.state_dir) / "runs" / KEY).iterdir()
+    results = [
+        e.get("result") for e in read_events(run / "sessions" / "refine-ticket") if e.get("event") == "stop"
+    ]
     assert results == ["blocked", "blocked", "valid"]
-    log = (Path(rec.journal_dir) / "logs" / "claude-refine-ticket.txt").read_text()
+    log = (run / "logs" / "claude-refine-ticket.txt").read_text()
     assert "Finished: success" in log
 
 
@@ -329,79 +331,24 @@ async def _to_review(w: World, sup: Supervisor, stage: Stage) -> None:
 
 
 @pytest.mark.parametrize(
-    ("stage", "kind", "folder", "approved_to", "then"),
-    [
-        (Stage.REFINEMENT, "SPEC", "specification", Status.READY_PLANNING, Status.PLAN_REVIEW),
-        (Stage.PLANNING, "PLAN", "plan", Status.READY_DEVELOPMENT, Status.READY_VERIFICATION),
-    ],
+    ("stage", "procedure"), [(Stage.REFINEMENT, "refine-ticket"), (Stage.PLANNING, "plan-ticket")]
 )
-async def test_a_document_changed_in_its_open_session_is_published_as_the_next_revision(
-    world: World, stage: Stage, kind: str, folder: str, approved_to: Status, then: Status
+async def test_specification_and_plan_sessions_close_at_hand_off(
+    world: World, stage: Stage, procedure: str
 ) -> None:
+    """Only the development session stays open: the others would pile up a window per ticket."""
     w = world
-    doc = DOCUMENTS[stage]
     w.new_ticket(KEY)
     w.submit(KEY)
     async with Supervisor(w.deps) as sup:
-        assert sup.open is not None
         await _to_review(w, sup, stage)
-        assert w.jira.status_of(KEY) is doc.review, w.last_comment(KEY)
-        rec = _open(w, doc.procedure)
-        assert rec is not None and rec.revision == 1
-        first = w.token(KEY, kind)
-
-        # The developer asks for a change in the session that wrote it. A plan's change can
-        # also change its footprint, which Claude keeps in the result file.
-        if stage is Stage.PLANNING:
-            result = Path(rec.out_dir) / "result.json"
-            data = json.loads(result.read_text())
-            data["footprint"]["paths"].append("src/descriptions.ts")
-            result.write_text(json.dumps(data))
-        stops = _stops(rec)
-        _type(w, rec.name, f"EDIT {Path(rec.out_dir) / doc.filename} Revised: AC2 also covers descriptions")
-        await _until(lambda: _stops(rec) > stops)
-        await sup.open.tick()
-        second = w.token(KEY, kind)
-        assert (first, second) == (f"{KEY}-{kind}-v1", f"{KEY}-{kind}-v2")
-        assert w.jira.status_of(KEY) is doc.review, "the ticket stays in review"
-        states = {g.token: g.state for g in w.record(KEY).gates}
-        assert states[first] is GateState.SUPERSEDED and states[second] is GateState.PENDING
-        text = _show(w, f"delivery/{KEY}:docs/delivery/{KEY}/{folder}/v002.md")
-        assert "Revised: AC2 also covers descriptions" in text and f"follow_up_of: {first}" in text
-        if stage is Stage.PLANNING:
-            fp = json.loads(_show(w, f"delivery/{KEY}:docs/delivery/{KEY}/plan/v002.footprint.json"))
-            assert fp["plan_revision"] == 2 and "src/descriptions.ts" in fp["paths"]
-            assert w.record(KEY).footprint_ref["revision"] == 2  # type: ignore[index]
-        gate_comment = w.last_comment(KEY)
-        assert "v002 ready" in gate_comment and "Follow-up revision replacing v001" in gate_comment
-        assert (
-            "next move approves this revision" in gate_comment
-            and "AC2 also covers descriptions" in gate_comment
-        )
-        rec = _open(w, doc.procedure)
-        assert rec is not None and rec.revision == 2 and not rec.held
-
-        # A question changes nothing.
-        stops = _stops(rec)
-        _type(w, rec.name, "why that wording?")
-        await _until(lambda: _stops(rec) > stops)
-        await sup.open.tick()
-        assert w.token(KEY, kind) == second
-
-        # Approving the follow-up revision moves the ticket on; changes made after that wait.
-        w.move(KEY, approved_to)
-        await step(sup)
-        assert w.jira.status_of(KEY) is then, w.last_comment(KEY)
-        stops = _stops(rec)
-        _type(w, rec.name, f"EDIT {Path(rec.out_dir) / doc.filename} One more change")
-        await _until(lambda: _stops(rec) > stops)
-        await sup.open.tick()
-        waiting = _open(w, doc.procedure)
-        assert waiting is not None and w.token(KEY, kind) == second
-        assert f"a changed {doc.title} is published only while the ticket is in" in waiting.held
+        assert w.jira.status_of(KEY) is DOCUMENTS[stage].review, w.last_comment(KEY)
+    assert _open(w, procedure) is None
+    assert SessionRegistry(w.cfg.runtime.state_dir).all() == []
+    assert _tmux(w, "list-sessions").stdout.strip() == "", "the session is closed at hand-off"
 
 
-async def test_change_requests_and_development_end_by_asking_what_else(world: World) -> None:
+async def test_only_development_ends_by_asking_what_else(world: World) -> None:
     w = world
     w.new_ticket(KEY)
     w.submit(KEY)
@@ -418,9 +365,8 @@ async def test_change_requests_and_development_end_by_asking_what_else(world: Wo
     first, changed = _prompts(w, "refine-ticket")
     assert ask not in first, "a first draft is not a change request"
     assert "change requests from Jira: F1" in changed and "have been actioned" in changed
-    assert ask in changed and "close this window" in changed
-    assert "next revision of the specification" in changed
-    assert "specification.md in place" in changed.split("After writing the result file")[1]
+    assert ask not in changed, "only the development session stays open for more"
+    assert "closes this session" in changed and "requested in Jira" in changed
     (plan,) = _prompts(w, "plan-ticket")
     assert ask not in plan
     (dev,) = _prompts(w, "implement-ticket")

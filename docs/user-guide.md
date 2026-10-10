@@ -209,8 +209,7 @@ sent.
 A decision is the Jira move alone, made after the revision was posted by someone allowed to
 decide. No comment is needed.
 
-- **Specification and plan**: choose the approve action. If a kept-open session published a newer
-  revision, the move approves that one.
+- **Specification and plan**: choose the approve action.
 - **Code review**: an independent human approves the PR on GitHub at the current head with CI
   passing, then you choose **Approve code**. A new commit needs verifying again.
 - **Deviations**: if development differed from the specification, the review lists it (`D1`…)
@@ -308,8 +307,10 @@ The restrictions are the same as print mode, and the coordinator still only acce
 schema-checked result file. Claude Code's trust prompt for each new worktree is answered yes for
 the coordinator's own worktrees under `worktree_root` only.
 
-**Sessions stay open after the work** so you can keep asking about it. In a development session,
-each time Claude finishes a reply with the code changed, the coordinator pushes it as the next
+**The development session stays open after the work** so you can keep asking about it. Every
+other session (specification, plan, review, verification, resolving conflicts or a blocker) is
+closed by the coordinator once it has handed over its result, so working on several tickets does
+not leave a window open for each. In the development session, each time Claude finishes a reply with the code changed, the coordinator pushes it as the next
 candidate (Claude never pushes), says so in Jira and moves the ticket to **Ready for
 verification**; earlier approvals no longer count. This applies while the ticket is in Ready for
 verification, Code review, Acceptance review or Changes requested and no run is working on it.
@@ -321,18 +322,14 @@ Closing the window does not end the session. This needs three **Submit follow-up
 transitions in Jira, from Code review, Acceptance review and Changes requested to Ready for
 verification.
 
-Specification and plan sessions work the same way: each reply that changes the
-document is published as the next revision for review, and the next approve move approves it. No
-extra Jira transitions are needed.
+After acting on changes you asked for in Jira, Claude lists each item and what it did. A
+development session then asks whether you want anything else; if not, `/exit` starts
+verification. To change a specification or plan further, ask for changes in Jira.
 
-After acting on changes you asked for in Jira, Claude lists each item and what it did and asks
-whether you want anything else. If not, close the window (`delivery attach` reopens it), or
-`/exit` in a development session, which starts verification.
-
-A session also closes after `idle_close_hours` (12) idle, when a new run of the same stage
+The development session also closes after `idle_close_hours` (12) idle, when a new run of the same stage
 starts, or when the ticket is done or cancelled. Unpushed changes are saved as unfinished work
 for the next run, or as a patch whose path the terminal prints. `keep_open = false` closes
-sessions as soon as the result is handed over.
+the development session as soon as the result is handed over too.
 
 ### Trying the change in your browser
 

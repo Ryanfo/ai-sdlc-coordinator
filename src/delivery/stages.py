@@ -65,7 +65,6 @@ from delivery.open_sessions import (
     OpenRecord,
     SessionRegistry,
     document_digest,
-    document_for,
 )
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
@@ -189,9 +188,11 @@ CHANGES_BY_PROCEDURE = {
 }
 
 
-# Procedures whose interactive session closes once it has handed over its result: the stage
-# carries on with another procedure (a development session must not be mistaken for it).
-CLOSED_AT_HAND_OFF = frozenset({"resolve-conflicts", "resolve-blocker"})
+# The only procedure whose interactive session stays open once it has handed over its result
+# ([claude.interactive] keep_open), for questions and follow-up changes. Every other session
+# (specification, plan, review, verification, resolving conflicts or a blocker) is closed by
+# the coordinator at hand-off, so working on several tickets does not pile up windows.
+KEPT_OPEN = frozenset({"implement-ticket"})
 
 
 def change_ids(items: dict[str, str]) -> list[str]:
@@ -201,14 +202,13 @@ def change_ids(items: dict[str, str]) -> list[str]:
     return sorted(ids, key=lambda i: (i[0], int(i[1:])))
 
 
-def closing_note(
-    procedure: str, ids: list[str], *, document: Path | None = None, preview: bool = False
-) -> str:
-    """Finish an interactive session that stays open: after actioning Jira change requests, say
-    so item by item; development always ends this way too (and mentions the app, which is about
-    to run from its worktree). Then ask for anything further: the session stays open for the
-    reply, and what is asked there is published (delivery.open_sessions). A development session
-    also says to type /exit when finished, because verification waits until it has closed."""
+def closing_note(procedure: str, ids: list[str], *, preview: bool = False) -> str:
+    """Finish an interactive session: after actioning Jira change requests, say so item by item;
+    development always ends this way too (and mentions the app, which is about to run from its
+    worktree). Only a development session stays open (KEPT_OPEN), so only it then asks for
+    anything further: what is asked there is pushed as the next candidate
+    (delivery.open_sessions), and it says to type /exit when finished, because verification
+    waits until it has closed. Other sessions are closed by the coordinator at hand-off."""
     develop = procedure == "implement-ticket"
     if procedure not in CHANGES_BY_PROCEDURE or not (ids or develop):
         return ""
@@ -230,21 +230,19 @@ def closing_note(
             " Say that the coordinator is now starting the app from this working copy and will open "
             "it in their browser so they can try it."
         )
-    if develop:
-        close = (
-            "that if not, they should type /exit to end this session: review and verification of "
-            "the candidate start then, not before (closing the window only hides the session)."
+    if not develop:
+        return (
+            f"{opening} The coordinator closes this session once the result is handed over, so do "
+            f"not ask for further changes: further changes to the {what} are requested in Jira."
         )
-        further = (
-            "If they ask for more, make those changes here too: the coordinator pushes them as the "
-            "next candidate, and the latest candidate is reviewed and verified once they type /exit."
-        )
-    else:
-        close = "that if not, they can close this window (or type /exit)."
-        further = (
-            f"If they ask for more, edit {document or f'the {what}'} in place: the coordinator "
-            f"publishes it as the next revision of the {what} for review."
-        )
+    close = (
+        "that if not, they should type /exit to end this session: review and verification of "
+        "the candidate start then, not before (closing the window only hides the session)."
+    )
+    further = (
+        "If they ask for more, make those changes here too: the coordinator pushes them as the "
+        "next candidate, and the latest candidate is reviewed and verified once they type /exit."
+    )
     ask = '"Are there any further changes you\'d like to make?"'
     return f"{opening} End by asking {ask} and saying {close} {further}"
 
@@ -571,10 +569,10 @@ class StageStrategy:
             session_dir=ctx.journal.dir / "sessions" / procedure,
             result_path=out_dir / RESULT_FILE,
             schema_path=schema_path,
+            keep_open=procedure in KEPT_OPEN,
             closing=closing_note(
                 procedure,
                 change_ids(envelope.feedback_items),
-                document=out_dir / doc.filename if (doc := document_for(self.stage, procedure)) else None,
                 preview=ctx.cfg.preview.enabled,
             )
             if ctx.cfg.claude.interactive.follow_ups
@@ -691,10 +689,7 @@ class StageStrategy:
             )
             raise WorkerFailure(procedure, outcome, f"output rejected: {exc}{hint}") from None
         if outcome.open_session is not None:
-            if procedure in CLOSED_AT_HAND_OFF:
-                await tmux_for(ctx.cfg.claude.interactive).kill(outcome.open_session.name)
-            else:
-                self.keep_open(procedure, worktree, outcome.open_session, out_dir)
+            self.keep_open(procedure, worktree, outcome.open_session, out_dir)
         return result
 
     def keep_open(self, procedure: str, worktree: Path, session: OpenSession, out_dir: Path) -> None:

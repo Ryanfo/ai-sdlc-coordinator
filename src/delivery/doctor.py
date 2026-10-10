@@ -347,7 +347,11 @@ def check_interactive(cfg: Config, report: Report) -> None:
             "sessions",
             "ok",
             f"interactive, in tmux ({path}); "
-            + ("left open for questions after hand-off" if ic.keep_open else "closed at hand-off"),
+            + (
+                "development sessions left open for questions after hand-off, others closed"
+                if ic.keep_open
+                else "closed at hand-off"
+            ),
         )
     report.add(
         "claude",

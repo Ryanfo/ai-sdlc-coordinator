@@ -15,8 +15,9 @@ session (the full terminal interface) instead of ``claude -p``. The coordinator 
 * the proof that the delivery plugin ran is the skill's own "Base directory for this skill"
   line in the transcript, pointing into the configured plugin directory.
 
-Once the result is valid the session is handed off. With ``keep_open`` it stays open for
-questions and follow-up changes (delivery.open_sessions); otherwise it is closed.
+Once the result is valid the session is handed off. With ``keep_open`` a development session
+stays open for questions and follow-up changes (delivery.open_sessions); every other session,
+and every session without ``keep_open``, is closed.
 """
 
 from __future__ import annotations
@@ -413,7 +414,8 @@ class InteractiveRunner:
         outcome.permission_denials = mirror.denials()
         outcome.num_turns = mirror.turns()
         prompts = [str(e.get("prompt", "")) for e in read_events(sdir) if e.get("event") == "prompt"][1:]
-        if outcome.status is ClaudeStatus.OK and self.cfg.keep_open and await self.tmux.alive(name):
+        keep = self.cfg.keep_open and inv.keep_open
+        if outcome.status is ClaudeStatus.OK and keep and await self.tmux.alive(name):
             (sdir / HANDED_OFF).touch()
             outcome.open_session = OpenSession(
                 name, sdir, str(mirror.transcript or ""), mirror.count, prompts

@@ -292,12 +292,13 @@ class InteractiveConfig(StrictModel):
     # Open a terminal window attached to each session as it starts ("none": attach yourself
     # with `delivery attach <ticket>`). Opening windows works on macOS only.
     window: Literal["Terminal", "iTerm", "none"] = "Terminal"
-    # Once Claude has handed its result to the coordinator, leave the session open for
-    # questions. In a development session, changes you ask for there are pushed as a new
-    # candidate and the ticket goes back to Ready for verification; verification and review
-    # wait until you end the session (/exit), so they run once on your final candidate.
+    # Once Claude has handed its result to the coordinator, leave the development session open
+    # for questions. Changes you ask for there are pushed as a new candidate and the ticket goes
+    # back to Ready for verification; verification and review wait until you end the session
+    # (/exit), so they run once on your final candidate. Every other session (specification,
+    # plan, review, ...) is closed at hand-off either way.
     keep_open: bool = True
-    # Close an open session after this long with nothing happening in it.
+    # Close an open development session after this long with nothing happening in it.
     idle_close_hours: int = Field(default=12, ge=1, le=336)
 
     @property

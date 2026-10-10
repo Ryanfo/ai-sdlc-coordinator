@@ -280,6 +280,9 @@ class ClaudeInvocation:
     expect: dict[str, Any] = field(default_factory=dict)
     # Interactive sessions only: how to finish the conversation once the result is written.
     closing: str = ""
+    # Interactive sessions only: stay open after hand-off when [claude.interactive] keep_open is
+    # on (only development sessions do; see stages.KEPT_OPEN). Otherwise closed at hand-off.
+    keep_open: bool = False
     # dontAsk denies whatever the settings do not allow. Only a session with a person in it
     # (resolve-blocker) uses "default", where that person is asked instead (see permissions).
     permission_mode: str = "dontAsk"

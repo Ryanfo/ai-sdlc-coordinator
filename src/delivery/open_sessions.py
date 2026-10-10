@@ -1,6 +1,6 @@
 """Interactive sessions left open after hand-off: questions, follow-up changes, closing.
 
-With ``[claude.interactive] keep_open``, a session that has handed a valid result to the
+With ``[claude.interactive] keep_open``, a development session that has handed a valid result to the
 coordinator stays open in tmux (delivery.interactive) so the developer can keep asking Claude
 about the work. The coordinator carries on with the ticket meanwhile, except that it does not
 verify a candidate while its development session is open (the supervisor holds the ticket in
@@ -16,7 +16,8 @@ one would repeat the whole review. This module tracks those sessions in
   review or Changes requested and no run is working on it; otherwise the change waits. When the
   session is ended, a reply not yet published is published before it closes, so the candidate
   verified next includes it;
-* publishes follow-up changes from specification and plan sessions. When
+* publishes follow-up changes from specification and plan sessions left open by an earlier
+  version (only development sessions are kept open now: stages.KEPT_OPEN). When
   Claude finishes a reply and the document in its output directory has changed, the
   coordinator publishes it as the next revision for review, through the stage's own
   publication: the new gate supersedes the one under review and the ticket stays in its review
