@@ -1945,9 +1945,25 @@ class DevelopmentStage(StageStrategy):
 class VerificationStage(StageStrategy):
     stage = Stage.VERIFICATION
 
+    # What an earlier attempt of this run derived. A resumed run reuses the run folder, and the
+    # review starts before the checks run again, so the reviewer would read the old results.
+    DERIVED_INPUTS = ("coordinator_checks.json", "check-logs", "review.md", "reproduction.json")
+    DERIVED_OUTPUTS = ("review-ticket", "verify-ticket")
+
+    def clear_previous_attempt(self) -> None:
+        ctx = self.ctx
+        paths = [ctx.inputs_dir / n for n in self.DERIVED_INPUTS]
+        paths += [ctx.journal.output_dir / n for n in self.DERIVED_OUTPUTS]
+        for path in paths:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+
     async def work(self) -> Decision:
         ctx = self.ctx
         repo = self.deps.repo
+        self.clear_previous_attempt()
         await repo.fetch()
         candidate = ctx.shared.candidate_sha
         assert candidate

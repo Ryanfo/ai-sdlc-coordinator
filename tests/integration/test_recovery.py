@@ -176,3 +176,50 @@ async def test_handover_of_one_ticket_while_another_runs(tmp_path: Path) -> None
     assert w.jira.issues["PILOT-1"].fields["customfield_10050"] == {"value": "refinement"}
     assert any("Handover checkpoint" in c for c in w.comments("PILOT-1"))
     assert w.jira.status_of("PILOT-2") is Status.SPECIFICATION_REVIEW
+
+
+async def _wait_for(path: Path, timeout: float = 30) -> None:
+    for _ in range(int(timeout * 10)):
+        if path.exists():
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"{path} never appeared")
+
+
+async def test_resumed_verification_does_not_show_the_reviewer_the_earlier_attempt(tmp_path: Path) -> None:
+    # A resumed run reuses its folder and the review runs before the checks do, so the earlier
+    # attempt's check logs, summary and review were still there for the new reviewer to read.
+    w = make_world(tmp_path)
+    w.scenario({"review-ticket": [{}, {"sleep": 30}, {}], "verify-ticket": [{"sleep": 30}, {}]})
+    w.new_ticket("PILOT-1")
+    w.submit("PILOT-1")
+    counters = w.scenario_path.parent / "counters"
+    async with Supervisor(w.deps) as sup:
+        await _to_development(w, sup, "PILOT-1")
+        await step(sup)  # candidate published
+    assert w.jira.status_of("PILOT-1") is Status.READY_VERIFICATION
+    sup = Supervisor(w.deps)
+    await sup.__aenter__()
+    await sup.poll_once()
+    await _wait_for(counters / "PILOT-1-verify-ticket-0")  # reviewed and checked; verifying
+    await sup.__aexit__(None, None, None)
+    latest = w.deps.store.latest_run("PILOT-1")
+    assert latest and latest.record and latest.record.state.value == "interrupted"
+    inputs = latest.journal.dir / "inputs"
+    assert (inputs / "check-logs").is_dir() and (inputs / "coordinator_checks.json").exists()
+
+    sup2 = Supervisor(w.deps)
+    await sup2.__aenter__()
+    await sup2.reconcile()
+    await _wait_for(counters / "PILOT-1-review-ticket-1")  # the resumed review has started
+    left = sorted(p.name for p in inputs.iterdir())
+    output = latest.journal.dir / "output"
+    await sup2.__aexit__(None, None, None)
+    for stale in ("check-logs", "coordinator_checks.json", "review.md", "reproduction.json"):
+        assert stale not in left
+    assert not (output / "verify-ticket").exists()
+
+    async with Supervisor(w.deps) as sup3:
+        await sup3.reconcile()
+        await drain(sup3)
+    assert w.jira.status_of("PILOT-1") is Status.CODE_REVIEW, w.last_comment("PILOT-1")
