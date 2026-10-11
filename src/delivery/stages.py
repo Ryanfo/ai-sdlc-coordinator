@@ -316,6 +316,20 @@ class StageStrategy:
         self.ctx.record.worktrees[name] = str(path)
         return path
 
+    async def source_worktree(self, name: str) -> tuple[Path, str | None]:
+        """Detached worktree at the base branch's current commit, and that commit: the code a
+        session reads matches the envelope's ``source.base_commit``. Delivery branches hold only
+        the ticket's documents and are never brought up to date with the base branch, so a session
+        working there cannot see the application."""
+        repo = self.deps.repo
+        base = await repo.remote_sha(self.ctx.cfg.repository.base_branch)
+        path = self.ctx.worktree_path(name)
+        if path.exists() and base and await repo.worktree_head(path) != base:
+            await repo.remove_worktree(path)  # left by an earlier attempt; main has moved on
+        return await self.detached_worktree(
+            name, base or f"origin/{self.ctx.cfg.repository.base_branch}"
+        ), base
+
     async def revisions(self, sub: str, pattern: str = r"v(\d{3,4})\.md$") -> list[int]:
         branch = self.ctx.delivery_branch
         if not await self.deps.repo.remote_sha(branch):
@@ -905,7 +919,7 @@ class RefinementStage(StageStrategy):
 
     async def work(self) -> Decision:
         ctx = self.ctx
-        wt = await self.delivery_worktree()
+        wt, base = await self.source_worktree("refine")
         revs = await self.revisions("specification")
         nxt = max([*revs, ctx.shared.spec_revision, 0]) + 1
         prior: list[ArtefactPointer] = []
@@ -924,7 +938,9 @@ class RefinementStage(StageStrategy):
             required=[ArtifactKind.SPECIFICATION],
             next_revision=nxt,
             prior=prior,
-            source=self.source_refs(delivery_commit=await self.deps.repo.worktree_head(wt)),
+            source=self.source_refs(
+                base_commit=base, delivery_commit=await self.deps.repo.remote_sha(ctx.delivery_branch)
+            ),
         )
         result = await self.run_procedure("refine-ticket", wt, env)
         if (d := self.worker_decision(result)) is not None:
@@ -933,7 +949,7 @@ class RefinementStage(StageStrategy):
         outcome = "clarification" if result.outcome is Outcome.NEEDS_CLARIFICATION else "success"
         extra: dict[str, Any] = {"revision": nxt}
         if outcome == "success" and ctx.cfg.flow.fast_track(ctx.ticket.issue.view.labels):
-            extra.update(await self._fast_track_plan(result, out))
+            extra.update(await self._fast_track_plan(result, out, base))
         return Decision(
             outcome=outcome,
             reason=result.summary,
@@ -941,7 +957,7 @@ class RefinementStage(StageStrategy):
             extra=extra,
         )
 
-    async def _fast_track_plan(self, result: StageResult, out: Path) -> dict[str, Any]:
+    async def _fast_track_plan(self, result: StageResult, out: Path, base: str | None) -> dict[str, Any]:
         """Fast track: the plan Claude wrote with the specification, published with it as the next
         plan revision and approved by the specification's approval (see PlanningStage)."""
         if not (out / "plan.md").is_file() or result.footprint is None:
@@ -951,7 +967,7 @@ class RefinementStage(StageStrategy):
         revs = await self.revisions("plan")
         return {
             "fast_track_plan": max([*revs, self.ctx.shared.plan_revision, 0]) + 1,
-            "base": await self.deps.repo.remote_sha(self.ctx.cfg.repository.base_branch),
+            "base": base,
         }
 
     async def follow_up_decision(self, d: Decision, rev: int) -> Decision:
@@ -1136,11 +1152,7 @@ class PlanningStage(StageStrategy):
         ctx = self.ctx
         if not self.spike and (fast := await self._fast_track()) is not None:
             return fast
-        wt = (
-            await self.detached_worktree("investigate", f"origin/{ctx.cfg.repository.base_branch}")
-            if self.spike
-            else await self.delivery_worktree()
-        )
+        wt, base = await self.source_worktree("investigate" if self.spike else "plan")
         spec = await self.approved_input(GateKind.SPEC, ArtifactKind.SPECIFICATION)
         if spec is None:
             return Decision(
@@ -1157,7 +1169,6 @@ class PlanningStage(StageStrategy):
             dest = await self.copy_input(f"origin/{ctx.delivery_branch}", path, f"prior/{Path(path).name}")
             if dest:
                 prior.append(ArtefactPointer(kind=ArtifactKind.PLAN, path=str(dest), revision=max(revs)))
-        base = await self.deps.repo.remote_sha(ctx.cfg.repository.base_branch)
         related = await self.related_work()
         out = ctx.output_dir(self.procedure)
         ports = None

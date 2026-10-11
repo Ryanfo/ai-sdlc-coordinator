@@ -9,6 +9,7 @@ from conftest import APPROVER, OTHER_DEV
 from delivery.models import GateKind, GateState
 from delivery.supervisor import Supervisor
 from delivery.workflow import Status
+from gitutil import external_commit
 from harness import World, make_world, step
 
 KEY = "PILOT-1"
@@ -172,3 +173,24 @@ async def test_the_fast_track_falls_back_to_plan_review(tmp_path: Path) -> None:
         w.decide(KEY, Status.READY_PLANNING, "F1: smaller steps")
         await step(sup)
         assert _calls(w, "plan-ticket") == 2 and w.token(KEY, "PLAN") == f"{KEY}-PLAN-v2"
+
+
+async def test_refinement_and_planning_read_the_code_on_main_not_the_delivery_branch(tmp_path: Path) -> None:
+    # The delivery branch is cut when refinement first publishes and only ever gains documents;
+    # code merged to main afterwards must still be what refinement and planning read.
+    w = make_world(tmp_path)
+    w.new_ticket(KEY)
+    w.submit(KEY)
+    async with Supervisor(w.deps) as sup:
+        await step(sup)
+        assert w.jira.status_of(KEY) is Status.SPECIFICATION_REVIEW
+        main = external_commit(tmp_path, w.origin, "main", "src/released.ts", "export const y = 2;\n", "rel")
+        w.decide(KEY, Status.READY_REFINEMENT, "F1: mention the released module")
+        await step(sup)
+        w.move(KEY, Status.READY_PLANNING)
+        await step(sup)
+        assert w.jira.status_of(KEY) is Status.PLAN_REVIEW, w.last_comment(KEY)
+    for procedure in ("refine-ticket", "plan-ticket"):
+        inv = [i for i in w.invocations() if i["procedure"] == procedure][-1]
+        assert inv["head"] == main, procedure
+        assert w.envelope(procedure)["source"]["base_commit"] == main

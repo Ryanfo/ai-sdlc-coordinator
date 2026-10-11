@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import uuid
@@ -182,6 +183,10 @@ def interactive(argv: list[str], scenario_path: Path) -> int:
             {
                 "argv": argv,
                 "cwd": os.getcwd(),
+                # The commit the session's working copy is at (what it can read).
+                "head": subprocess.run(
+                    ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+                ).stdout.strip(),
                 "env_keys": sorted(os.environ),
                 "pid": os.getpid(),
                 "procedure": procedure,
@@ -446,6 +451,10 @@ def main() -> int:
             {
                 "argv": argv,
                 "cwd": os.getcwd(),
+                # The commit the session's working copy is at (what it can read).
+                "head": subprocess.run(
+                    ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+                ).stdout.strip(),
                 "env_keys": sorted(os.environ),
                 "pid": os.getpid(),
                 "procedure": procedure,
