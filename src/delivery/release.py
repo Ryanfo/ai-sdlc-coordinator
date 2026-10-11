@@ -1,8 +1,9 @@
 """What a merged PR released: does the merge commit contain exactly the accepted candidate?
 
-The release is the human merge of the ticket's PR (the coordinator never merges or deploys). When
-the supervisor sees the merge it asks this module whether what landed on the base branch is the
-candidate that was verified, reviewed and accepted, and says so in the Done comment. A difference
+The release is the merge of the ticket's PR, by a person or, in auto mode, the coordinator (it
+never deploys). When the supervisor sees the merge it asks this module whether what landed on the
+base branch is the candidate that was verified, reviewed and accepted, and says so in the Done
+comment. A difference
 is flagged there and never holds the ticket back: the merge has happened and nothing here can
 undo it (``delivery revert`` opens a revert PR if the release should not stand).
 """

@@ -267,6 +267,8 @@ class SupervisorRecord(Model):
     # Claude could not be used (login expired or usage limit): new work waits, runs that hit
     # it resume once Claude works again. {"kind", "detail", "since", "next_check"}.
     claude_unavailable: dict[str, str] | None = None
+    # Started in auto mode (`coordinator auto`): `coordinator restart` keeps it.
+    auto: bool = False
 
 
 @dataclass

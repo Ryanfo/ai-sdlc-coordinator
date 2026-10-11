@@ -148,7 +148,7 @@ Comments are deliberately terse, so what applies to every ticket lives here rath
   `only F2 and F3` to narrow it). **Submit follow-up changes** re-verifies the same candidate
   without new code, which only helps when a flaky check or a change on the base branch caused the
   failure.
-- The coordinator never merges or deploys. After **Accept delivery**, you merge the PR; the merge
+- The coordinator never merges or deploys (except in [auto mode](#auto-mode)). After **Accept delivery**, you merge the PR; the merge
   is the release and the coordinator moves the ticket to Done.
 - A new commit on a PR needs verifying again before its code can be approved.
 - Deviations nobody names in a change request are accepted when the code is approved.
@@ -411,11 +411,56 @@ coordinator never merges.
 - **Retention**: logs and worktrees of runs finished more than `runtime.retention_days` (30) ago
   are removed daily.
 
+## Auto mode
+
+`coordinator auto` runs the coordinator with nobody reviewing, for example overnight. It makes
+every move a person would make, as you (your Jira account), with a comment saying so:
+
+- **Specification and plan**: approved as soon as they are published.
+- **Questions**: sent back once with "no answers"; Claude assumes what a careful engineer would
+  and records each assumption in its document. Claude is told it runs unattended
+  (`autonomous` in its envelope), so it rarely asks at all.
+- **Code review**: verification's review is the code review. It is ponytail's review of the
+  change (bugs, security, data, load, tests, lean code, plus a list of new `shortcut:`
+  comments). A blocker or major finding fails verification, and the fix is submitted
+  automatically, up to `[auto] review_rounds` (3) times. Passing CI is still required. No
+  GitHub approval is needed.
+- **Acceptance**: accepted at once; no app is started for you to try.
+- **Merge**: once CI passes on the verified head, the coordinator merges the PR
+  (`[auto] merge_method`, default squash) and the ticket moves to Done as usual.
+- **Next ticket**: when nothing of yours is under way, the next Backlog ticket of a supported
+  type, unassigned or yours, top of the board first, is assigned to you and submitted for
+  refinement. Each ticket starts from a base branch that already has the previous one. Order
+  the board to set the order.
+
+**Tickets that need other tickets.** A Backlog ticket that "is blocked by" an unfinished one is
+preceded by it (following the chain). When a stage blocks naming another ticket (an "is blocked
+by" link, or its key in the blocker, which Claude is asked to give), the ticket waits, the other
+one is delivered next, and the blocked stage is resumed once it is Done. Any other blocker is
+resumed once to try again (`blocker_retries`).
+
+**Left for you.** Fix rounds used up (stays in Changes requested), questions again after an
+"assume" answer, a blocker that does not clear, a cancelled dependency, or a PR GitHub will not
+merge (`merge_attempts`) is left where it is with an "Auto mode: left for you" comment, and auto
+mode moves on. Move the ticket on yourself and auto mode picks it up again. Tickets assigned to
+someone else are never taken.
+
+**Limits and restarts.** At Claude's usage limit nothing new starts and the waiting run resumes
+when the limit resets, so a long night continues by itself. Auto mode uses no tmux session windows
+(nobody is there to type to them). `coordinator restart` keeps auto mode; to switch modes,
+`coordinator stop` and then `coordinator` or `coordinator auto`. `[auto] enabled = true` makes
+plain `coordinator` start in auto mode.
+
+**GitHub.** The base branch may require status checks but not an approving review: GitHub never
+lets a PR's author approve it, so a required review blocks every merge. Auto mode says so when it
+starts.
+
 ## Command reference
 
 | Command | What it does |
 |---|---|
 | `coordinator` / `start` / `stop` / `restart` | Start in the background and show it / start only / stop cleanly / stop and start |
+| `coordinator auto` | Start in [auto mode](#auto-mode) and show it: no human review, merges, works through the board |
 | `status` | Whether it runs (and whether its code is stale), why new sessions wait, and every session |
 | `team` | Every in-flight ticket in the project, grouped by what it waits on; read-only |
 | `logs [KEY]` / `open [KEY]` | Claude session log for a ticket (or the coordinator's own); open it (`--folder`, `--jira`) |

@@ -54,11 +54,19 @@ author's reasoning; judge only the artefacts and the code.
    is, problem, fix, if we skip it) in the description. Severity: its **Must fix** is
    `blocker` when it breaks a criterion or is unsafe, otherwise `major`; **Should fix** is
    `major` or `minor`; **Nice to have** is `info`. Do not record a finding twice when step 4
-   already has it.
-6. Read `related_work` and the integration notes in the inputs. Flag behavioural
+   already has it. Also check what a merge cannot take back: data migrations that lose or
+   corrupt data, and schema changes without the code that reads them.
+   When `autonomous` is true nobody else reads this code before it merges: this review is the
+   code review, and its blocker and major findings are what send it back to development. Hold
+   to ponytail's "no case, no finding" strictly, since a wrong finding costs a whole round.
+6. List the `shortcut:` (or older `ponytail:`) comments the change adds, as ponytail-debt
+   does: one `info` finding each, with its `path`, `line` and the limit it names, so the
+   deferral stays visible after the merge. A shortcut that names no limit, or whose limit the
+   expected load already crosses, is a `major` finding instead.
+7. Read `related_work` and the integration notes in the inputs. Flag behavioural
    interactions with other in-flight tickets (`related_tickets`). Never claim that
    non-overlapping file paths prove independence.
-7. Write `review.md` in `output.artifact_dir` from `${CLAUDE_PLUGIN_ROOT}/templates/review.md`.
+8. Write `review.md` in `output.artifact_dir` from `${CLAUDE_PLUGIN_ROOT}/templates/review.md`.
 
 ## Rules
 

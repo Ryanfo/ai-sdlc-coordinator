@@ -59,6 +59,7 @@ class FakeIssue:
     updated: datetime = field(default_factory=lambda: datetime.now(UTC))
     resolution: str | None = None
     files: dict[str, tuple[Attachment, bytes]] = field(default_factory=dict)
+    rank: int = 0  # board order: ORDER BY Rank puts lower first
 
 
 class FakeJira:
@@ -246,7 +247,8 @@ class FakeJira:
         assignee = re.search(r'assignee = "([^"]+)"', jql)
         label = re.search(r'labels = "([^"]+)"', jql)
         out = []
-        for i in sorted(self.issues.values(), key=lambda x: x.key):
+        order = (lambda x: (x.rank, x.key)) if "ORDER BY Rank" in jql else (lambda x: (0, x.key))
+        for i in sorted(self.issues.values(), key=order):
             if ids and self.status_ids[i.status] not in ids:
                 continue
             if assignee and i.assignee != assignee.group(1):
@@ -322,7 +324,10 @@ class FakeJira:
 
     async def set_fields(self, key: str, fields: dict[str, Any]) -> None:
         self._guard("set_fields", key)
-        self._issue(key).fields.update(fields)
+        issue = self._issue(key)
+        if "assignee" in fields:
+            issue.assignee = (fields.pop("assignee") or {}).get("accountId")
+        issue.fields.update(fields)
 
     async def download_attachment(self, attachment_id: str, dest: Path, max_bytes: int) -> int:
         self._guard("download_attachment", attachment_id)

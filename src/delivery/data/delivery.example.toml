@@ -267,3 +267,14 @@ command = ["npm", "run", "dev"]   # "{port}" is replaced by its port, also expor
 # changed and failed its probe, the machine is short of disk or memory.
 # webhook_env = "DELIVERY_ALERTS_WEBHOOK"
 # desktop = true                    # the same alerts as macOS notifications
+
+# Auto mode (`coordinator auto`): nobody reviews. The coordinator approves, answers, submits
+# fixes, accepts and merges itself, then submits the next Backlog ticket (top of the board
+# first), one ticket at a time. Claude reviews the code. Tickets it cannot finish are left for you.
+# [auto]
+# enabled = false                   # true: plain `coordinator` runs in auto mode too
+# review_rounds = 3                 # failed verifications/code reviews fixed automatically
+# answer_rounds = 1                 # questions sent back as "assume and record it"
+# blocker_retries = 1               # a blocked stage (not by another ticket) is resumed this often
+# merge_method = "squash"           # "squash", "merge" or "rebase"; the repository must allow it
+# merge_attempts = 3                # failed merges before the ticket is left for you

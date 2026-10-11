@@ -28,7 +28,7 @@ from delivery.ports import (
     PullRequest,
     UncertainResult,
 )
-from delivery.workflow import Action, IllegalTransition, Status, coordinator_route
+from delivery.workflow import Action, Actor, IllegalTransition, Status, coordinator_route, route_for_action
 
 
 @dataclass(frozen=True)
@@ -126,8 +126,18 @@ class Publisher:
         action: Action,
         revision: str = "",
         fields: dict[str, Any] | None = None,
+        *,
+        as_person: bool = False,
     ) -> None:
-        route = coordinator_route(source, action)  # raises IllegalTransition
+        """Make a workflow move. ``as_person``: a move people make (approve, answer, submit), made
+        by the coordinator in auto mode (delivery.autopilot); any other move must be its own."""
+        if as_person:
+            found = route_for_action(source, action)
+            if found is None or found.actor is not Actor.HUMAN:
+                raise IllegalTransition(f"{action.value} from {source.value} is not a person's move")
+            route = found
+        else:
+            route = coordinator_route(source, action)  # raises IllegalTransition
         target = route.target
         oid = op_id(self.run_id, f"transition:{action.value}", revision)
         if self._state(oid) is OpStatus.CONFIRMED:

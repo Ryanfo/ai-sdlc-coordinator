@@ -50,6 +50,7 @@ class FakeGitHub:
     lose_next_create: bool = False
     fail_branch_delete: bool = False
     closed_comments: dict[int, str] = field(default_factory=dict)
+    refuse_merge: str = ""  # merge_pr fails with this message (405) while set
     auto_ci: dict[str, str] = field(default_factory=dict)  # check name -> conclusion for every head
     ids: itertools.count[int] = field(default_factory=lambda: itertools.count(1))
 
@@ -147,6 +148,14 @@ class FakeGitHub:
         return sha
 
     # ------------------------------------------------------------------ GitHubPort
+    async def merge_pr(self, number: int, method: str, head_sha: str) -> str:
+        pr = self._refresh(self.prs[number])
+        if self.refuse_merge:
+            raise IntegrationError(self.refuse_merge, status=405)
+        if pr.head_sha != head_sha:
+            raise IntegrationError("Head branch was modified. Review and try the merge again.", status=409)
+        return self.merge(number, merged_by=self.login, how=method)
+
     async def viewer_login(self) -> str:
         return self.login
 

@@ -681,3 +681,46 @@ def handover(stage: str, state: str, artefacts: dict[str, str], next_action: str
         )
     lines += ["", f"State: {state}", *[f"- {k}: {v}" for k, v in sorted(artefacts.items())]]
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- auto mode
+
+
+def auto_moved(what: str) -> str:
+    """A person's move made by the coordinator in auto mode (delivery.autopilot)."""
+    return f"## Auto mode: {what}\nNobody reviews in auto mode; the coordinator made this move itself."
+
+
+def auto_answers(question_ids: list[str]) -> str:
+    asked = ", ".join(question_ids) or "the questions"
+    return (
+        "## Auto mode: no answers\n"
+        f"Nobody is available to answer {asked}. Claude continues with the most reasonable "
+        "assumption for each and records it in its document, so you can revisit it."
+    )
+
+
+def auto_retry(reason: str) -> str:
+    return (
+        "## Auto mode: trying again\n"
+        f"The stage blocked: {_clip(reason, 400)}\nThe coordinator resumes it once to try again."
+    )
+
+
+def auto_waiting_on(keys: list[str]) -> str:
+    return (
+        "## Auto mode: waiting for " + ", ".join(keys) + "\n"
+        "This ticket needs that work first. The coordinator delivers it next and then resumes this one."
+    )
+
+
+def auto_dependency_done(keys: list[str]) -> str:
+    return "## Auto mode: dependency delivered\n" + ", ".join(keys) + " is done, so this ticket resumes."
+
+
+def auto_left(reason: str) -> str:
+    return (
+        "## Auto mode: left for you\n"
+        f"{reason}\nThe coordinator has moved on to the next ticket. Once you move this ticket on, "
+        "auto mode picks it up again."
+    )

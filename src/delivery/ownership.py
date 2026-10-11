@@ -250,6 +250,28 @@ def mine_jql(cfg: Config) -> str:
     return _assigned_jql(cfg, [s for s in Status if s is not Status.CANCELLED])
 
 
+def auto_jql(cfg: Config) -> str:
+    """The developer's tickets under way: everything not in Backlog, Done or Cancelled (auto mode)."""
+    skip = {Status.BACKLOG, Status.DONE, Status.CANCELLED}
+    return _assigned_jql(cfg, [s for s in Status if s not in skip])
+
+
+def backlog_jql(cfg: Config) -> str:
+    """Backlog tickets of the supported types, any assignee, top of the board first (auto mode)."""
+    parts = [
+        f"project = {_jql_str(cfg.jira.project_key)}",
+        f"status in ({cfg.workflow.statuses[Status.BACKLOG]})",
+        "issuetype in (" + ", ".join(_jql_str(t) for t in cfg.jira.supported_issue_types) + ")",
+    ]
+    if cfg.jira.required_label:
+        parts.append(f"labels = {_jql_str(cfg.jira.required_label)}")
+    return " AND ".join(parts) + " ORDER BY Rank ASC"
+
+
+def keys_jql(keys: Iterable[str]) -> str:
+    return "key in (" + ", ".join(sorted(set(keys))) + ")"
+
+
 def waiting_jql(cfg: Config) -> str:
     """The developer's tickets waiting for a person: a review or decision, answers, a blocker
     to be resolved, or the merge."""

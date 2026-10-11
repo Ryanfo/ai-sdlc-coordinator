@@ -37,6 +37,7 @@ from delivery import __version__, cancel_cleanup, cleanup, console, deviations, 
 from delivery import comments as comment_text
 from delivery.acceptance import Acceptance
 from delivery.alerts import Alerts
+from delivery.autopilot import Autopilot
 from delivery.claude import ChildHandle, claude_works
 from delivery.claude_version import VersionGuard
 from delivery.codestamp import code_mtime
@@ -166,6 +167,12 @@ class Supervisor:
         # An unexpected error in the loop: the pause before carrying on (doubling).
         self._error_backoff = 0.0
         self._background: set[asyncio.Task[bool]] = set()
+        # Auto mode (`coordinator auto`): the coordinator makes the people's moves and merges.
+        self.autopilot: Autopilot | None = (
+            Autopilot(self.cfg, deps.jira, deps.github, self.emit, dry_run=dry_run)
+            if self.cfg.auto.enabled
+            else None
+        )
 
     # ------------------------------------------------------------------ lifecycle
     async def __aenter__(self) -> Supervisor:
@@ -196,6 +203,7 @@ class Supervisor:
                 "stopped_at": None,
                 "version": __version__,
                 "code_mtime": code_mtime(),
+                "auto": self.cfg.auto.enabled,
                 # Re-checked by the runs themselves: anything waiting resumes on start.
                 "claude_unavailable": None,
             }
@@ -271,7 +279,8 @@ class Supervisor:
         await self.reconcile()
         if self.open and not self.dry_run and not once:
             self._open_task = asyncio.create_task(self._watch_open(), name="open-sessions")
-        if not self.dry_run and not once:
+        if not self.dry_run and not once and self.autopilot is None:
+            # Auto mode accepts at once: nobody tries the candidate, so no app is started for it.
             self._acceptance_task = asyncio.create_task(self._watch_acceptance(), name="acceptance")
         while not self.stop_event.is_set():
             delay = self.cfg.runtime.poll_seconds + random.uniform(0, self.cfg.runtime.poll_jitter_seconds)
@@ -424,9 +433,12 @@ class Supervisor:
                     await check()
                 except Exception:
                     log.exception("%s check failed", name)
+        # Auto mode first: an approval or merge made now is acted on in this same poll.
+        await self._auto("tick")
         try:
             # First, so that a merge seen now completes its ticket in this same poll.
             await self._complete_merged_releases(report)
+            await self._auto("next_ticket")
             issues = await self.deps.jira.search(ready_jql(self.cfg))
             working = await self.deps.jira.search(active_jql(self.cfg))
         except IntegrationError as exc:
@@ -471,11 +483,25 @@ class Supervisor:
         self.deps.store.save_supervisor(self.record)
         return report
 
+    async def _auto(self, step: str) -> None:
+        """One step of auto mode (delivery.autopilot). It never stops the poll."""
+        if self.autopilot is None:
+            return
+        try:
+            if step == "tick":
+                await self.autopilot.tick(set(self.sessions) | self.busy)
+            else:
+                await self.autopilot.next_ticket()
+        except IntegrationError as exc:
+            self._note_once(f"auto:{step}:{exc}", f"auto mode: Jira or GitHub could not be reached ({exc})")
+        except Exception:
+            log.exception("auto mode %s failed", step)
+
     async def _complete_merged_releases(self, report: PollReport) -> None:
         """Tickets in Ready for release whose PR has been merged: the merge is the release, so
         check that it contains the accepted candidate and move the ticket to Done.
 
-        The coordinator only reads the merge from GitHub (it never merges or deploys). A merge
+        The coordinator reads the merge from GitHub (it never deploys, and merges only in auto mode). A merge
         that differs from the accepted candidate is said so in the Done comment and never holds
         the ticket back. A decision that does not stand (say, code approval without a passing CI
         on the current head) keeps the ticket in Ready for release with the reason, and is checked

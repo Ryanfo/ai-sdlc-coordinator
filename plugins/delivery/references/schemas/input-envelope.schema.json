@@ -816,6 +816,11 @@
       "title": "Changes Requested",
       "type": "boolean"
     },
+    "autonomous": {
+      "default": false,
+      "title": "Autonomous",
+      "type": "boolean"
+    },
     "notes": {
       "items": {
         "$ref": "#/$defs/SelectedComment"

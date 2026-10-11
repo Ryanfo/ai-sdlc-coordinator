@@ -5,7 +5,8 @@ Jira project for tickets assigned to you that enter a *Ready for…* status, and
 own isolated Claude Code session on **your Claude subscription**. Many tickets run at once.
 
 Every stage ends at a human decision: specification, plan, code review, acceptance, release.
-Humans approve, merge and release; the coordinator never does.
+Humans approve, merge and release; the coordinator never does, except in
+[auto mode](#auto-mode), where nobody reviews and it works through the board by itself.
 
 ## Before you start
 
@@ -60,11 +61,24 @@ writes a specification and waits. From here every step is you moving the ticket:
 To ask for changes or answer questions, move the ticket to the matching action and say what you
 want in a comment. Each comment on the ticket starts with the action to choose.
 
+### Auto mode
+
+```bash
+coordinator auto
+```
+
+Nobody reviews: the coordinator approves, answers, fixes, accepts and **merges** itself (Claude's
+review in verification is the code review), then submits the next Backlog ticket, top of the
+board first, one at a time. A ticket that needs another one waits for it; one it cannot finish is
+left for you with a comment. It pauses at Claude's usage limit and carries on once it resets. See
+[Auto mode](docs/user-guide.md#auto-mode).
+
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `coordinator` | Start it if needed, and show it here |
+| `coordinator auto` | The same in auto mode: no human review, works through the board and merges |
 | `coordinator status` | Is it running, and what every ticket is doing |
 | `coordinator logs [KEY]` | The coordinator's log, or one ticket's Claude log |
 | `coordinator help KEY` | Ask Claude what is wrong with a ticket and how to fix it |

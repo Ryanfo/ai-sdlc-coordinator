@@ -420,6 +420,9 @@ class InputEnvelope(Model):
     # changes). The move is the whole request: with no feedback_items nobody wrote what to change,
     # so ask, never guess.
     changes_requested: bool = False
+    # Auto mode (delivery.autopilot): nobody is there to answer questions or review, so decide
+    # what a reasonable person would, record each assumption, and only block for another ticket.
+    autonomous: bool = False
     # Guidance the developer or an approver wrote for Claude (`FOR CLAUDE` comments).
     notes: list[SelectedComment] = Field(default_factory=list)
     # The project's guidance for every ticket (`FOR CLAUDE project`, delivery.guidance): a file.

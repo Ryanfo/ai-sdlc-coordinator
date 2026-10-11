@@ -468,9 +468,10 @@ FOLLOW_UP_ROUTES: tuple[Route, ...] = tuple(
     for s in FOLLOW_UP_SOURCES
 )
 
-# The pilot release is the human merge of the PR. The coordinator reads that merge from GitHub
-# (it never merges or deploys), checks that what was merged is the accepted candidate and moves
-# the ticket to Done. Nobody records anything in Jira.
+# The pilot release is the merge of the PR, by a person (or the coordinator in auto mode:
+# delivery.autopilot). The coordinator reads that merge from GitHub (it never deploys), checks that
+# what was merged is the accepted candidate and moves the ticket to Done. Nobody records anything
+# in Jira.
 RECORD_RELEASE_ROUTE = Route(
     Status.READY_RELEASE,
     Action.RECORD_RELEASE,

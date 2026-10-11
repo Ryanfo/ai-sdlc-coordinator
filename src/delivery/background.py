@@ -123,6 +123,7 @@ def start(
     verbose: bool = False,
     emit: Callable[[str], None] = print,
     command: list[str] | None = None,
+    auto: bool = False,
 ) -> bool:
     """Start the supervisor in its tmux session and wait until it is running."""
     tmux = server(cfg)
@@ -133,7 +134,7 @@ def start(
     seen = log_file.stat().st_size if log_file.exists() else 0
     if command is None:
         command = [sys.executable, "-m", "delivery.cli", *(["-v"] if verbose else [])]
-        command += ["run", "--config", str(cfg.source_path)]
+        command += ["run", "--config", str(cfg.source_path), *(["--auto"] if auto else [])]
     res = subprocess.run(
         tmux.argv("new-session", "-d", "-s", SESSION, "-x", "200", "-y", "50", "-c", str(Path.home()), "--")
         + command,
@@ -204,10 +205,13 @@ def stop(cfg: Config, *, emit: Callable[[str], None] = print) -> bool:
 
 
 def describe(cfg: Config, st: State) -> str:
+    mode = " in auto mode" if st.running and st.record and st.record.auto else ""
     if st.running and st.in_background:
-        return f"running in the background since {st.since} (pid {st.pid}); `coordinator attach` shows it"
+        return (
+            f"running{mode} in the background since {st.since} (pid {st.pid}); `coordinator attach` shows it"
+        )
     if st.running:
-        return f"running in another terminal since {st.since} (pid {st.pid})"
+        return f"running{mode} in another terminal since {st.since} (pid {st.pid})"
     if st.stopped_unexpectedly:
         return (
             f"not running; it stopped unexpectedly (started {st.since}). "

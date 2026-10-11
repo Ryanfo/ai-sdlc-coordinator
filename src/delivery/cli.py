@@ -228,6 +228,8 @@ async def _run(args: argparse.Namespace) -> int:
     from delivery.jira import JiraCredentialsMissing
 
     cfg = _load(args)
+    if getattr(args, "auto", False) or cfg.auto.enabled:
+        cfg = cfg.for_auto()
     path = logfile.log_path(cfg.runtime.state_dir, cfg.identity_key)
     handler = None if args.dry_run else logfile.attach(path, args.verbose)
     try:
@@ -389,6 +391,15 @@ async def _status(args: argparse.Namespace) -> int:
         )
     if live and live.get("new_sessions_wait"):
         lines.append(f"  New sessions wait: {live['new_sessions_wait']}. Running sessions carry on.")
+    if st.record and st.record.auto:
+        from delivery.autopilot import summary
+
+        auto = summary(cfg.runtime.state_dir)
+        data["auto"] = auto
+        lines += [f"  Waits for {', '.join(on)}: {key}" for key, on in auto["waiting_on"].items()]
+        if auto["left_for_you"]:
+            lines.append(f"Left for you by auto mode ({len(auto['left_for_you'])}):")
+            lines += [f"  {key:<12} {why}" for key, why in auto["left_for_you"].items()]
     if live:
         lines.append(f"Active sessions ({len(live['sessions'])}):")
         lines += [
@@ -1170,12 +1181,16 @@ def _warn_code_changed(cfg: Config, st: Any) -> None:
         )
 
 
-def _foreground(args: argparse.Namespace) -> int:
-    run_args = argparse.Namespace(**{**vars(args), "dry_run": False, "once": False, "json": False})
+def _foreground(args: argparse.Namespace, auto: bool = False) -> int:
+    run_args = argparse.Namespace(
+        **{**vars(args), "dry_run": False, "once": False, "json": False, "auto": auto}
+    )
     return int(asyncio.run(_run(run_args)))
 
 
-def _start(args: argparse.Namespace, attach: bool) -> int:
+def _start(args: argparse.Namespace, attach: bool, auto: bool | None = None) -> int:
+    """Start the coordinator in the background if needed. ``auto``: in auto mode (True), not
+    (False), or None: show whichever one runs, and start one without auto mode."""
     from delivery import background
 
     cfg = _load(args)
@@ -1187,8 +1202,19 @@ def _start(args: argparse.Namespace, attach: bool) -> int:
             f"{cfg.claude.interactive.tmux} is not installed, so the coordinator runs in this terminal and "
             "stops when it closes (`brew install tmux` lets it run in the background)."
         )
-        return _foreground(args)
+        return _foreground(args, auto=bool(auto))
     st = background.state(cfg)
+    running_auto = bool(st.running and st.record and st.record.auto)
+    if auto is None:
+        auto = running_auto
+    auto = auto or cfg.auto.enabled
+    if st.running and running_auto != auto:
+        now, asked = ("in auto mode", "without it") if running_auto else ("without auto mode", "in auto mode")
+        print(
+            f"The coordinator is already running {now}. To run it {asked}, `coordinator stop` it first "
+            f"(running sessions are saved and continue), then `coordinator{' auto' if auto else ''}`."
+        )
+        return EXIT_FAIL
     if st.running and not st.in_background:
         print(f"The coordinator is {background.describe(cfg, st)}.")
         print("Use that terminal, or `coordinator stop` and then `coordinator` to run it in the background.")
@@ -1200,8 +1226,8 @@ def _start(args: argparse.Namespace, attach: bool) -> int:
             print(
                 "Last time the coordinator stopped unexpectedly (`coordinator logs` shows its last messages)."
             )
-        print("Starting the coordinator in the background...")
-        if not background.start(cfg, verbose=args.verbose):
+        print(f"Starting the coordinator{' in auto mode' if auto else ''} in the background...")
+        if not background.start(cfg, verbose=args.verbose, auto=auto):
             return EXIT_FAIL
     if attach and _interactive_terminal():
         background.exec_attach(background.attach_argv(cfg))
@@ -1217,6 +1243,13 @@ def cmd_up(args: argparse.Namespace) -> int:
     if args.foreground:
         return _foreground(args)
     return _start(args, attach=True)
+
+
+def cmd_auto(args: argparse.Namespace) -> int:
+    """`coordinator auto`: the same, in auto mode (delivery.autopilot)."""
+    if args.foreground:
+        return _foreground(args, auto=True)
+    return _start(args, attach=True, auto=True)
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -1236,9 +1269,11 @@ def cmd_restart(args: argparse.Namespace) -> int:
     from delivery import background
 
     cfg = _load(args)
+    st = background.state(cfg)
+    auto = bool(st.running and st.record and st.record.auto)
     if not background.stop(cfg):
         return EXIT_FAIL
-    return _start(args, attach=True)
+    return _start(args, attach=True, auto=auto)  # in the mode it ran in
 
 
 def cmd_open(args: argparse.Namespace) -> int:
@@ -1431,6 +1466,14 @@ def parser(prog: str = "delivery") -> argparse.ArgumentParser:
     )
     sp.add_argument("--foreground", action="store_true", help="run it in this terminal instead")
     sp.set_defaults(func=cmd_up)
+    sp = with_config(
+        sub.add_parser(
+            "auto",
+            help="like `up`, in auto mode: no human review; approves, merges and works through the board",
+        )
+    )
+    sp.add_argument("--foreground", action="store_true", help="run it in this terminal instead")
+    sp.set_defaults(func=cmd_auto)
     sp = with_config(sub.add_parser("start", help="start the coordinator in the background"))
     sp.set_defaults(func=cmd_start)
     sp = with_config(sub.add_parser("restart", help="stop the coordinator and start it again (new code)"))
@@ -1438,6 +1481,7 @@ def parser(prog: str = "delivery") -> argparse.ArgumentParser:
     sp = with_config(sub.add_parser("run", help="run the supervisor in the foreground"))
     sp.add_argument("--once", action="store_true", help="one cycle: dispatch all eligible tickets and wait")
     sp.add_argument("--dry-run", action="store_true", help="discovery only: no Claude, writes or transitions")
+    sp.add_argument("--auto", action="store_true", help="auto mode: no human review (see `coordinator auto`)")
     sp.set_defaults(afunc=_run)
     sp = with_config(sub.add_parser("status", help="sessions, states and next human actions"))
     sp.set_defaults(afunc=_status)

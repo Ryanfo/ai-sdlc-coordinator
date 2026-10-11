@@ -411,6 +411,7 @@ class StageStrategy:
             feedback_token=ctx.intake.feedback_token,
             feedback_items=dict(ctx.intake.feedback_items if feedback is None else feedback),
             changes_requested=ctx.intake.requirement in CHANGE_REQUIREMENTS,
+            autonomous=ctx.cfg.auto.enabled,
             notes=self.notes(),
             project_guidance=str(ctx.guidance) if ctx.guidance else None,
             approved_artefacts=approved or [],

@@ -396,6 +396,16 @@ class GhClient:
         await self.api(f"repos/{self.slug}/issues/{number}/comments", method="POST", body={"body": comment})
         await self.api(f"repos/{self.slug}/pulls/{number}", method="PATCH", body={"state": "closed"})
 
+    async def merge_pr(self, number: int, method: str, head_sha: str) -> str:
+        """Merge a pull request (auto mode only), refused by GitHub unless its head is still
+        ``head_sha``. Returns the merge commit."""
+        data = await self.api(
+            f"repos/{self.slug}/pulls/{number}/merge",
+            method="PUT",
+            body={"merge_method": method, "sha": head_sha},
+        )
+        return str((data or {}).get("sha") or "")
+
     async def delete_branch(self, branch: str) -> None:
         """Delete a branch on GitHub. A branch that is already gone is fine."""
         try:

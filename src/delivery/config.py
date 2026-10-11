@@ -446,6 +446,27 @@ class RemindersConfig(StrictModel):
         return v
 
 
+class AutoConfig(StrictModel):
+    """Auto mode (`coordinator auto`, delivery.autopilot): nobody reviews. The coordinator makes
+    every human move itself (approves, answers, submits fixes, accepts), merges the PR and then
+    submits the next Backlog ticket, one ticket at a time, until the board is empty."""
+
+    # Set by `coordinator auto` / `delivery run --auto`, or here to make it the default.
+    enabled: bool = False
+    # Verification failures (including the code review) that are fixed automatically; the next
+    # one leaves the ticket in Changes requested for a person and auto mode moves on.
+    review_rounds: int = Field(default=3, ge=0, le=20)
+    # Times questions are sent back unanswered ("make a reasonable assumption") before the
+    # ticket is left in Needs clarification for a person.
+    answer_rounds: int = Field(default=1, ge=0, le=10)
+    # Times a stage that blocked for a reason other than another ticket is resumed to try again.
+    blocker_retries: int = Field(default=1, ge=0, le=10)
+    # How the PR is merged; the repository must allow it.
+    merge_method: Literal["squash", "merge", "rebase"] = "squash"
+    # Failed merge attempts (not mergeable, CI failing) before the ticket is left for a person.
+    merge_attempts: int = Field(default=3, ge=1, le=20)
+
+
 def bundled_plugin_path() -> Path:
     """The delivery plugin of this installation (``plugins/delivery`` next to ``src``)."""
     return Path(__file__).resolve().parents[2] / "plugins" / "delivery"
@@ -746,6 +767,7 @@ class Config(StrictModel):
     flow: FlowConfig = FlowConfig()
     reminders: RemindersConfig = RemindersConfig()
     notifications: NotificationsConfig = NotificationsConfig()
+    auto: AutoConfig = AutoConfig()
 
     # Set by load_config; not part of the file.
     source_path: Path | None = Field(default=None, exclude=True)
@@ -781,6 +803,32 @@ class Config(StrictModel):
 
     def status_by_id(self) -> dict[str, Status]:
         return {sid: s for s, sid in self.workflow.statuses.items()}
+
+    def for_auto(self) -> Config:
+        """This configuration in auto mode (delivery.autopilot).
+
+        Nobody is there to type to a session, so sessions run without windows. The coordinator
+        moves tickets with the developer's Jira account, so that account's moves count as
+        decisions. No other person reviews the PR on GitHub: the code review is Claude's (the
+        review-code procedure in verification) and passing CI is still required.
+        """
+        approvals = self.approvals
+        ids = approvals.jira_account_ids
+        dev = self.identity.developer_jira_account_id
+        return self.model_copy(
+            update={
+                "auto": self.auto.model_copy(update={"enabled": True}),
+                "claude": self.claude.model_copy(
+                    update={"interactive": self.claude.interactive.model_copy(update={"enabled": False})}
+                ),
+                "approvals": approvals.model_copy(
+                    update={
+                        "jira_account_ids": ids if not ids or dev in ids else [*ids, dev],
+                        "require_independent_github_review": False,
+                    }
+                ),
+            }
+        )
 
     def digest(self) -> str:
         """Digest of the effective configuration. Contains no secrets by construction."""
