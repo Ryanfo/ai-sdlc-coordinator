@@ -8,6 +8,13 @@ accepts the delivery. Then it merges the PR; the existing release check moves th
 Done. Once nothing of the developer's is under way, it submits the next Backlog ticket, top of
 the board first, so each ticket starts from a base branch that has the previous one.
 
+One ticket at a time: moves that cost no Claude time (approving code, accepting, merging) are
+made at once, but a move that starts Claude (approving a specification or plan, submitting
+fixes, answering, resuming, taking from Backlog) is made for one ticket only, and only while no
+Claude work of the developer's is under way. The ticket furthest along goes first (one another
+ticket waits for before it), then the board's order. The rest wait in their review status, which
+costs nothing, rather than all being planned at once against a base branch about to change.
+
 A ticket that depends on another one is not given up on: when a Backlog ticket "is blocked by"
 an unfinished ticket, that one is submitted first, and when a stage blocks naming another
 ticket (a link, or its key in the blocker), the ticket waits, the other one is delivered, and
@@ -40,7 +47,7 @@ from delivery.models import GateKind, GateState
 from delivery.ownership import auto_jql, backlog_jql, keys_jql
 from delivery.ports import GitHubPort, IntegrationError, JiraIssue, JiraPort
 from delivery.publication import PublicationError, PublicationUncertain, Publisher, TicketMoved
-from delivery.workflow import STAGES, Action, Stage, Status
+from delivery.workflow import ACTIVE_STATUSES, READY_STATUSES, STAGES, Action, Stage, Status
 
 log = logging.getLogger("delivery")
 
@@ -54,6 +61,16 @@ APPROVALS: dict[Status, tuple[GateKind, Action, str]] = {
 # Jira link descriptions (seen from the dependent ticket) that mean "needs that one first".
 BLOCKED_BY = ("is blocked by", "depends on")
 FINISHED = frozenset({Status.DONE, Status.CANCELLED})
+# Statuses whose next move starts Claude, furthest along first: one such move at a time.
+STARTS = (
+    Status.CHANGES_REQUESTED,
+    Status.BLOCKED,
+    Status.NEEDS_CLARIFICATION,
+    Status.PLAN_REVIEW,
+    Status.SPECIFICATION_REVIEW,
+)
+# Claude is working on the ticket, or is about to.
+CLAUDE_WORKING = READY_STATUSES | ACTIVE_STATUSES
 
 
 @dataclass
@@ -135,7 +152,12 @@ class Autopilot:
         """
         await self._check_protection()
         mine = await self.jira.search(auto_jql(self.cfg))
-        for issue in mine:
+        busy = any(k in skip for k in (i.key for i in mine)) or any(
+            self._status(i) in CLAUDE_WORKING for i in mine
+        )
+        wanted = {k for keys in self.state.waiting_on.values() for k in keys}
+        ready: list[tuple[tuple[bool, int, int], JiraIssue, Status]] = []
+        for rank, issue in enumerate(mine):
             key = issue.key
             status = self._status(issue)
             if status is None or key in skip:
@@ -147,12 +169,30 @@ class Autopilot:
                 self.state.stuck.pop(key)  # a person moved it on: auto mode takes it up again
                 self.state.counts.pop(key, None)
                 self._save()
-            try:
-                await self._act(issue, status)
-            except (IntegrationError, PublicationError, PublicationUncertain, TicketMoved) as exc:
-                self._note(
-                    f"{key}:{status.value}:{exc}", f"{key}: auto mode could not act yet ({exc}); retrying"
-                )
+            # Everything that costs no Claude time now; whether it would start Claude, noted.
+            if await self._guarded(issue, status, start=False):
+                # Work another ticket waits for first, then the furthest along, then board order.
+                ready.append(((key not in wanted, STARTS.index(status), rank), issue, status))
+        if not ready:
+            return
+        if busy:
+            self._note(
+                f"queue:{sorted(i.key for _, i, _ in ready)}",
+                f"auto mode: {len(ready)} ticket(s) wait their turn; Claude works on one at a time",
+            )
+            return
+        _, issue, status = min(ready, key=lambda r: r[0])
+        await self._guarded(issue, status, start=True)
+
+    async def _guarded(self, issue: JiraIssue, status: Status, *, start: bool) -> bool:
+        try:
+            return await self._act(issue, status, start=start)
+        except (IntegrationError, PublicationError, PublicationUncertain, TicketMoved) as exc:
+            self._note(
+                f"{issue.key}:{status.value}:{exc}",
+                f"{issue.key}: auto mode could not act yet ({exc}); retrying",
+            )
+            return False
 
     async def _check_protection(self) -> None:
         """Say once if GitHub will refuse auto mode's merges: a required approving review cannot
@@ -246,17 +286,19 @@ class Autopilot:
         return key
 
     # ------------------------------------------------------------------ one ticket
-    async def _act(self, issue: JiraIssue, status: Status) -> None:
+    async def _act(self, issue: JiraIssue, status: Status, *, start: bool) -> bool:
+        """Act on one ticket. A move that starts Claude is made only when ``start``; True when
+        the ticket has (or, without ``start``, wants) such a move."""
         key = issue.key
         if status in APPROVALS:
-            await self._approve(key, status)
-        elif status is Status.CHANGES_REQUESTED:
-            await self._submit_changes(key)
-        elif status is Status.NEEDS_CLARIFICATION:
-            await self._answer(key)
-        elif status is Status.BLOCKED:
-            await self._unblock(issue)
-        elif status is Status.READY_RELEASE:
+            return await self._approve(key, status, start)
+        if status is Status.CHANGES_REQUESTED:
+            return await self._submit_changes(key, start)
+        if status is Status.NEEDS_CLARIFICATION:
+            return await self._answer(key, start)
+        if status is Status.BLOCKED:
+            return await self._unblock(issue, start)
+        if status is Status.READY_RELEASE:
             await self._merge(key)
         elif status in (Status.READY_RESOLUTION, Status.RESOLVING):
             self._leave_quietly(key, status, "a person asked to resolve its blocker with Claude")
@@ -264,8 +306,9 @@ class Autopilot:
             # Moved on by a person while it waited: it is under way again.
             self.state.waiting_on.pop(key)
             self._save()
+        return False
 
-    async def _approve(self, key: str, status: Status) -> None:
+    async def _approve(self, key: str, status: Status, start: bool) -> bool:
         kind, action, what = APPROVALS[status]
         ctx = await load_context(self.jira, self.cfg, key)
         gate = current_gate(ctx.record.gates, kind)
@@ -273,20 +316,24 @@ class Autopilot:
             self._note(
                 f"{key}:nogate:{status.value}", f"{key}: no {kind.value} revision waits for a decision"
             )
-            return
+            return False
+        starts_claude = status in STARTS  # approving code or accepting starts no session
+        if starts_claude and not start:
+            return True
         if self.dry_run:
             self.emit(f"[dry-run] auto mode would choose {action.value} on {key} ({gate.token})")
-            return
+            return starts_claude
         pub = self._publisher(key)
         await pub.comment(key, f"auto-{action.value}", text.auto_moved(f"{what} ({gate.token})"), gate.token)
         await pub.transition(key, status, action, gate.token, as_person=True)
         self.emit(console.line(f"{key}: auto mode: {what} ({gate.token})"))
+        return starts_claude
 
     def _entry_id(self, ctx: TicketContext, status: Status) -> str:
         entry = ctx.latest_entry(self.cfg.status_id(status))
         return entry.history_id if entry else "-"
 
-    async def _submit_changes(self, key: str) -> None:
+    async def _submit_changes(self, key: str, start: bool) -> bool:
         ctx = await load_context(self.jira, self.cfg, key)
         into = self.cfg.status_id(Status.CHANGES_REQUESTED)
         rounds = sum(1 for c in ctx.changes if c.to_id == into)
@@ -298,10 +345,12 @@ class Autopilot:
                 f"Verification or code review still fails after {limit} automatic fix round"
                 f"{'s' if limit != 1 else ''}; the latest findings are above.",
             )
-            return
+            return False
+        if not start:
+            return True
         if self.dry_run:
             self.emit(f"[dry-run] auto mode would submit implementation changes on {key}")
-            return
+            return True
         await self._publisher(key).transition(
             key,
             Status.CHANGES_REQUESTED,
@@ -312,22 +361,25 @@ class Autopilot:
         self.emit(
             console.line(f"{key}: auto mode: fixing what verification found (round {rounds} of {limit})")
         )
+        return True
 
-    async def _answer(self, key: str) -> None:
+    async def _answer(self, key: str, start: bool) -> bool:
         ctx = await load_context(self.jira, self.cfg, key)
         pause = ctx.record.pause
         if pause is None or pause.kind != "clarification":
             self._leave_quietly(key, Status.NEEDS_CLARIFICATION, "it has no questions recorded")
-            return
+            return False
         counter = f"answers:{pause.resume_stage.value}"
         if self.state.count(key, counter) >= self.cfg.auto.answer_rounds:
             await self._leave(
                 ctx, Status.NEEDS_CLARIFICATION, "Claude still has questions it cannot settle by assuming."
             )
-            return
+            return False
+        if not start:
+            return True
         if self.dry_run:
             self.emit(f"[dry-run] auto mode would send {key}'s questions back to be assumed")
-            return
+            return True
         revision = pause.round_token or self._entry_id(ctx, Status.NEEDS_CLARIFICATION)
         pub = self._publisher(key)
         await pub.comment(key, "auto-answers", text.auto_answers(pause.question_ids), revision)
@@ -336,14 +388,15 @@ class Autopilot:
         self.state.bump(key, counter)
         self._save()
         self.emit(console.line(f"{key}: auto mode: questions sent back, Claude assumes and records it"))
+        return True
 
-    async def _unblock(self, issue: JiraIssue) -> None:
+    async def _unblock(self, issue: JiraIssue, start: bool) -> bool:
         key = issue.key
         ctx = await load_context(self.jira, self.cfg, key)
         pause = ctx.record.pause
         if pause is None or pause.kind != "blocker":
             self._leave_quietly(key, Status.BLOCKED, "it was blocked without a recorded reason")
-            return
+            return False
         needs = _blocking_keys(issue, pause.reason, self.cfg.jira.project_key)
         revision = self._entry_id(ctx, Status.BLOCKED)
         pub = self._publisher(key)
@@ -356,13 +409,13 @@ class Autopilot:
                 await self._leave(
                     ctx, Status.BLOCKED, f"It needs {', '.join(gone)}, which is cancelled or missing."
                 )
-                return
+                return False
             open_ = [k for k in needs if found.get(k) is not Status.DONE]
             if left := [k for k in open_ if k in self.state.stuck]:
                 await self._leave(
                     ctx, Status.BLOCKED, f"It needs {', '.join(left)}, which auto mode left for you."
                 )
-                return
+                return False
             if open_:
                 if self.state.waiting_on.get(key) != open_:
                     self.state.waiting_on[key] = open_
@@ -372,29 +425,34 @@ class Autopilot:
                     self.emit(
                         console.line(f"{key}: auto mode: waits for {', '.join(open_)}, delivered first")
                     )
-                return
+                return False
+            if not start:
+                return True
             if self.dry_run:
                 self.emit(f"[dry-run] auto mode would resume {key}: {', '.join(needs)} done")
-                return
+                return True
             await pub.comment(key, "auto-dependency-done", text.auto_dependency_done(needs), revision)
             await self._resume(key, pause.resume_stage, revision)
             self.state.waiting_on.pop(key, None)
             self._save()
             self.emit(console.line(f"{key}: auto mode: {', '.join(needs)} delivered; resuming"))
-            return
+            return True
         if self.state.count(key, "retries") >= self.cfg.auto.blocker_retries:
             await self._leave(
                 ctx, Status.BLOCKED, "The blocker above did not clear when the stage was retried."
             )
-            return
+            return False
+        if not start:
+            return True
         if self.dry_run:
             self.emit(f"[dry-run] auto mode would resume {key} to try again")
-            return
+            return True
         await pub.comment(key, "auto-retry", text.auto_retry(pause.reason), revision)
         await self._resume(key, pause.resume_stage, revision)
         self.state.bump(key, "retries")
         self._save()
         self.emit(console.line(f"{key}: auto mode: blocked ({pause.reason[:80]}); trying once more"))
+        return True
 
     async def _resume(self, key: str, stage: Stage, revision: str) -> None:
         action = STAGES[stage].resume_action

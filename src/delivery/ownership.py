@@ -251,9 +251,11 @@ def mine_jql(cfg: Config) -> str:
 
 
 def auto_jql(cfg: Config) -> str:
-    """The developer's tickets under way: everything not in Backlog, Done or Cancelled (auto mode)."""
+    """The developer's tickets under way, top of the board first: everything not in Backlog, Done
+    or Cancelled (auto mode)."""
     skip = {Status.BACKLOG, Status.DONE, Status.CANCELLED}
-    return _assigned_jql(cfg, [s for s in Status if s not in skip])
+    jql = _assigned_jql(cfg, [s for s in Status if s not in skip])
+    return jql.replace(" ORDER BY key ASC", " ORDER BY Rank ASC")
 
 
 def backlog_jql(cfg: Config) -> str:

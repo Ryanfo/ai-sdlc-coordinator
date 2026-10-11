@@ -433,6 +433,14 @@ every move a person would make, as you (your Jira account), with a comment sayin
   refinement. Each ticket starts from a base branch that already has the previous one. Order
   the board to set the order.
 
+**One ticket at a time.** Moves that cost no Claude time (approving code, accepting, merging)
+are made at once. A move that starts Claude (approving a specification or plan, submitting fixes,
+answering, resuming, taking from Backlog) is made for one ticket only, and only when no Claude
+work of yours is under way. Work another ticket waits for goes first, then the ticket furthest
+along, then board order. The rest wait in their review status at no cost, so tickets you
+submitted before starting auto mode are not all planned at once against a base branch that is
+about to change. Sessions already running when auto mode starts finish as usual.
+
 **Tickets that need other tickets.** A Backlog ticket that "is blocked by" an unfinished one is
 preceded by it (following the chain). When a stage blocks naming another ticket (an "is blocked
 by" link, or its key in the blocker, which Claude is asked to give), the ticket waits, the other

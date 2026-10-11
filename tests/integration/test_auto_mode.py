@@ -150,3 +150,25 @@ async def test_without_auto_mode_nothing_is_approved_or_merged(tmp_path: Path) -
         assert sup.autopilot is None
         await step(sup)
     assert _status(w, "PILOT-1") is Status.BACKLOG
+
+
+async def test_tickets_waiting_in_review_are_taken_on_one_at_a_time(tmp_path: Path) -> None:
+    # Specifications written before auto mode started: approving them all at once would plan
+    # every ticket together against a base branch that is about to change.
+    w = _auto(tmp_path)
+    for key, rank in (("PILOT-1", 2), ("PILOT-2", 1), ("PILOT-3", 3)):
+        w.new_ticket(key)
+        w.jira.issues[key].rank = rank
+        w.submit(key)
+    async with Supervisor(w.deps) as sup:
+        await step(sup)  # already submitted: refined together, as before
+        assert {_status(w, k) for k in ("PILOT-1", "PILOT-2", "PILOT-3")} == {Status.SPECIFICATION_REVIEW}
+        await step(sup)
+        assert _status(w, "PILOT-2") is Status.PLAN_REVIEW  # top of the board goes first
+        assert _status(w, "PILOT-1") is Status.SPECIFICATION_REVIEW
+        assert _status(w, "PILOT-3") is Status.SPECIFICATION_REVIEW
+        await _until(sup, lambda: _status(w, "PILOT-2") is Status.DONE)
+        assert _status(w, "PILOT-3") is Status.SPECIFICATION_REVIEW
+        await _until(sup, lambda: all(_status(w, k) is Status.DONE for k in ("PILOT-1", "PILOT-3")))
+    planned = [i for i in w.invocations() if "/delivery:plan-ticket" in " ".join(i["argv"])]
+    assert len(planned) == 3
