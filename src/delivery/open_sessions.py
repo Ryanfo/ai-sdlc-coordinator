@@ -25,7 +25,8 @@ one would repeat the whole review. This module tracks those sessions in
   revision under review; otherwise the change waits;
 * runs the app from a development session's worktree once its run has ended, so the developer
   can try the change in a browser (delivery.preview);
-* closes a session when it is ended in its window (``/exit``), after ``idle_close_hours`` with
+* closes a session when it is ended in its window (``/exit``) or its window is closed (once
+  Claude has finished its reply; Ctrl-b d only hides it), after ``idle_close_hours`` with
   nothing happening, when a new run of the same stage starts for the ticket (a new development
   run needs the feature branch back), or when the ticket is done or cancelled. Closing keeps
   the conversation in the run's logs, keeps unpublished changes as a patch (or as the
@@ -40,7 +41,7 @@ import json
 import logging
 import shutil
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,7 @@ from delivery import comments, console
 from delivery.gates import current_gate, gate_token
 from delivery.git import BranchDiverged, GitError, commit_url
 from delivery.intake import Intake, TicketContext, load_context
-from delivery.interactive import discard_transcript, open_window
+from delivery.interactive import WINDOW_CLOSED, discard_transcript, open_window
 from delivery.journal import RunJournal, atomic_write_json, ensure_private_dir
 from delivery.models import (
     ACTIVE_RUN_STATES,
@@ -349,14 +350,22 @@ class OpenSessions:
             rec.events_seen = len(events)
             self.registry.save(rec)
         follow_ups = self.cfg.claude.interactive.follow_ups
-        if not await self.tmux.alive(rec.name):
+        ended = "the session was ended"
+        if await self.tmux.alive(rec.name):
+            if not await self._window_closed(rec, events):
+                ended = ""
+            else:
+                # Closing the window ends the session as /exit would (Ctrl-b d only hides it).
+                await self.tmux.kill(rec.name)
+                ended = "its window was closed"
+        if ended:
             # Publish what Claude finished since the last check before closing: the candidate
             # verified once a development session closes must include it.
             if follow_ups and (rec.unchecked_stops or rec.held):
                 if self.is_running(rec.ticket_key) or rec.ticket_key in self.busy:
                     return
                 await self._follow_up(rec, ended=True)
-            await self.close(rec, "the session was ended")
+            await self.close(rec, ended)
             return
         limit = timedelta(hours=self.cfg.claude.interactive.idle_close_hours)
         if utcnow() - rec.last_activity_at > limit:
@@ -383,6 +392,32 @@ class OpenSessions:
             )
         ):
             self.registry.save(rec)
+
+    async def _window_closed(self, rec: OpenRecord, events: list[dict[str, Any]]) -> bool:
+        """The developer closed the session's window (interactive.WINDOW_CLOSED) and Claude is
+        not in the middle of a reply. A window closed before the hand-off, or one reopened
+        since, does not count."""
+        marker = Path(rec.session_dir) / WINDOW_CLOSED
+        try:
+            closed_at = datetime.fromtimestamp(marker.stat().st_mtime, UTC)
+        except OSError:
+            return False
+        if closed_at < rec.opened_at or await self.tmux.has_clients(rec.name):
+            marker.unlink(missing_ok=True)
+            return False
+        turns = [e.get("event") for e in events if e.get("event") in ("prompt", "stop")]
+        if turns and turns[-1] == "prompt":
+            noted = f"{rec.name}:window-closed"
+            if noted not in self._noted:
+                self._noted.add(noted)
+                self.emit(
+                    console.line(
+                        f"{rec.ticket_key}: its {rec.procedure} window was closed; the session "
+                        "ends once Claude finishes its reply"
+                    )
+                )
+            return False
+        return True
 
     def _run_ended(self, rec: OpenRecord) -> bool:
         """The run that opened this session has finished (published, blocked or stopped)."""

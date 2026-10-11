@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import pty
+import select
 import shutil
 import subprocess
 import sys
@@ -19,9 +22,10 @@ import pytest
 
 from conftest import DEV
 from delivery.cli import main
+from delivery.interactive import WINDOW_CLOSED, attach_command
 from delivery.models import GateKind, GateState
 from delivery.open_sessions import DOCUMENTS, OpenRecord, SessionRegistry
-from delivery.session_hook import read_events
+from delivery.session_hook import EVENTS, read_events
 from delivery.supervisor import Supervisor
 from delivery.workflow import Stage, Status
 from harness import World, make_world, step
@@ -189,6 +193,90 @@ async def test_development_session_stays_open_and_follow_ups_are_published(world
         assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
         assert w.token(KEY, "CODE").endswith("3")
         assert _verifications(w) == 1
+
+
+async def _window(w: World, rec: OpenRecord, then: str) -> None:
+    """A terminal window attached to the session as the coordinator opens one, then detached
+    with Ctrl-b d (``detach``) or closed (``close``: its terminal hangs up)."""
+    attach = attach_command(
+        ["tmux", "-L", w.cfg.claude.interactive.socket, "attach-session", "-t", f"={rec.name}"],
+        Path(rec.session_dir) / WINDOW_CLOSED,
+    )
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["TERM"] = "xterm-256color"
+        os.execv("/bin/sh", ["sh", "-c", attach])  # noqa: S606 (argument array, no shell)
+
+    def drain() -> None:
+        while select.select([fd], [], [], 0.1)[0]:
+            try:
+                if not os.read(fd, 65536):
+                    return
+            except OSError:
+                return
+
+    attached = lambda: _tmux(w, "list-clients", "-t", f"={rec.name}").stdout.strip() != ""  # noqa: E731
+    for _ in range(100):
+        drain()
+        if attached():
+            break
+    assert attached()
+    if then == "detach":
+        _tmux(w, "detach-client", "-s", f"={rec.name}")
+        drain()
+        os.close(fd)
+    else:
+        os.close(fd)
+    await asyncio.to_thread(os.waitpid, pid, 0)
+
+
+async def test_closing_the_window_ends_the_development_session(world: World) -> None:
+    w = world
+    w.new_ticket(KEY)
+    w.submit(KEY)
+    async with Supervisor(w.deps) as sup:
+        assert sup.open is not None
+        await _to_development(w, sup)
+        await step(sup)
+        dev = _open(w, "implement-ticket")
+        assert dev is not None
+        marker = Path(dev.session_dir) / WINDOW_CLOSED
+
+        # A window closed while Claude worked on the stage only hid it.
+        marker.touch()
+        before = dev.opened_at.timestamp() - 60
+        os.utime(marker, (before, before))
+        await sup.open.tick()
+        assert _alive(w, dev.name) and not marker.exists()
+
+        # Ctrl-b d hides the session and keeps it open.
+        await _window(w, dev, "detach")
+        assert not marker.exists()
+        await sup.open.tick()
+        assert _alive(w, dev.name) and _open(w, "implement-ticket") is not None
+        assert await step(sup) == [], "still open, so not verified"
+
+        # A change is asked for, then the window is closed while Claude is still replying: the
+        # session ends once the reply is finished, and the change is pushed as it closes.
+        stops = _stops(dev)
+        _type(w, dev.name, "EDIT src/followup.ts export const followup = 1")
+        await _until(lambda: _stops(dev) > stops)
+        await _window(w, dev, "close")
+        assert marker.exists()
+        with (Path(dev.session_dir) / EVENTS).open("a") as fh:  # still replying
+            fh.write(json.dumps({"event": "prompt", "prompt": ""}) + "\n")
+        await sup.open.tick()
+        assert _alive(w, dev.name), "it waits for the reply"
+        with (Path(dev.session_dir) / EVENTS).open("a") as fh:
+            fh.write(json.dumps({"event": "stop"}) + "\n")
+        await sup.open.tick()
+        assert not _alive(w, dev.name) and _open(w, "implement-ticket") is None
+        assert w.record(KEY).candidate_number == 2
+        assert _show(w, f"feature/{KEY}:src/followup.ts") == "export const followup = 1\n"
+
+        await step(sup)
+        assert _verifications(w) == 1
+        assert w.jira.status_of(KEY) is Status.CODE_REVIEW, w.last_comment(KEY)
 
 
 async def test_a_change_after_verification_sends_the_ticket_back(world: World) -> None:
@@ -371,7 +459,7 @@ async def test_only_development_ends_by_asking_what_else(world: World) -> None:
     assert ask not in plan
     (dev,) = _prompts(w, "implement-ticket")
     assert ask in dev and "next candidate" in dev and "actioned" not in dev
-    assert "type /exit to end this session: review and verification" in dev
+    assert "type /exit (or close the window) to end this session: review" in dev
     assert "starting the app" not in dev, "no app preview is configured"
 
 

@@ -2,7 +2,8 @@
 
 The coordinator owns the server (``tmux -L delivery``) and every session in it: it starts each
 one with an exact environment (``env -i``), watches it and stops it. People attach to watch or
-type; closing a terminal window only detaches it and the session keeps running. The server
+type; a terminal window only detaches when closed and the session keeps running (the
+coordinator then ends a development session left open: delivery.open_sessions). The server
 uses its own configuration, never ``~/.tmux.conf``.
 """
 

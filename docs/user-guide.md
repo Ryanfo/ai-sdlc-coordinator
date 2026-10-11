@@ -292,7 +292,7 @@ specification or plan to make a blocker go away.
 By default sessions run as `claude -p`. Turn on interactive sessions and each runs as a normal
 `claude` in tmux, with a terminal window opening on it so you can watch and type to it (your
 message is picked up after its current step; `Esc` interrupts; closing the window only
-detaches).
+detaches while Claude is working on the stage).
 
 ```bash
 brew install tmux
@@ -316,9 +316,11 @@ verification**; earlier approvals no longer count. This applies while the ticket
 verification, Code review, Acceptance review or Changes requested and no run is working on it.
 
 **Verification waits until you end the development session**, so a series of small changes costs
-one round of review rather than one per change. Type `/exit` (or `delivery close <KEY>`) when
-done: any unpushed change is pushed, then review and verification start on the next poll.
-Closing the window does not end the session. This needs three **Submit follow-up changes**
+one round of review rather than one per change. Type `/exit`, close its window (or the
+terminal you ran `delivery attach <KEY>` in) or run `delivery close <KEY>` when done: any
+unpushed change is pushed, then review and verification start on the next poll. If Claude is
+still replying when the window is closed, the session ends once the reply is finished. To hide
+the session and keep it open, press `Ctrl-b d` instead. This needs three **Submit follow-up changes**
 transitions in Jira, from Code review, Acceptance review and Changes requested to Ready for
 verification.
 

@@ -854,6 +854,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
     """Open a ticket's Claude session, or the coordinator itself, in this terminal (Ctrl-b d
     leaves it running)."""
     from delivery import background
+    from delivery.interactive import WINDOW_CLOSED, attach_command
     from delivery.open_sessions import SessionRegistry
 
     cfg = _load(args)
@@ -877,13 +878,19 @@ def cmd_attach(args: argparse.Namespace) -> int:
         if others:
             print("Running: " + ", ".join(others), file=sys.stderr)
         return EXIT_FAIL
-    open_names = {r.name for r in SessionRegistry(cfg.runtime.state_dir).all()}
+    kept = {r.name: r for r in SessionRegistry(cfg.runtime.state_dir).all()}
     # Prefer the session that is working now over ones left open for questions.
-    found.sort(key=lambda n: n in open_names)
+    found.sort(key=lambda n: n in kept)
     if len(found) > 1:
         print(f"{args.ticket} has {len(found)} sessions ({', '.join(found)}); opening {found[0]}.")
         print("Use --procedure to choose another.")
-    background.exec_attach(tmux.attach_argv(found[0]))
+    rec = kept.get(found[0])
+    if rec is None:
+        background.exec_attach(tmux.attach_argv(found[0]))
+    else:
+        # Closing this terminal ends a session left open, as closing its own window does.
+        marker = Path(rec.session_dir) / WINDOW_CLOSED
+        background.exec_attach(["/bin/sh", "-c", attach_command(tmux.attach_argv(found[0]), marker)])
     return EXIT_OK  # not reached
 
 

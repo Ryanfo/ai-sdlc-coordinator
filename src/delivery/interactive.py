@@ -63,6 +63,9 @@ from delivery.tmux import TmuxError, session_name
 from delivery.tmux import for_config as tmux_for
 
 RESULT_FILE = "result.json"
+# Written in the session folder when a terminal window on the session is closed (see
+# attach_command); the coordinator then ends a development session left open (open_sessions).
+WINDOW_CLOSED = "window-closed"
 POLL_SECONDS = 1.0
 # No prompt this long after launch: Claude is stuck before it could start the procedure.
 STARTUP_SECONDS = 90.0
@@ -254,6 +257,58 @@ def _api_outcome(text: str) -> ClaudeOutcome:
     return ClaudeOutcome(status, detail)
 
 
+# Closes the Terminal window on this tty once nothing runs in it (`busy` is false, which can take
+# several seconds while zsh saves its session on exit); closing it while something still ran
+# would ask whether to terminate it.
+CLOSE_TERMINAL_WINDOW = """\
+tell application "Terminal"
+  repeat 300 times
+    set found to false
+    repeat with w in windows
+      repeat with b in tabs of w
+        if tty of b is "$tty" then
+          set found to true
+          if not busy of b then
+            close w
+            return
+          end if
+        end if
+      end repeat
+    end repeat
+    if not found then return
+    delay 0.1
+  end repeat
+end tell"""
+
+
+def attach_command(attach: list[str], marker: Path, app: str | None = None) -> str:
+    """Shell lines that attach to a session and write ``marker`` if the window is closed.
+
+    Closing the window hangs the tmux client up: it exits 1 ("[lost tty]"), where Ctrl-b d
+    ("[detached]") and the session ending ("[exited]") exit 0. The shell ignores the hangup so
+    that it outlives the client and can record it. With ``app`` "Terminal" (a window the
+    coordinator opened for the session) the window is closed once the session has ended, rather
+    than left showing "[Process completed]"."""
+    lines = [
+        "trap '' HUP",
+        " ".join(shlex.quote(a) for a in attach),
+        f"[ $? -eq 1 ] && : > {shlex.quote(str(marker))}",
+    ]
+    if app == "Terminal":
+        # attach_argv ends "attach-session -t =<name>": ask the same server about the same session.
+        alive = " ".join(shlex.quote("has-session" if a == "attach-session" else a) for a in attach)
+        lines += [
+            f"if ! {alive} 2>/dev/null; then",
+            "  tty=$(tty)",
+            '  nohup osascript -e "$(cat <<EOF',
+            CLOSE_TERMINAL_WINDOW,
+            "EOF",
+            ')" >/dev/null 2>&1 &',
+            "fi",
+        ]
+    return "\n".join([*lines, "exit 0", ""])
+
+
 async def open_window(app: str, folder: Path, title: str, attach: list[str]) -> str | None:
     """Open a terminal window attached to the session (macOS). Returns a problem, if any."""
     if sys.platform != "darwin":
@@ -262,7 +317,7 @@ async def open_window(app: str, folder: Path, title: str, attach: list[str]) -> 
     script.write_text(
         "#!/bin/sh\n"
         f"printf '\\033]0;%s\\007' {shlex.quote(title)}\n"
-        f"exec {' '.join(shlex.quote(a) for a in attach)}\n"
+        + attach_command(attach, folder / WINDOW_CLOSED, app)
     )
     script.chmod(0o700)
     res = await run_process(["open", "-a", app, str(script)], cwd=folder, env=base_child_env(), timeout=20)

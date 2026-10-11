@@ -236,8 +236,8 @@ def closing_note(procedure: str, ids: list[str], *, preview: bool = False) -> st
             f"not ask for further changes: further changes to the {what} are requested in Jira."
         )
     close = (
-        "that if not, they should type /exit to end this session: review and verification of "
-        "the candidate start then, not before (closing the window only hides the session)."
+        "that if not, they should type /exit (or close the window) to end this session: review "
+        "and verification of the candidate start then, not before (Ctrl-b d only hides it)."
     )
     further = (
         "If they ask for more, make those changes here too: the coordinator pushes them as the "

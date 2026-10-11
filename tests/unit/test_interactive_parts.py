@@ -437,8 +437,8 @@ def test_change_requests_and_development_get_a_closing_message() -> None:
     assert "change requests from Jira: F1, R1" in note
     assert "The changes requested in Jira have been actioned" in note
     assert "pushes them as the next candidate" in note
-    assert "type /exit to end this session" in note and "start then, not before" in note
-    assert "close this window" not in note, "closing the window does not start verification"
+    assert "type /exit (or close the window) to end this session" in note
+    assert "start then, not before" in note and "Ctrl-b d only hides it" in note
     spec = closing_note("refine-ticket", ["F1"])
     assert "The changes requested in Jira have been actioned" in spec
     assert "further changes you'd like" not in spec, "only the development session stays open"
@@ -450,3 +450,16 @@ def test_change_requests_and_development_get_a_closing_message() -> None:
     assert "actioned" not in first and "Are there any further changes you'd like to make?" in first
     assert "starting the app" not in first
     assert "starting the app" in closing_note("implement-ticket", [], preview=True)
+
+
+def test_a_session_window_records_being_closed_and_closes_once_the_session_ends(tmp_path: Path) -> None:
+    from delivery.interactive import attach_command
+
+    attach = ["tmux", "-L", "delivery", "attach-session", "-t", "=PILOT-1-implement-ticket"]
+    own = attach_command(attach, tmp_path / "window-closed", "Terminal")
+    assert "trap '' HUP" in own and "[ $? -eq 1 ] && : > " in own  # closed: "[lost tty]"
+    assert "if ! tmux -L delivery has-session -t =PILOT-1-implement-ticket" in own
+    assert 'tell application "Terminal"' in own and "not busy of b" in own
+    # A terminal of your own (`delivery attach`) is never closed for you.
+    yours = attach_command(attach, tmp_path / "window-closed")
+    assert "[ $? -eq 1 ]" in yours and "osascript" not in yours
