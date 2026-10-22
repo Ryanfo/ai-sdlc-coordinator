@@ -68,8 +68,15 @@ from delivery.open_sessions import (
 )
 from delivery.overlap import OverlapFinding
 from delivery.overlap import Severity as OverlapSeverity
-from delivery.permissions import PROCEDURE_ROLES, PROTECTED_WORKTREE_PATHS, Role, build_profile
+from delivery.permissions import (
+    DEFAULT_NETWORK,
+    PROCEDURE_ROLES,
+    PROTECTED_WORKTREE_PATHS,
+    Role,
+    build_profile,
+)
 from delivery.ports import JiraComment
+from delivery.proc import ProcessStartError, base_child_env, run_process
 from delivery.proposals import dump as dump_proposals
 from delivery.proposals import proposals_path
 from delivery.publication import Posted
@@ -291,6 +298,8 @@ class StageStrategy:
         # Set when publishing a document edited in this stage's open session: the ticket stays
         # in its review status and the new revision supersedes the one under review.
         self.follow_up: FollowUp | None = None
+        # Worktrees where checks.setup already ran in this stage.
+        self.prepared: set[Path] = set()
 
     # ------------------------------------------------------------------ workspace
     async def delivery_worktree(self) -> Path:
@@ -438,6 +447,8 @@ class StageStrategy:
                 next_revision=next_revision,
             ),
             configured_checks=list(ctx.cfg.checks.commands),
+            setup_command=list(ctx.cfg.checks.setup),
+            check_commands={k: list(v) for k, v in ctx.cfg.checks.commands.items()},
             review_report_path=review_report,
             related_work=related or [],
             ports=ports or {},
@@ -533,6 +544,42 @@ class StageStrategy:
         ctx.record.outputs["wip"] = meta
         ctx.save("wip_saved", files=len(files))
 
+    async def prepare_session_worktree(self, wt: Path, procedure: str, ports: dict[str, int]) -> None:
+        """Install the application's dependencies before a session that runs commands.
+
+        `checks.setup` runs here as the developer, outside Claude's sandbox, which reaches only
+        the public npm registry: a project using another package manager or a private registry
+        could not install them from inside. A failure is recorded, never fatal; the session can
+        still work. Tracked files the setup changes (a rewritten lockfile) are put back, so they
+        never reach the candidate.
+        """
+        ctx, repo = self.ctx, self.deps.repo
+        if not ctx.cfg.checks.setup or wt in self.prepared:
+            return
+        self.prepared.add(wt)
+        before = set(await repo.tracked_changes(wt))
+        log = ctx.logs_dir / f"session-{procedure}-setup.log"
+        try:
+            res = await run_process(
+                ctx.cfg.checks.setup,
+                cwd=wt,
+                env=base_child_env({"CI": "1", "TMPDIR": str(ctx.tmp_dir), **port_env(ports)}),
+                timeout=ctx.cfg.runtime.check_timeout_seconds,
+                stdout_path=log,
+                stderr_path=log.with_suffix(".err.log"),
+            )
+            outcome = "timed_out" if res.timed_out else ("passed" if res.returncode == 0 else "failed")
+        except ProcessStartError as exc:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text(str(exc))
+            outcome = "error"
+        changed = sorted(set(await repo.tracked_changes(wt)) - before)
+        if changed:
+            await repo.git("checkout", "--", *changed, cwd=wt)
+        ctx.journal.events.append(
+            "session_setup", {"procedure": procedure, "conclusion": outcome, "restored": changed}
+        )
+
     # ------------------------------------------------------------------ procedures
     async def run_procedure(
         self,
@@ -546,6 +593,9 @@ class StageStrategy:
         ctx = self.ctx
         out_dir = Path(envelope.output.artifact_dir)
         role = PROCEDURE_ROLES[procedure]
+        runs_commands = role in (Role.IMPLEMENTER, Role.RESOLVER, Role.VERIFIER)
+        if runs_commands:
+            await self.prepare_session_worktree(worktree, procedure, ports or {})
         profile = build_profile(
             role,
             worktree=worktree,
@@ -553,6 +603,9 @@ class StageStrategy:
             inputs_dir=ctx.inputs_dir,
             tmp_dir=ctx.tmp_dir,
             readonly_dirs=(ctx.cfg.claude.plugin_path,),
+            network_domains=(*DEFAULT_NETWORK[role], *ctx.cfg.claude.network_domains)
+            if runs_commands
+            else None,
         )
         settings_path = ctx.journal.dir / f"settings-{procedure}.json"
         atomic_write_json(settings_path, profile.settings)
@@ -2228,6 +2281,7 @@ class VerificationStage(StageStrategy):
     ) -> list[CheckResult]:
         ctx = self.ctx
         if ctx.cfg.checks.setup:
+            self.prepared.add(wt)
             setup = await run_checks(
                 {"setup": ctx.cfg.checks.setup},
                 ["setup"],

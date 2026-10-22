@@ -6,8 +6,10 @@ arguments: [envelope]
 disable-model-invocation: true
 ---
 
-> Ports: `PORT` and `E2E_PORT` are already exported for this run. Run commands as plain
-> `npm run …` / `npx …` without `VAR=value` prefixes (prefixed commands are denied).
+> Ports: `PORT` and `E2E_PORT` are already exported for this run. The project's dependencies
+> are already installed (`setup_command`). Use the project's own commands from `check_commands`
+> and its package scripts, whatever package manager it uses, run plainly without `VAR=value`
+> prefixes (prefixed commands are denied).
 
 # Procedure: implement-ticket
 
@@ -63,7 +65,7 @@ acceptance criterion in the approved specification is met, following the approve
    in `attachments` and `designs` they refer to. Match layout, copy and states shown there; where a design
    and the specification disagree, follow the specification and note it.
 2. Implement in small steps. Run the relevant tests and type checks as you go using the
-   project's scripts (for example `npm run test:unit`, `npm run typecheck`).
+   project's own commands (`check_commands`, for example its unit test and type check).
    For `work_kind: bug`, reproduce it first: write the regression test the plan names, run it
    and see it fail for the reason the bug report describes (record that run in `worker_checks`
    as `reproduction`, result `failed`), then fix the cause and see it pass. Keep the test in a

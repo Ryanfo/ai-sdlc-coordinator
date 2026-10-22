@@ -432,6 +432,9 @@ class InputEnvelope(Model):
     source: SourceRefs
     output: OutputContract
     configured_checks: list[str] = Field(default_factory=list)
+    # The application's own commands (argument lists): use these, not a guessed package manager.
+    setup_command: list[str] = Field(default_factory=list)
+    check_commands: dict[str, list[str]] = Field(default_factory=dict)
     review_report_path: str | None = None
     related_work: list[OverlapContext] = Field(default_factory=list)
     ports: dict[str, int] = Field(default_factory=dict)

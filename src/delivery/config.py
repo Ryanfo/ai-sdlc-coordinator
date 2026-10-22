@@ -497,6 +497,17 @@ class ClaudeConfig(StrictModel):
     # updates itself), new sessions wait while the coordinator runs that probe again
     # (`delivery doctor --claude-probe`); they start once it passes.
     probe_on_version_change: bool = True
+    # Extra hosts the sessions that run commands (implement, verify, resolve, investigate) may
+    # reach, beside registry.npmjs.org: for example a private package registry.
+    network_domains: list[str] = Field(default_factory=list)
+
+    @field_validator("network_domains")
+    @classmethod
+    def _domains(cls, v: list[str]) -> list[str]:
+        bad = [d for d in v if not d or "/" in d or any(c.isspace() for c in d)]
+        if bad:
+            raise ValueError(f"host names only (no scheme or path): {bad}")
+        return v
 
     @field_validator("model", "help_model")
     @classmethod

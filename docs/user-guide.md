@@ -50,7 +50,8 @@ checkout: it keeps its own clone and a separate worktree per run.
 | `repository.url`, `base_branch`, `checkout_path` | The application repository |
 | `repository.worktree_root`, `runtime.state_dir` | Local folders **outside** any Git checkout |
 | `approvals.jira_account_ids`, `github_logins` | Who approves, and the independent GitHub reviewer (empty: anyone) |
-| `checks.*` | The application's real gates and CI job names |
+| `checks.*` | The application's real gates and CI job names. `checks.setup` (e.g. `yarn install`) also runs before every Claude session that runs commands, so dependencies are installed whatever the package manager |
+| `claude.network_domains` | Optional: extra hosts those sessions may reach, such as a private package registry |
 | `claude.model`, `[claude.models]` | Model for every procedure, with per-procedure overrides |
 | `[claude.interactive]`, `[preview]` | Optional: [watch Claude](#watching-claude-and-trying-the-change) in tmux; run the app in your browser |
 | `[figma]`, `[jira.attachments]`, `[notifications]`, `[reminders]`, `jira.linked_projects` | Optional |

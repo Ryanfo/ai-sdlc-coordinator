@@ -124,6 +124,13 @@ def test_model_settings_are_validated(
         make_config(overrides=overrides)
 
 
+def test_network_domains_are_host_names(make_config: ConfigFactory) -> None:
+    cfg = make_config(overrides={"claude": {"network_domains": ["npm.example.com", "localhost"]}})
+    assert cfg.claude.network_domains == ["npm.example.com", "localhost"]
+    with pytest.raises(ConfigError):
+        make_config(overrides={"claude": {"network_domains": ["https://npm.example.com/"]}})
+
+
 def test_a_config_from_before_the_release_stages_were_removed_still_loads(
     make_config: ConfigFactory,
 ) -> None:

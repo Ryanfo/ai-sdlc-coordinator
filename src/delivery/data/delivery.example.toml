@@ -109,6 +109,10 @@ permission_profile = "local_pilot"
 # passed on here (`delivery doctor --claude-probe` records it), new sessions wait while the
 # coordinator runs that probe again, and start once it passes.
 # probe_on_version_change = true
+# Extra hosts that sessions running commands may reach, beside registry.npmjs.org: for
+# example a private package registry. Dependencies are installed before each session
+# with checks.setup (outside the sandbox), so most projects need none.
+# network_domains = ["npm.example.com"]
 # Model for every procedure. Unset means Claude Code's own default for your plan.
 # Aliases ("opus", "sonnet") or full names ("claude-opus-5-5") both work.
 # model = "sonnet"

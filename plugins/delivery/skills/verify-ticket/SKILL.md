@@ -6,8 +6,10 @@ arguments: [envelope]
 disable-model-invocation: true
 ---
 
-> Ports: `PORT` and `E2E_PORT` are already exported for this run. Run commands as plain
-> `npm run …` / `npx …` without `VAR=value` prefixes (prefixed commands are denied).
+> Ports: `PORT` and `E2E_PORT` are already exported for this run. The project's dependencies
+> are already installed (`setup_command`). Use the project's own commands from `check_commands`
+> and its package scripts, whatever package manager it uses, run plainly without `VAR=value`
+> prefixes (prefixed commands are denied).
 
 # Procedure: verify-ticket
 
@@ -31,7 +33,7 @@ an integration tree; its results are authoritative.
    there, as a regression test should). Follow the specification's steps to reproduce against
    the candidate and record what you observed.
    Open the designs in `attachments` and `designs` that acceptance criteria refer to.
-2. Install dependencies if needed using the project's lockfile (`npm ci`). Use
+2. Dependencies are already installed. If something is still missing, rerun `setup_command`. Use
    `ports.app` (and other entries in `ports`) for anything that listens.
 3. For each acceptance criterion, run the specific tests or a focused observation
    (for example a unit test filter or an e2e spec) and record what you observed.
