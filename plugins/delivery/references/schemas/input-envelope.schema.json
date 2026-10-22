@@ -867,6 +867,23 @@
       "title": "Configured Checks",
       "type": "array"
     },
+    "setup_command": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Setup Command",
+      "type": "array"
+    },
+    "check_commands": {
+      "additionalProperties": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "title": "Check Commands",
+      "type": "object"
+    },
     "review_report_path": {
       "anyOf": [
         {

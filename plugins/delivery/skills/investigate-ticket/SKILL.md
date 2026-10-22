@@ -6,8 +6,10 @@ arguments: [envelope]
 disable-model-invocation: true
 ---
 
-> Ports: `PORT` and `E2E_PORT` are already exported for this run. Run commands as plain
-> `npm run …` / `npx …` without `VAR=value` prefixes (prefixed commands are denied).
+> Ports: `PORT` and `E2E_PORT` are already exported for this run. The project's dependencies
+> are already installed (`setup_command`). Use the project's own commands from `check_commands`
+> and its package scripts, whatever package manager it uses, run plainly without `VAR=value`
+> prefixes (prefixed commands are denied).
 
 # Procedure: investigate-ticket
 

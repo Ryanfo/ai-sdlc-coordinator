@@ -35,6 +35,8 @@ The skill argument is the absolute path of `envelope.json`. Read it first. Impor
 | `output.required_kinds` | Artefact kinds your result must list. |
 | `output.next_revision` | Revision number the coordinator will assign to your document. |
 | `configured_checks` | Names of checks the coordinator will run itself. |
+| `setup_command` | The application's dependency install command (argument list). The coordinator already ran it in your working directory. |
+| `check_commands` | The command (argument list) for each configured check. Use these to run the project's checks. |
 | `related_work` | Other in-flight tickets and their change footprints (for overlap awareness). |
 | `ports` | Ports reserved for this run. Never assume an application's default port. |
 
