@@ -1,0 +1,104 @@
+# delivery shared project settings
+#
+# The same for everyone on this project. Each developer's own config names this file
+# (project = "<path>") and adds only personal settings; `delivery setup --project` writes it.
+# No secrets, nothing personal and nothing specific to one laptop.
+
+
+[jira]
+base_url = "https://anddigitaltransformation.atlassian.net"
+project_key = "SDLC"
+supported_issue_types = ["Story", "Bug"]
+required_label = ""
+auth_profile = "site_api_token"
+
+[jira.attachments]
+enabled = true
+max_file_mb = 20
+max_total_mb = 100
+file_types = ["png", "jpg", "jpeg", "gif", "webp", "pdf", "txt", "md", "csv", "json"]
+
+[jira.fields]
+resume_stage = "customfield_11807"
+
+[repository]
+url = "https://github.com/and-digital/luna-skeleton.git"
+base_branch = "ada-bio-builder"
+github_auth_profile = "gh"
+
+[runtime]
+poll_seconds = 30
+poll_jitter_seconds = 10
+timeout_seconds = 1800
+check_timeout_seconds = 1800
+heartbeat_seconds = 30
+
+[claude]
+auth_profile = "subscription"
+max_turns = 150
+allow_paid_api_fallback = false
+permission_profile = "local_pilot"
+network_domains = ["registry.yarnpkg.com"]
+
+[approvals]
+jira_account_ids = []
+github_logins = []
+require_independent_github_review = true
+
+[release]
+profile = "local_pilot"
+environment = "local-pilot"
+human_merge_required = true
+human_deployment_required = true
+
+[checks]
+setup = ["bash", "-c", "exec \"${DELIVERY_HOME:-$HOME/.delivery-platform}/projects/luna/checks.sh\" setup"]
+
+[checks.commands]
+lint = ["bash", "-c", "exec \"${DELIVERY_HOME:-$HOME/.delivery-platform}/projects/luna/checks.sh\" lint"]
+build = ["bash", "-c", "exec \"${DELIVERY_HOME:-$HOME/.delivery-platform}/projects/luna/checks.sh\" build"]
+test = ["bash", "-c", "exec \"${DELIVERY_HOME:-$HOME/.delivery-platform}/projects/luna/checks.sh\" test"]
+
+[checks.ci]
+required_names = []
+expected_producer = "github-actions"
+allow_neutral = []
+allow_skipped = []
+
+[workflow.statuses]
+backlog = "17114"
+ready_refinement = "17115"
+refining = "17120"
+specification_review = "17121"
+ready_planning = "17116"
+planning = "17122"
+plan_review = "17123"
+ready_development = "17134"
+developing = "17124"
+ready_verification = "17117"
+verifying = "17125"
+code_review = "17126"
+acceptance_review = "17127"
+changes_requested = "17128"
+needs_clarification = "17129"
+blocked = "17130"
+ready_resolution = "17155"
+resolving = "17156"
+ready_release = "17118"
+done = "17111"
+cancelled = "17133"
+
+[workflow.actions]
+
+[overlap]
+component_map_path = "docs/architecture/components.toml"
+low_signal_paths = ["yarn.lock", "CHANGELOG.md"]
+
+[figma]
+enabled = true
+image_scale = 2
+max_frames = 10
+max_image_mb = 20
+
+[preview]
+command = ["bash", "-c", "exec \"${DELIVERY_HOME:-$HOME/.delivery-platform}/projects/luna/checks.sh\" preview \"$PORT\""]
