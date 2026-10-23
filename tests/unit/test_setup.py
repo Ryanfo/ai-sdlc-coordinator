@@ -220,6 +220,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("JIRA_API_TOKEN", raising=False)
     monkeypatch.delenv("JIRA_EMAIL", raising=False)
+    # The installation's own projects/ (real team files) is not offered unless a test says so.
+    monkeypatch.setattr(setup, "PROJECTS_DIR", tmp_path / "no-projects")
     return home
 
 
